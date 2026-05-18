@@ -79,6 +79,30 @@ tools:
 	}
 }
 
+func TestAbsolutePathDenied(t *testing.T) {
+	e := mustEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": "/etc/passwd"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for absolute path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestTraversalPathDenied(t *testing.T) {
+	e := mustEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": "../../etc/passwd"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for traversal path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestRelativePathAllowed(t *testing.T) {
+	e := mustEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": "src/main.go"}})
+	if res.Decision != policy.DecisionAllow {
+		t.Fatalf("expected allow for relative path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
 func mustEngine(t *testing.T) *Engine {
 	t.Helper()
 	p, err := policy.ParsePolicy([]byte(policy.StarterPolicyYAML))

@@ -137,6 +137,9 @@ func ParsePolicy(b []byte) (Policy, error) {
 	if p.Tools == nil {
 		p.Tools = map[string]Rule{}
 	}
+	if p.Audit.Format == "" {
+		p.Audit.Format = "jsonl"
+	}
 
 	if err := validateDecision(p.Defaults.Decision); err != nil {
 		return Policy{}, fmt.Errorf("defaults.decision: %w", err)
@@ -145,6 +148,9 @@ func ParsePolicy(b []byte) (Policy, error) {
 		if err := validateDecision(rule.Decision); err != nil {
 			return Policy{}, fmt.Errorf("tools.%s.decision: %w", name, err)
 		}
+	}
+	if err := validateAuditFormat(p.Audit.Format); err != nil {
+		return Policy{}, fmt.Errorf("audit.format: %w", err)
 	}
 	return p, nil
 }
@@ -169,5 +175,14 @@ func validateDecision(d Decision) error {
 		return nil
 	default:
 		return fmt.Errorf("must be one of allow, deny, ask")
+	}
+}
+
+func validateAuditFormat(f string) error {
+	switch f {
+	case "jsonl":
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q; supported: jsonl", f)
 	}
 }

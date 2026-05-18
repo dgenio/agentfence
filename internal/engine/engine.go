@@ -60,15 +60,24 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall) (bool, stri
 		return true, "missing required path argument for constrained tool"
 	}
 
+	// Clean and validate path to prevent traversal and absolute-path attacks.
+	cleaned := path.Clean(strings.ReplaceAll(pathArg, "\\", "/"))
+	if path.IsAbs(cleaned) {
+		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return true, fmt.Sprintf("path %q escapes the project root", pathArg)
+	}
+
 	for _, deny := range paths.Deny {
-		if matchesGlob(deny, pathArg) {
+		if matchesGlob(deny, cleaned) {
 			return true, fmt.Sprintf("path %q denied by pattern %q", pathArg, deny)
 		}
 	}
 
 	if len(paths.Allow) > 0 {
 		for _, allow := range paths.Allow {
-			if matchesGlob(allow, pathArg) {
+			if matchesGlob(allow, cleaned) {
 				return false, ""
 			}
 		}
@@ -78,6 +87,8 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall) (bool, stri
 }
 
 func matchesGlob(pattern, value string) bool {
+	// "./" and "." mean "any path within the project root".
+	// Callers must validate that value is a safe relative path before calling.
 	if pattern == "./" || pattern == "." {
 		return true
 	}

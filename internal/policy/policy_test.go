@@ -24,3 +24,28 @@ func TestParseToolCall(t *testing.T) {
 		t.Fatalf("expected filesystem.read, got %s", call.Tool)
 	}
 }
+
+func TestAuditFormatDefaultsToJsonl(t *testing.T) {
+	p, err := ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy() error = %v", err)
+	}
+	if p.Audit.Format != "jsonl" {
+		t.Fatalf("expected audit.format to default to jsonl, got %q", p.Audit.Format)
+	}
+}
+
+func TestAuditFormatRejectsUnsupported(t *testing.T) {
+	_, err := ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+audit:
+  format: xml
+`))
+	if err == nil {
+		t.Fatal("expected error for unsupported audit format, got nil")
+	}
+}
