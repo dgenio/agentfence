@@ -27,6 +27,12 @@ AgentFence is a practical local control point before execution.
 go build -o agentfence ./cmd/agentfence
 ```
 
+To embed a release version at build time (compatible with goreleaser):
+
+```bash
+go build -ldflags "-X main.Version=0.1.0" -o agentfence ./cmd/agentfence
+```
+
 ## Quickstart
 
 Run the built-in demo:
@@ -41,10 +47,29 @@ Run policy checks against example tool calls:
 ./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl
 ```
 
+Get machine-readable output for CI pipelines:
+
+```bash
+./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl --output json
+./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl --output jsonl | jq '.decision'
+```
+
+Validate a policy file before use (catches typos and unknown fields):
+
+```bash
+./agentfence validate --policy examples/policy.yaml
+```
+
 Initialize a starter policy in your current directory:
 
 ```bash
 ./agentfence init
+```
+
+Check the installed version:
+
+```bash
+./agentfence version
 ```
 
 ## Example policy

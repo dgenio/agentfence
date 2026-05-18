@@ -132,3 +132,42 @@ func mustEngine(t *testing.T) *Engine {
 	}
 	return e
 }
+
+// TestWindowsAbsolutePathDenied verifies that Windows drive-letter paths are
+// treated as absolute and denied (#12).
+func TestWindowsAbsolutePathDenied(t *testing.T) {
+	e := mustEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": `C:\Windows\system32\cmd.exe`}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for Windows absolute path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+// TestUNCPathDenied verifies that UNC paths (\\server\share) are denied (#12).
+func TestUNCPathDenied(t *testing.T) {
+	e := mustEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": `\\server\share\file`}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for UNC path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+// TestWindowsTraversalPathDenied verifies that Windows-style traversal paths
+// using backslashes are detected and denied (#12).
+func TestWindowsTraversalPathDenied(t *testing.T) {
+	e := mustEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": `..\..\etc\passwd`}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for Windows traversal path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+// TestWindowsRelativePathAllowed verifies that a Windows-style relative path
+// such as src\main.go is treated equivalently to src/main.go (#12).
+func TestWindowsRelativePathAllowed(t *testing.T) {
+	e := mustEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": `src\main.go`}})
+	if res.Decision != policy.DecisionAllow {
+		t.Fatalf("expected allow for Windows-style relative path, got %s: %s", res.Decision, res.Reason)
+	}
+}
