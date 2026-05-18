@@ -1,0 +1,4 @@
+{"id":"call_001","tool":"filesystem.read","arguments":{"path":"README.md"}}
+{"id":"call_002","tool":"filesystem.write","arguments":{"path":".env","content":"OPENAI_API_KEY=sk-demo-secret"}}
+{"id":"call_003","tool":"github.create_issue","arguments":{"repo":"dgenio/agentfence","title":"Demo issue","body":"Created by an agent"}}
+{"id":"call_004","tool":"github.delete_repo","arguments":{"repo":"dgenio/agentfence"}}

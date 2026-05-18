@@ -1,0 +1,15 @@
+version: "0.1"
+
+defaults:
+  decision: allow
+
+tools:
+  github.delete_repo:
+    decision: ask
+
+redaction:
+  enabled: false
+
+audit:
+  format: jsonl
+  include_redacted_arguments: false
