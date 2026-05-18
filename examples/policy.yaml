@@ -1,0 +1,47 @@
+version: "0.1"
+
+defaults:
+  decision: deny
+
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allow:
+          - "./"
+        deny:
+          - ".env"
+          - "**/secrets/**"
+
+  filesystem.write:
+    decision: ask
+    constraints:
+      paths:
+        allow:
+          - "./src/**"
+          - "./docs/**"
+        deny:
+          - ".github/workflows/**"
+          - ".env"
+          - "**/secrets/**"
+
+  github.create_issue:
+    decision: ask
+
+  github.delete_repo:
+    decision: deny
+
+redaction:
+  enabled: true
+  patterns:
+    - name: openai_api_key
+      regex: "sk-[A-Za-z0-9_-]{20,}"
+    - name: github_token
+      regex: "gh[pousr]_[A-Za-z0-9_]{20,}"
+    - name: generic_secret_assignment
+      regex: "(?i)(api_key|token|secret|password)\\s*[:=]\\s*[^\\s]+"
+
+audit:
+  format: jsonl
+  include_redacted_arguments: true
