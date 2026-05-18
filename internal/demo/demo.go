@@ -24,6 +24,7 @@ func Run(out io.Writer) error {
 		{ID: "call_001", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": "README.md"}},
 		{ID: "call_002", Tool: "filesystem.write", Arguments: map[string]interface{}{"path": ".env", "content": "OPENAI_API_KEY=sk-demo-secret"}},
 		{ID: "call_003", Tool: "github.create_issue", Arguments: map[string]interface{}{"repo": "dgenio/agentfence", "title": "Demo issue", "body": "Created by an agent"}},
+		{ID: "call_004", Tool: "github.delete_repo", Arguments: map[string]interface{}{"repo": "dgenio/agentfence"}},
 	}
 
 	fmt.Fprintln(out, "AgentFence demo:")

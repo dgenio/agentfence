@@ -100,6 +100,7 @@ func matchesGlob(pattern, value string) bool {
 	}
 
 	regexPattern := "^" + regexp.QuoteMeta(normPattern) + "$"
+	regexPattern = strings.ReplaceAll(regexPattern, `\*\*/`, "(.*/)?")
 	regexPattern = strings.ReplaceAll(regexPattern, `\*\*`, ".*")
 	regexPattern = strings.ReplaceAll(regexPattern, `\*`, "[^/]*")
 	re := regexp.MustCompile(regexPattern)

@@ -103,6 +103,23 @@ func TestRelativePathAllowed(t *testing.T) {
 	}
 }
 
+func TestDoubleStarDenyMatchesRootLevel(t *testing.T) {
+	e := mustEngine(t)
+	// **/secrets/** from starter policy should deny root-level secrets/ paths
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": "secrets/token.txt"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for root-level secrets path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestDoubleStarDenyMatchesNestedLevel(t *testing.T) {
+	e := mustEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": "deep/secrets/token.txt"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for nested secrets path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
 func mustEngine(t *testing.T) *Engine {
 	t.Helper()
 	p, err := policy.ParsePolicy([]byte(policy.StarterPolicyYAML))
