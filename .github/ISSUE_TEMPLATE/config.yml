@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and usage help
+    url: https://github.com/dgenio/agentfence#readme
+    about: Check the project documentation before opening a support question.
+  - name: Discussions
+    url: https://github.com/dgenio/agentfence/discussions
+    about: Use discussions for open-ended questions if enabled for this repository.
