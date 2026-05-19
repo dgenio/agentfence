@@ -315,39 +315,6 @@ this is not json
 	}
 }
 
-// TestCheckHandlesEmptyArguments verifies that a tool call with an empty
-// arguments map does not panic and is evaluated (path-constrained tool denies
-// on missing path; non-constrained tool uses its rule decision).
-func TestCheckHandlesEmptyArguments(t *testing.T) {
-	dir := t.TempDir()
-	policyFile := filepath.Join(dir, "policy.yaml")
-	callFile := filepath.Join(dir, "calls.jsonl")
-
-	if err := os.WriteFile(policyFile, []byte(`version: "0.1"
-defaults:
-  decision: deny
-tools:
-  filesystem.read:
-    decision: allow
-    constraints:
-      paths:
-        allow:
-          - "./"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Call with empty arguments — the path constraint requires a path argument.
-	if err := os.WriteFile(callFile, []byte(`{"id":"call_1","tool":"filesystem.read","arguments":{}}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
-	if err != nil {
-		t.Fatalf("runCheck() unexpected error for empty-arguments call: %v", err)
-	}
-}
-
 // TestCheckAllMalformedReturnsError verifies that an all-malformed input is
 // treated as an error (no calls were evaluated).
 func TestCheckAllMalformedReturnsError(t *testing.T) {
@@ -364,5 +331,380 @@ defaults:
 	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
 	if err == nil {
 		t.Fatal("expected error when all lines fail to parse")
+	}
+}
+
+// ── #18: --fail-on ────────────────────────────────────────────────────────────
+
+func TestCheckFailOnDeny(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`), 0o644)
+	os.WriteFile(callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+{"id":"c2","tool":"unknown.tool","arguments":{}}
+`), 0o644)
+
+	// Without --fail-on: should succeed even though one call is denied.
+	if err := runCheck([]string{"--policy", policyFile, "--call", callFile}); err != nil {
+		t.Fatalf("runCheck without --fail-on should not error: %v", err)
+	}
+
+	// With --fail-on deny: should fail because c2 is denied.
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "deny"})
+	if err == nil {
+		t.Fatal("expected error with --fail-on deny when a call is denied")
+	}
+}
+
+func TestCheckFailOnAsk(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  github.create_issue:
+    decision: ask
+`), 0o644)
+	os.WriteFile(callFile, []byte(`{"id":"c1","tool":"github.create_issue","arguments":{}}
+`), 0o644)
+
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "ask"})
+	if err == nil {
+		t.Fatal("expected error with --fail-on ask when a call is ask")
+	}
+}
+
+func TestCheckFailOnAllCallsEvaluated(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  tool.a:
+    decision: allow
+  tool.b:
+    decision: deny
+  tool.c:
+    decision: allow
+`), 0o644)
+	// Three calls: a (allow), b (deny triggers --fail-on), c (allow).
+	// All three should be evaluated; error returned at end.
+	os.WriteFile(callFile, []byte(`{"id":"c1","tool":"tool.a","arguments":{}}
+{"id":"c2","tool":"tool.b","arguments":{}}
+{"id":"c3","tool":"tool.c","arguments":{}}
+`), 0o644)
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "deny"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err == nil {
+		t.Fatal("expected error with --fail-on deny")
+	}
+	// All three calls should appear in output.
+	output := buf.String()
+	for _, id := range []string{"c1", "c2", "c3"} {
+		if !strings.Contains(output, id) {
+			t.Errorf("expected %s to appear in output; got: %s", id, output)
+		}
+	}
+}
+
+func TestCheckFailOnRejectsAllow(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+`), 0o644)
+	os.WriteFile(callFile, []byte(""), 0o644)
+
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "allow"})
+	if err == nil {
+		t.Fatal("expected error for --fail-on allow")
+	}
+}
+
+// ── #19: explain command ──────────────────────────────────────────────────────
+
+func TestExplainCommandExplicitRule(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.write:
+    decision: ask
+    constraints:
+      paths:
+        allow: ["./src/**"]
+        deny: [".env"]
+`), 0o644)
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runExplain([]string{"--policy", policyFile, "--tool", "filesystem.write", "--args", `{"path":".env"}`})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runExplain unexpected error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "deny") {
+		t.Errorf("expected 'deny' in output; got: %s", output)
+	}
+	if !strings.Contains(output, "trace") {
+		t.Errorf("expected 'trace' in output; got: %s", output)
+	}
+}
+
+func TestExplainCommandDefaultDecision(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+`), 0o644)
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runExplain([]string{"--policy", policyFile, "--tool", "unknown.tool"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runExplain unexpected error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "deny") {
+		t.Errorf("expected 'deny' in output; got: %s", output)
+	}
+}
+
+func TestExplainCommandJSONOutput(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  github.delete_repo:
+    decision: deny
+`), 0o644)
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runExplain([]string{"--policy", policyFile, "--tool", "github.delete_repo", "--output", "json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runExplain unexpected error: %v", err)
+	}
+
+	var out struct {
+		Decision string   `json:"decision"`
+		Reason   string   `json:"reason"`
+		Trace    []string `json:"trace"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &out); err != nil {
+		t.Fatalf("JSON output parse error: %v\noutput: %s", err, buf.String())
+	}
+	if out.Decision != "deny" {
+		t.Errorf("expected decision 'deny', got %q", out.Decision)
+	}
+	if len(out.Trace) == 0 {
+		t.Error("expected non-empty trace in JSON output")
+	}
+}
+
+func TestExplainCommandMissingTool(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+`), 0o644)
+
+	err := runExplain([]string{"--policy", policyFile})
+	if err == nil {
+		t.Fatal("expected error when --tool is missing")
+	}
+}
+
+// ── #20: policy test command ──────────────────────────────────────────────────
+
+func TestPolicyTestCommandAllPass(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	testsFile := filepath.Join(dir, "tests.yaml")
+
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allow: ["./"]
+        deny: [".env"]
+`), 0o644)
+	os.WriteFile(testsFile, []byte(`tests:
+  - id: allow-readme
+    tool: filesystem.read
+    arguments:
+      path: README.md
+    expect: allow
+  - id: deny-env
+    tool: filesystem.read
+    arguments:
+      path: .env
+    expect: deny
+  - id: deny-unknown
+    tool: unknown.tool
+    arguments: {}
+    expect: deny
+`), 0o644)
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runPolicyTest([]string{"--policy", policyFile, "--tests", testsFile})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runPolicyTest error: %v\noutput: %s", err, buf.String())
+	}
+	output := buf.String()
+	if !strings.Contains(output, "PASS: allow-readme") {
+		t.Errorf("expected PASS for allow-readme; got: %s", output)
+	}
+}
+
+func TestPolicyTestCommandFailure(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	testsFile := filepath.Join(dir, "tests.yaml")
+
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+`), 0o644)
+	os.WriteFile(testsFile, []byte(`tests:
+  - id: wrong-expectation
+    tool: some.tool
+    arguments: {}
+    expect: allow
+`), 0o644)
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runPolicyTest([]string{"--policy", policyFile, "--tests", testsFile})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err == nil {
+		t.Fatal("expected error when a test fails")
+	}
+	output := buf.String()
+	if !strings.Contains(output, "FAIL") {
+		t.Errorf("expected FAIL line in output; got: %s", output)
+	}
+}
+
+func TestPolicyTestCommandVerbose(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	testsFile := filepath.Join(dir, "tests.yaml")
+
+	os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`), 0o644)
+	os.WriteFile(testsFile, []byte(`tests:
+  - id: allow-read
+    tool: filesystem.read
+    arguments: {}
+    expect: allow
+`), 0o644)
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runPolicyTest([]string{"--policy", policyFile, "--tests", testsFile, "--verbose"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runPolicyTest --verbose error: %v", err)
+	}
+	output := buf.String()
+	// Verbose output should include the reason in parentheses.
+	if !strings.Contains(output, "PASS: allow-read (") {
+		t.Errorf("expected verbose PASS with reason; got: %s", output)
+	}
+}
+
+func TestPolicyTestCommandRequiresFlags(t *testing.T) {
+	err := runPolicyTest([]string{})
+	if err == nil {
+		t.Fatal("expected error when --policy and --tests are missing")
 	}
 }

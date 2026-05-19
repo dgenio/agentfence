@@ -26,11 +26,17 @@ Planned next step is to run AgentFence as an MCP-aware proxy between agents and 
 
 ## Policy evaluation flow
 
-- Exact tool name rule wins when present.
-- Otherwise use `defaults.decision`.
+- Rule lookup uses the following precedence (highest first):
+  1. **Exact match** — tool name matches a key in `tools` exactly.
+  2. **Group match** — tool name matches a member pattern of a named group in `groups` that also has a `tools` entry. Groups are checked in alphabetical name order; within a group, member patterns are checked in declaration order.
+  3. **Wildcard match** — tool name matches a glob pattern key in `tools` that is not a group name. Patterns are checked in alphabetical order for determinism.
+  4. **Default** — `defaults.decision` applies.
 - Path constraints are checked when present.
-- Deny path patterns are evaluated before allow patterns.
-- Any denied or non-allowed constrained path returns `deny`.
+- Argument value constraints (`constraints.args`) are checked after path constraints.
+- URL constraints (`constraints.urls`) are checked for browser/HTTP tools.
+- Command constraints (`constraints.command`) are checked for shell/terminal tools.
+- Deny patterns/rules are evaluated before allow patterns.
+- Any denied constraint returns `deny` immediately.
 
 ## Audit flow
 

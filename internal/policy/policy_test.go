@@ -156,3 +156,89 @@ audit:
 		})
 	}
 }
+
+// TestParseGroupsInPolicy verifies that the groups key is parsed correctly.
+func TestParseGroupsInPolicy(t *testing.T) {
+	p, err := ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+groups:
+  fs-tools:
+    - filesystem.read
+    - filesystem.*
+tools:
+  fs-tools:
+    decision: ask
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	if len(p.Groups) == 0 {
+		t.Fatal("expected groups to be parsed")
+	}
+	members := p.Groups["fs-tools"]
+	if len(members) != 2 {
+		t.Fatalf("expected 2 group members, got %d", len(members))
+	}
+}
+
+// TestParsePolicyTestFixture verifies that test fixture YAML is parsed correctly.
+func TestParsePolicyTestFixture(t *testing.T) {
+	fixture, err := ParsePolicyTestFixture([]byte(`tests:
+  - id: allow-readme
+    tool: filesystem.read
+    arguments:
+      path: README.md
+    expect: allow
+  - id: deny-env
+    tool: filesystem.write
+    arguments:
+      path: .env
+    expect: deny
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicyTestFixture error: %v", err)
+	}
+	if len(fixture.Tests) != 2 {
+		t.Fatalf("expected 2 tests, got %d", len(fixture.Tests))
+	}
+	if fixture.Tests[0].ID != "allow-readme" {
+		t.Fatalf("expected first test id 'allow-readme', got %q", fixture.Tests[0].ID)
+	}
+	if fixture.Tests[0].Expect != DecisionAllow {
+		t.Fatalf("expected first test expect 'allow', got %q", fixture.Tests[0].Expect)
+	}
+}
+
+// TestParsePolicyTestFixtureMissingID verifies that a test without an id returns an error.
+func TestParsePolicyTestFixtureMissingID(t *testing.T) {
+	_, err := ParsePolicyTestFixture([]byte(`tests:
+  - tool: filesystem.read
+    arguments:
+      path: README.md
+    expect: allow
+`))
+	if err == nil {
+		t.Fatal("expected error for missing id, got nil")
+	}
+}
+
+// TestParsePolicyTestFixtureInvalidExpect verifies that an invalid expect value returns an error.
+func TestParsePolicyTestFixtureInvalidExpect(t *testing.T) {
+	_, err := ParsePolicyTestFixture([]byte(`tests:
+  - id: bad-test
+    tool: filesystem.read
+    expect: maybe
+`))
+	if err == nil {
+		t.Fatal("expected error for invalid expect value, got nil")
+	}
+}
+
+// TestParsePolicyTestFixtureEmpty verifies that an empty fixture returns an error.
+func TestParsePolicyTestFixtureEmpty(t *testing.T) {
+	_, err := ParsePolicyTestFixture([]byte(`tests: []`))
+	if err == nil {
+		t.Fatal("expected error for empty fixture, got nil")
+	}
+}

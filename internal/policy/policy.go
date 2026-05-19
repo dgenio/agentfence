@@ -25,11 +25,12 @@ type ToolCall struct {
 }
 
 type Policy struct {
-	Version   string          `yaml:"version"`
-	Defaults  Defaults        `yaml:"defaults"`
-	Tools     map[string]Rule `yaml:"tools"`
-	Redaction RedactionConfig `yaml:"redaction"`
-	Audit     AuditConfig     `yaml:"audit"`
+	Version   string              `yaml:"version"`
+	Defaults  Defaults            `yaml:"defaults"`
+	Groups    map[string][]string `yaml:"groups"`
+	Tools     map[string]Rule     `yaml:"tools"`
+	Redaction RedactionConfig     `yaml:"redaction"`
+	Audit     AuditConfig         `yaml:"audit"`
 }
 
 type Defaults struct {
@@ -42,12 +43,36 @@ type Rule struct {
 }
 
 type Constraints struct {
-	Paths PathConstraints `yaml:"paths"`
+	Paths   PathConstraints               `yaml:"paths"`
+	Args    map[string]ArgValueConstraint `yaml:"args"`
+	URLs    URLConstraints                `yaml:"urls"`
+	Command CommandConstraints            `yaml:"command"`
 }
 
 type PathConstraints struct {
 	Allow []string `yaml:"allow"`
 	Deny  []string `yaml:"deny"`
+}
+
+// ArgValueConstraint allows/denies specific argument field values using glob patterns.
+type ArgValueConstraint struct {
+	Allow []string `yaml:"allow"`
+	Deny  []string `yaml:"deny"`
+}
+
+// URLConstraints applies glob allow/deny rules to the url argument.
+// file:// and bare-IP hostnames are always denied regardless of the allow list.
+type URLConstraints struct {
+	Allow []string `yaml:"allow"`
+	Deny  []string `yaml:"deny"`
+}
+
+// CommandConstraints restricts shell/terminal tool commands.
+// Note: this is a best-effort guardrail, not a sandbox. Shell metacharacters
+// (|, ;, &&, $()) can be used to bypass allow_executables and deny_patterns.
+type CommandConstraints struct {
+	AllowExecutables []string `yaml:"allow_executables"`
+	DenyPatterns     []string `yaml:"deny_patterns"`
 }
 
 type RedactionConfig struct {
@@ -138,6 +163,9 @@ func ParsePolicy(b []byte) (Policy, error) {
 	}
 	if p.Tools == nil {
 		p.Tools = map[string]Rule{}
+	}
+	if p.Groups == nil {
+		p.Groups = map[string][]string{}
 	}
 	if p.Audit.Format == "" {
 		p.Audit.Format = "jsonl"
@@ -267,4 +295,40 @@ func ValidateStrict(b []byte) []ValidationError {
 	}
 
 	return errs
+}
+
+// PolicyTest is a single test case in a policy test fixture.
+type PolicyTest struct {
+	ID        string                 `yaml:"id"`
+	Tool      string                 `yaml:"tool"`
+	Arguments map[string]interface{} `yaml:"arguments"`
+	Expect    Decision               `yaml:"expect"`
+}
+
+// PolicyTestFixture is the top-level structure for a policy test YAML file.
+type PolicyTestFixture struct {
+	Tests []PolicyTest `yaml:"tests"`
+}
+
+// ParsePolicyTestFixture parses a YAML policy test fixture file.
+func ParsePolicyTestFixture(b []byte) (PolicyTestFixture, error) {
+	var f PolicyTestFixture
+	if err := yaml.Unmarshal(b, &f); err != nil {
+		return PolicyTestFixture{}, err
+	}
+	if len(f.Tests) == 0 {
+		return PolicyTestFixture{}, fmt.Errorf("policy test fixture contains no tests")
+	}
+	for i, tc := range f.Tests {
+		if tc.ID == "" {
+			return PolicyTestFixture{}, fmt.Errorf("test[%d]: id is required", i)
+		}
+		if tc.Tool == "" {
+			return PolicyTestFixture{}, fmt.Errorf("test %q: tool is required", tc.ID)
+		}
+		if err := validateDecision(tc.Expect); err != nil {
+			return PolicyTestFixture{}, fmt.Errorf("test %q: expect: %w", tc.ID, err)
+		}
+	}
+	return f, nil
 }

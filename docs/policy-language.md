@@ -1,4 +1,4 @@
-# AgentFence policy language (MVP)
+# AgentFence policy language
 
 ## File structure
 
@@ -6,8 +6,12 @@
 version: "0.1"
 defaults:
   decision: deny
+groups:
+  my-group:
+    - tool.one
+    - tool.*
 tools:
-  filesystem.read:
+  tool.one:
     decision: allow
 redaction:
   enabled: true
@@ -39,6 +43,45 @@ tools:
     decision: deny
 ```
 
+## Wildcard tool name matching
+
+Tool keys in the `tools` map support glob patterns. `filesystem.*` matches any
+tool name starting with `filesystem.`.
+
+```yaml
+tools:
+  filesystem.*:
+    decision: ask
+```
+
+Full glob syntax is supported: `*.delete_*` matches any tool containing `.delete_`.
+
+### Rule lookup precedence
+
+1. **Exact match** — `tools.filesystem.read` beats everything else.
+2. **Group match** — the tool matches a member pattern of a named group that has a `tools` entry.
+3. **Wildcard match** — the tool name matches a glob key in `tools` (alphabetical order when multiple patterns match).
+4. **Default** — `defaults.decision`.
+
+## Tool groups
+
+Named groups let you apply one rule to many tools:
+
+```yaml
+groups:
+  filesystem-tools:
+    - filesystem.read
+    - filesystem.write
+    - filesystem.*   # wildcards work inside group member lists too
+
+tools:
+  filesystem-tools:
+    decision: ask
+```
+
+Group names are just keys in the `tools` map — the group takes precedence over
+wildcard keys but not over exact tool-name keys.
+
 ## Path constraints
 
 Rules can define path allow/deny constraints:
@@ -60,6 +103,84 @@ Behavior:
 
 - Deny path matches always deny.
 - If allow list exists, path must match at least one allow pattern.
+- Absolute paths, UNC paths, and directory traversal (`../`) are always denied.
+
+## Argument value constraints
+
+Restrict any string-valued argument field with glob allow/deny lists:
+
+```yaml
+tools:
+  github.create_issue:
+    decision: ask
+    constraints:
+      args:
+        repo:
+          allow:
+            - "dgenio/*"
+            - "myorg/*"
+          deny:
+            - "dgenio/private-*"
+```
+
+Behavior:
+
+- Deny patterns take precedence over allow patterns.
+- If an argument named in a constraint is missing from the call, the call is denied.
+- Non-string values are converted to string (`fmt.Sprintf("%v", v)`) before matching.
+
+## URL constraints
+
+Restrict browser and HTTP tools to specific domains and schemes:
+
+```yaml
+tools:
+  browser.navigate:
+    decision: allow
+    constraints:
+      urls:
+        allow:
+          - "https://docs.github.com/**"
+          - "https://*.company.com/**"
+        deny:
+          - "http://**"
+```
+
+Security hard-bans (cannot be overridden by the allow list):
+
+- `file://` scheme is always denied.
+- Bare IP address hostnames (e.g. `https://192.168.1.1`) are always denied.
+- An invalid or missing `url` argument is denied.
+
+## Shell command constraints
+
+Restrict shell and terminal tools by executable name and command pattern:
+
+```yaml
+tools:
+  shell.exec:
+    decision: ask
+    constraints:
+      command:
+        allow_executables:
+          - "git"
+          - "go"
+          - "make"
+        deny_patterns:
+          - "rm -rf*"
+          - "curl * | bash"
+```
+
+Behavior:
+
+- `deny_patterns` are glob-matched against the full command string.
+- `allow_executables` checks only the first whitespace-separated token.
+- Deny takes precedence over allow.
+- A missing or empty `command` argument is denied.
+
+> **WARNING:** This is a best-effort guardrail only — not a sandbox. Shell
+> metacharacters (`|`, `;`, `&&`, `$()`) can bypass `allow_executables` and
+> `deny_patterns` checks. Do not rely on this as a security boundary.
 
 ## Redaction patterns
 
@@ -75,32 +196,87 @@ redaction:
 
 ## Validation
 
-Use `agentfence validate` to lint a policy file before using it:
+Use `agentfence validate` (or `agentfence policy validate`) to lint a policy file:
 
 ```bash
 agentfence validate --policy examples/policy.yaml
 # examples/policy.yaml: OK
 
-agentfence validate --policy bad-policy.yaml
+agentfence policy validate --policy bad-policy.yaml
 # bad-policy.yaml: defaults.decision: must be one of allow, deny, ask (got "maybe")
 ```
 
-Strict validation catches:
+Strict validation catches unknown fields, invalid decisions, bad regexes, and more.
 
-- **Unknown fields** — typos in field names (e.g. `decisoin` instead of `decision`) that would otherwise be silently ignored
-- **Invalid decision values** — any value other than `allow`, `deny`, or `ask`
-- **Invalid redaction regexes** — patterns that fail to compile
-- **Invalid audit format** — any format other than `jsonl`
-- **Missing `version` field** — required for future compatibility checks
+## Policy testing
 
-All errors are reported together (not just the first). Exit code is 0 on success, 1 on any validation error.
+Write declarative test fixtures to verify policy behavior:
 
-Use in CI to catch policy mistakes before deployment:
+```yaml
+# examples/policy-tests.yaml
+tests:
+  - id: allow-readme-read
+    tool: filesystem.read
+    arguments:
+      path: README.md
+    expect: allow
+  - id: deny-env-write
+    tool: filesystem.write
+    arguments:
+      path: .env
+    expect: deny
+```
+
+Run with:
 
 ```bash
-agentfence validate --policy agentfence.yaml || exit 1
+agentfence policy test --policy examples/policy.yaml --tests examples/policy-tests.yaml
+# PASS: allow-readme-read
+# PASS: deny-env-write
+
+agentfence policy test --policy examples/policy.yaml --tests examples/policy-tests.yaml --verbose
+# PASS: allow-readme-read (tool filesystem.read matched explicit policy rule)
+```
+
+- Exit code 0 when all tests pass.
+- Exit code 1 when any test fails; all tests are always run.
+
+## CI usage
+
+Use `--fail-on` to make `check` exit 1 when gated decisions are encountered:
+
+```bash
+# Fail the pipeline if any tool call is denied or requires approval.
+agentfence check --policy agentfence.yaml --call tool-calls.jsonl --fail-on deny,ask
+
+# Fail only on outright denials.
+agentfence check --policy agentfence.yaml --call tool-calls.jsonl --fail-on deny
+```
+
+## Explain command
+
+Debug why a tool call received its decision:
+
+```bash
+agentfence explain --policy examples/policy.yaml \
+  --tool filesystem.write \
+  --args '{"path":".env"}'
+
+# tool:     filesystem.write
+# decision: deny
+# reason:   path ".env" denied by pattern ".env"
+# trace:
+#   - matched rule "filesystem.write" (decision: ask)
+#   - checking path constraints for ".env" (normalized: ".env")
+#   - path ".env" denied by pattern ".env"
+
+# Machine-readable output:
+agentfence explain --policy examples/policy.yaml --tool filesystem.write \
+  --args '{"path":".env"}' --output json
 ```
 
 ## Complete example
 
-See `/examples/policy.yaml` for a full starter policy.
+See [examples/policy.yaml](../examples/policy.yaml) for a full starter policy and
+[examples/policy-tests.yaml](../examples/policy-tests.yaml) for a matching test fixture.
+

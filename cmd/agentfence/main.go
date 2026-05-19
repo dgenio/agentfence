@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"sort"
+	"strings"
 
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/demo"
@@ -50,8 +52,12 @@ func main() {
 		err = runCheck(os.Args[2:])
 	case "demo":
 		err = demo.Run(os.Stdout)
+	case "explain":
+		err = runExplain(os.Args[2:])
 	case "init":
 		err = runInit()
+	case "policy":
+		err = runPolicySubcmd(os.Args[2:])
 	case "validate":
 		err = runValidate(os.Args[2:])
 	case "version":
@@ -77,6 +83,7 @@ func runCheck(args []string) error {
 	callPath := fs.String("call", "", "Path to JSONL tool-call input")
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	outputMode := fs.String("output", "text", "Output mode: text, json, jsonl")
+	failOn := fs.String("fail-on", "", "Comma-separated decisions to fail on: deny, ask")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -88,6 +95,22 @@ func runCheck(args []string) error {
 	case "text", "json", "jsonl":
 	default:
 		return fmt.Errorf("unknown --output mode %q; valid values: text, json, jsonl", *outputMode)
+	}
+
+	// Parse and validate --fail-on before opening files.
+	failOnSet := map[policy.Decision]bool{}
+	if *failOn != "" {
+		for _, raw := range strings.Split(*failOn, ",") {
+			d := policy.Decision(strings.TrimSpace(raw))
+			switch d {
+			case policy.DecisionDeny, policy.DecisionAsk:
+				failOnSet[d] = true
+			case policy.DecisionAllow:
+				return fmt.Errorf("--fail-on allow is not a valid gate value; use deny or ask")
+			default:
+				return fmt.Errorf("--fail-on: unknown decision %q; valid values: deny, ask", raw)
+			}
+		}
 	}
 
 	p, err := policy.LoadFile(*policyPath)
@@ -202,6 +225,23 @@ func runCheck(args []string) error {
 		return fmt.Errorf("all %d line(s) failed to parse; no calls were evaluated", lineNum)
 	}
 
+	// --fail-on: exit 1 if any call matched a gated decision.
+	if len(failOnSet) > 0 {
+		matched := 0
+		for d := range failOnSet {
+			matched += counts[d]
+		}
+		if matched > 0 {
+			gated := make([]string, 0, len(failOnSet))
+			for d := range failOnSet {
+				gated = append(gated, string(d))
+			}
+			sort.Strings(gated)
+			fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+			return fmt.Errorf("%d call(s) matched --fail-on criteria", matched)
+		}
+	}
+
 	return nil
 }
 
@@ -250,9 +290,155 @@ func runInit() error {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  agentfence check --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl]")
+	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask]")
+	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
+	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
+	fmt.Println("  agentfence policy  validate --policy <file>")
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence version")
 	fmt.Println("  agentfence demo")
 	fmt.Println("  agentfence init")
+}
+
+// runExplain evaluates a single tool call and prints a human-readable decision trace.
+func runExplain(args []string) error {
+	fs := flag.NewFlagSet("explain", flag.ContinueOnError)
+	policyPath := fs.String("policy", "", "Path to policy YAML")
+	toolName := fs.String("tool", "", "Tool name to explain (e.g. filesystem.write)")
+	argsStr := fs.String("args", "{}", "JSON object of tool call arguments")
+	outputMode := fs.String("output", "text", "Output mode: text, json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *policyPath == "" {
+		return errors.New("--policy is required")
+	}
+	if *toolName == "" {
+		return errors.New("--tool is required")
+	}
+
+	p, err := policy.LoadFile(*policyPath)
+	if err != nil {
+		return err
+	}
+	eng, err := engine.New(p)
+	if err != nil {
+		return err
+	}
+
+	var arguments map[string]interface{}
+	if err := json.Unmarshal([]byte(*argsStr), &arguments); err != nil {
+		return fmt.Errorf("--args: invalid JSON: %w", err)
+	}
+
+	call := policy.ToolCall{
+		ID:        "explain",
+		Tool:      *toolName,
+		Arguments: arguments,
+	}
+
+	result, trace := eng.TraceEvaluate(call)
+
+	switch *outputMode {
+	case "json":
+		out := struct {
+			Decision string   `json:"decision"`
+			Reason   string   `json:"reason"`
+			Trace    []string `json:"trace"`
+		}{
+			Decision: string(result.Decision),
+			Reason:   result.Reason,
+			Trace:    trace,
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Printf("%s\n", b)
+	default:
+		fmt.Printf("tool:     %s\n", *toolName)
+		fmt.Printf("decision: %s\n", result.Decision)
+		fmt.Printf("reason:   %s\n", result.Reason)
+		if len(trace) > 0 {
+			fmt.Printf("trace:\n")
+			for _, step := range trace {
+				fmt.Printf("  - %s\n", step)
+			}
+		}
+	}
+	return nil
+}
+
+// runPolicySubcmd dispatches policy sub-commands: test, validate.
+func runPolicySubcmd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("policy requires a subcommand: test, validate")
+	}
+	switch args[0] {
+	case "test":
+		return runPolicyTest(args[1:])
+	case "validate":
+		return runValidate(args[1:])
+	default:
+		return fmt.Errorf("unknown policy subcommand %q; valid: test, validate", args[0])
+	}
+}
+
+// runPolicyTest evaluates a YAML fixture file against a policy and reports pass/fail.
+func runPolicyTest(args []string) error {
+	fs := flag.NewFlagSet("policy test", flag.ContinueOnError)
+	policyPath := fs.String("policy", "", "Path to policy YAML")
+	testsPath := fs.String("tests", "", "Path to test fixture YAML")
+	verbose := fs.Bool("verbose", false, "Print decision reason alongside each result")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *policyPath == "" || *testsPath == "" {
+		return errors.New("--policy and --tests are required")
+	}
+
+	p, err := policy.LoadFile(*policyPath)
+	if err != nil {
+		return err
+	}
+	eng, err := engine.New(p)
+	if err != nil {
+		return err
+	}
+
+	b, err := os.ReadFile(*testsPath)
+	if err != nil {
+		return err
+	}
+	fixture, err := policy.ParsePolicyTestFixture(b)
+	if err != nil {
+		return err
+	}
+
+	failed := 0
+	for _, tc := range fixture.Tests {
+		arguments := tc.Arguments
+		if arguments == nil {
+			arguments = map[string]interface{}{}
+		}
+		call := policy.ToolCall{
+			ID:        tc.ID,
+			Tool:      tc.Tool,
+			Arguments: arguments,
+		}
+		result, _ := eng.Evaluate(call)
+
+		if result.Decision == tc.Expect {
+			if *verbose {
+				fmt.Printf("PASS: %s (%s)\n", tc.ID, result.Reason)
+			} else {
+				fmt.Printf("PASS: %s\n", tc.ID)
+			}
+		} else {
+			fmt.Printf("FAIL: %s (expected %s, got %s)\n", tc.ID, tc.Expect, result.Decision)
+			failed++
+		}
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("%d test(s) failed", failed)
+	}
+	return nil
 }
