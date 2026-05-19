@@ -6,10 +6,12 @@ AgentFence currently works as a local policy evaluator and audit logger:
 
 1. Load YAML policy.
 2. Read JSONL tool-call records.
-3. Evaluate each call against policy rules.
+3. Evaluate each call against policy rules. Malformed lines (invalid JSON or missing required fields) emit a synthetic `deny` audit event and processing continues — no subsequent calls are silently skipped.
 4. Produce a decision (`allow`, `deny`, `ask`) and reason.
 5. Redact sensitive-looking values in arguments.
 6. Emit audit events as JSONL.
+
+Fail-safe behavior: a single malformed line never aborts evaluation of remaining calls. An all-malformed input (every line fails to parse) returns a non-zero exit code.
 
 In MVP mode, AgentFence does **not** execute or proxy tool calls.
 

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"time"
 
@@ -48,4 +49,15 @@ func (w *Writer) Write(event Event) error {
 		return err
 	}
 	return nil
+}
+
+// NewErrorEvent creates a synthetic deny audit event for a line that failed to parse.
+func NewErrorEvent(line int, reason string) Event {
+	return Event{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		CallID:    fmt.Sprintf("line-%d", line),
+		Tool:      "",
+		Decision:  policy.DecisionDeny,
+		Reason:    "parse error: " + reason,
+	}
 }

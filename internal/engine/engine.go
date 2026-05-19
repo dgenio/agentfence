@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -60,9 +61,25 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall) (bool, stri
 		return true, "missing required path argument for constrained tool"
 	}
 
-	// Clean and validate path to prevent traversal and absolute-path attacks.
-	cleaned := path.Clean(strings.ReplaceAll(pathArg, "\\", "/"))
-	if path.IsAbs(cleaned) {
+	// Normalize backslashes to forward slashes for consistent handling.
+	normalized := strings.ReplaceAll(pathArg, "\\", "/")
+
+	// Detect UNC paths (\\server\share → //server/share after normalization).
+	if isUNCPath(normalized) {
+		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
+	}
+
+	// Detect Windows drive-letter absolute paths (C:/...).
+	if isWindowsAbsPath(normalized) {
+		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
+	}
+
+	// Clean with filepath then convert back to forward slashes for glob matching.
+	cleaned := filepath.ToSlash(filepath.Clean(normalized))
+
+	// filepath.IsAbs covers Windows drive-letter and UNC paths; the additional
+	// HasPrefix check covers Unix-style absolute paths on Windows hosts.
+	if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "/") {
 		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
 	}
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
@@ -84,6 +101,18 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall) (bool, stri
 		return true, fmt.Sprintf("path %q not in allowed paths", pathArg)
 	}
 	return false, ""
+}
+
+// isUNCPath reports whether p (backslashes already converted to forward slashes)
+// is a UNC path such as //server/share.
+func isUNCPath(p string) bool {
+	return strings.HasPrefix(p, "//")
+}
+
+// isWindowsAbsPath reports whether p (backslashes already converted to forward
+// slashes) is a Windows drive-letter absolute path such as C:/ or C:.
+func isWindowsAbsPath(p string) bool {
+	return len(p) >= 2 && p[1] == ':' && (len(p) == 2 || p[2] == '/')
 }
 
 func matchesGlob(pattern, value string) bool {

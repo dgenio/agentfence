@@ -1,9 +1,11 @@
 package policy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -185,4 +187,84 @@ func validateAuditFormat(f string) error {
 	default:
 		return fmt.Errorf("unsupported format %q; supported: jsonl", f)
 	}
+}
+
+// ValidationError describes a single policy validation problem.
+type ValidationError struct {
+	Field   string
+	Value   string
+	Message string
+}
+
+func (e ValidationError) Error() string {
+	if e.Field == "" {
+		return e.Message
+	}
+	if e.Value == "" {
+		return fmt.Sprintf("%s: %s", e.Field, e.Message)
+	}
+	return fmt.Sprintf("%s: %s (got %q)", e.Field, e.Message, e.Value)
+}
+
+// ValidateStrict parses b with unknown-field detection enabled and runs semantic
+// validation. All errors are collected and returned; the caller should check
+// len(errs) > 0. Does not modify the behaviour of ParsePolicy or LoadFile.
+func ValidateStrict(b []byte) []ValidationError {
+	var errs []ValidationError
+
+	// Structural pass: use KnownFields(true) to catch typos in field names.
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	var p Policy
+	if err := dec.Decode(&p); err != nil {
+		errs = append(errs, ValidationError{Field: "", Message: err.Error()})
+		return errs // semantic checks are not meaningful if the schema is wrong
+	}
+
+	// Semantic pass: collect all issues rather than failing on the first.
+	if p.Version == "" {
+		errs = append(errs, ValidationError{Field: "version", Message: "version field is required"})
+	}
+
+	if p.Defaults.Decision != "" {
+		if err := validateDecision(p.Defaults.Decision); err != nil {
+			errs = append(errs, ValidationError{
+				Field:   "defaults.decision",
+				Value:   string(p.Defaults.Decision),
+				Message: "must be one of allow, deny, ask",
+			})
+		}
+	}
+
+	for name, rule := range p.Tools {
+		if err := validateDecision(rule.Decision); err != nil {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("tools.%s.decision", name),
+				Value:   string(rule.Decision),
+				Message: "must be one of allow, deny, ask",
+			})
+		}
+	}
+
+	for _, pat := range p.Redaction.Patterns {
+		if _, err := regexp.Compile(pat.Regex); err != nil {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("redaction.patterns.%s.regex", pat.Name),
+				Value:   pat.Regex,
+				Message: fmt.Sprintf("invalid regex: %s", err),
+			})
+		}
+	}
+
+	if p.Audit.Format != "" {
+		if err := validateAuditFormat(p.Audit.Format); err != nil {
+			errs = append(errs, ValidationError{
+				Field:   "audit.format",
+				Value:   p.Audit.Format,
+				Message: "unsupported format; supported: jsonl",
+			})
+		}
+	}
+
+	return errs
 }

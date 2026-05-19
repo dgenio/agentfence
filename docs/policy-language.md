@@ -73,6 +73,34 @@ redaction:
       regex: "gh[pousr]_[A-Za-z0-9_]{20,}"
 ```
 
+## Validation
+
+Use `agentfence validate` to lint a policy file before using it:
+
+```bash
+agentfence validate --policy examples/policy.yaml
+# examples/policy.yaml: OK
+
+agentfence validate --policy bad-policy.yaml
+# bad-policy.yaml: defaults.decision: must be one of allow, deny, ask (got "maybe")
+```
+
+Strict validation catches:
+
+- **Unknown fields** — typos in field names (e.g. `decisoin` instead of `decision`) that would otherwise be silently ignored
+- **Invalid decision values** — any value other than `allow`, `deny`, or `ask`
+- **Invalid redaction regexes** — patterns that fail to compile
+- **Invalid audit format** — any format other than `jsonl`
+- **Missing `version` field** — required for future compatibility checks
+
+All errors are reported together (not just the first). Exit code is 0 on success, 1 on any validation error.
+
+Use in CI to catch policy mistakes before deployment:
+
+```bash
+agentfence validate --policy agentfence.yaml || exit 1
+```
+
 ## Complete example
 
 See `/examples/policy.yaml` for a full starter policy.
