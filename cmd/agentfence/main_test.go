@@ -315,6 +315,39 @@ this is not json
 	}
 }
 
+// TestCheckHandlesEmptyArguments verifies that a tool call with an empty
+// arguments map does not panic and is evaluated (path-constrained tool denies
+// on missing path; non-constrained tool uses its rule decision).
+func TestCheckHandlesEmptyArguments(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	if err := os.WriteFile(policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allow:
+          - "./"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Call with empty arguments — the path constraint requires a path argument.
+	if err := os.WriteFile(callFile, []byte(`{"id":"call_1","tool":"filesystem.read","arguments":{}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
+	if err != nil {
+		t.Fatalf("runCheck() unexpected error for empty-arguments call: %v", err)
+	}
+}
+
 // TestCheckAllMalformedReturnsError verifies that an all-malformed input is
 // treated as an error (no calls were evaluated).
 func TestCheckAllMalformedReturnsError(t *testing.T) {
