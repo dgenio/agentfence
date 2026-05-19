@@ -137,7 +137,7 @@ func matchesGlob(pattern, value string) bool {
 }
 
 func normalizePath(p string) string {
-	n := strings.TrimPrefix(filepath.ToSlash(p), "./")
+	n := strings.TrimPrefix(strings.ReplaceAll(p, "\\", "/"), "./")
 	if n == "" {
 		return "."
 	}
