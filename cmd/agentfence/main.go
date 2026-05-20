@@ -48,6 +48,8 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "audit":
+		err = runAuditSubcmd(os.Args[2:])
 	case "check":
 		err = runCheck(os.Args[2:])
 	case "demo":
@@ -84,6 +86,7 @@ func runCheck(args []string) error {
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	outputMode := fs.String("output", "text", "Output mode: text, json, jsonl")
 	failOn := fs.String("fail-on", "", "Comma-separated decisions to fail on: deny, ask")
+	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -138,7 +141,11 @@ func runCheck(args []string) error {
 		auditOut = os.Stdout
 	}
 
-	aw := audit.NewWriter(auditOut)
+	if *tamperEvident && *auditLogPath == "" {
+		fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log produces a chain interleaved with other output; verification will not be reliable.")
+	}
+
+	aw := audit.NewWriterOptions(auditOut, audit.Options{TamperEvident: *tamperEvident})
 
 	callsFile, err := os.Open(*callPath)
 	if err != nil {
@@ -296,11 +303,12 @@ func runInit() error {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask]")
+	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident]")
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
 	fmt.Println("  agentfence validate --policy <file>")
+	fmt.Println("  agentfence audit   verify   --log <file>")
 	fmt.Println("  agentfence version")
 	fmt.Println("  agentfence demo")
 	fmt.Println("  agentfence init")
@@ -378,6 +386,54 @@ func runExplain(args []string) error {
 		return fmt.Errorf("--output: unknown mode %q; valid values: text, json", *outputMode)
 	}
 	return nil
+}
+
+// runAuditSubcmd dispatches audit sub-commands: verify.
+func runAuditSubcmd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("audit requires a subcommand: verify")
+	}
+	switch args[0] {
+	case "verify":
+		return runAuditVerify(args[1:])
+	default:
+		return fmt.Errorf("unknown audit subcommand %q; valid: verify", args[0])
+	}
+}
+
+// runAuditVerify checks the tamper-evident hash chain of a JSONL audit log.
+func runAuditVerify(args []string) error {
+	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
+	logPath := fs.String("log", "", "Path to audit JSONL log to verify")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *logPath == "" {
+		return errors.New("--log is required")
+	}
+
+	f, err := os.Open(*logPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	n, err := audit.VerifyChain(f)
+	switch {
+	case err == nil:
+		fmt.Printf("OK: %d event(s) verified\n", n)
+		return nil
+	case errors.Is(err, audit.ErrNoChain):
+		fmt.Fprintf(os.Stderr, "AgentFence: warning: %s; cannot verify integrity\n", err)
+		fmt.Printf("PARSED: %d event(s); chain absent\n", n)
+		return nil
+	default:
+		var ve *audit.VerifyError
+		if errors.As(err, &ve) {
+			return fmt.Errorf("audit verify: %s", ve.Error())
+		}
+		return fmt.Errorf("audit verify: %w", err)
+	}
 }
 
 // runPolicySubcmd dispatches policy sub-commands: test, validate.

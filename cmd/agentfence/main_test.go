@@ -744,3 +744,203 @@ func TestPolicyTestCommandRequiresFlags(t *testing.T) {
 		t.Fatal("expected error when --policy and --tests are missing")
 	}
 }
+
+// ── #33 / #34: --tamper-evident + audit verify ────────────────────────────────
+
+// writeTamperEvidentLog runs `check --tamper-evident --audit-log <file>` and
+// returns the audit file path. Fails the test if the command errors.
+func writeTamperEvidentLog(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(
+		`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"+
+			`{"id":"c2","tool":"filesystem.read","arguments":{"path":"go.mod"}}`+"\n"+
+			`{"id":"c3","tool":"filesystem.read","arguments":{"path":"main.go"}}`+"\n",
+	))
+
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+		"--tamper-evident",
+	}); err != nil {
+		t.Fatalf("runCheck --tamper-evident error: %v", err)
+	}
+	return auditFile
+}
+
+func TestAuditVerifyHappyPath(t *testing.T) {
+	auditFile := writeTamperEvidentLog(t)
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runAuditVerify([]string{"--log", auditFile})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runAuditVerify error: %v\nstdout: %s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "OK: 3 event(s) verified") {
+		t.Errorf("expected 'OK: 3 event(s) verified', got: %s", buf.String())
+	}
+}
+
+func TestAuditVerifyDetectsTampering(t *testing.T) {
+	auditFile := writeTamperEvidentLog(t)
+
+	// Tamper with the audit file: modify event 2's reason in place.
+	contents, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	tampered := bytes.Replace(contents, []byte(`"reason":"`), []byte(`"reason":"TAMPER:`), 1)
+	if bytes.Equal(tampered, contents) {
+		t.Fatal("test setup failed: nothing replaced")
+	}
+	if err := os.WriteFile(auditFile, tampered, 0o644); err != nil {
+		t.Fatalf("rewrite audit: %v", err)
+	}
+
+	err = runAuditVerify([]string{"--log", auditFile})
+	if err == nil {
+		t.Fatal("expected runAuditVerify to detect tampering, got nil error")
+	}
+	if !strings.Contains(err.Error(), "event 1") {
+		t.Errorf("expected error to reference event 1 (first event was tampered), got: %v", err)
+	}
+}
+
+func TestAuditVerifyNonChainedLog(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"))
+
+	// Plain check without --tamper-evident.
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+	oldStderr := os.Stderr
+	rerr, werr, _ := os.Pipe()
+	os.Stderr = werr
+
+	err := runAuditVerify([]string{"--log", auditFile})
+
+	w.Close()
+	werr.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+	var bout, berr bytes.Buffer
+	io.Copy(&bout, r)
+	io.Copy(&berr, rerr)
+
+	if err != nil {
+		t.Fatalf("runAuditVerify on non-chained log should not error, got: %v", err)
+	}
+	if !strings.Contains(berr.String(), "chained") && !strings.Contains(berr.String(), "tamper-evident") {
+		t.Errorf("expected warning about non-chained log on stderr, got: %s", berr.String())
+	}
+	if !strings.Contains(bout.String(), "PARSED:") {
+		t.Errorf("expected 'PARSED:' summary on stdout, got: %s", bout.String())
+	}
+}
+
+func TestAuditVerifyRequiresLogFlag(t *testing.T) {
+	if err := runAuditVerify([]string{}); err == nil {
+		t.Fatal("expected error when --log is missing")
+	}
+}
+
+func TestAuditSubcmdUnknown(t *testing.T) {
+	if err := runAuditSubcmd([]string{"bogus"}); err == nil {
+		t.Fatal("expected error for unknown audit subcommand")
+	}
+}
+
+func TestAuditSubcmdRequiresSub(t *testing.T) {
+	if err := runAuditSubcmd([]string{}); err == nil {
+		t.Fatal("expected error when no audit subcommand given")
+	}
+}
+
+// TestTamperEvidentWithoutAuditLogWarns verifies the warning path when
+// --tamper-evident is used with no --audit-log destination.
+func TestTamperEvidentWithoutAuditLogWarns(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"))
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	// Quiet stdout for this test.
+	oldStdout := os.Stdout
+	devnull, _ := os.Open(os.DevNull)
+	os.Stdout = devnull
+
+	err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--output", "json",
+		"--tamper-evident",
+	})
+
+	w.Close()
+	os.Stderr = oldStderr
+	os.Stdout = oldStdout
+	devnull.Close()
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+	if !strings.Contains(buf.String(), "warning") {
+		t.Errorf("expected warning on stderr; got: %s", buf.String())
+	}
+}
