@@ -21,12 +21,12 @@ import (
 // pattern in redactionPatterns below, so they must never appear raw in audit
 // output once the patterns are applied.
 var allFakeSecrets = []string{
-	"sk-demo_secret_NEVERLEAK_API_KEY_VALUE",            // openai_api_key
-	"ghp_fake_token_for_tests_NEVERLEAK",                // github_token
-	"AKIA_FAKE_AWS_KEY_NEVERLEAK_TEST",                  // aws_access_key
+	"sk-demo_secret_NEVERLEAK_API_KEY_VALUE",                 // openai_api_key
+	"ghp_fake_token_for_tests_NEVERLEAK",                     // github_token
+	"AKIA_FAKE_AWS_KEY_NEVERLEAK_TEST",                       // aws_access_key
 	"postgres://user:fakePW_NEVERLEAK_TEST@db.example.com/x", // database_url
-	"Bearer fake_jwt_NEVERLEAK_for_tests",               // bearer_token
-	"password=hunter2_NEVERLEAK_SECRET_VAL",             // generic_secret_assignment
+	"Bearer fake_jwt_NEVERLEAK_for_tests",                    // bearer_token
+	"password=hunter2_NEVERLEAK_SECRET_VAL",                  // generic_secret_assignment
 }
 
 // redactionPatterns mirrors the patterns used in examples/policy.yaml plus a

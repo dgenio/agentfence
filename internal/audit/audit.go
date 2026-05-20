@@ -110,14 +110,19 @@ func NewEvent(call policy.ToolCall, result policy.EvaluationResult, redacted map
 //
 // The caller may leave SchemaVersion/SessionID/Sequence/PrevHash/Hash zero;
 // Write populates them deterministically.
+//
+// The sequence counter and chain state advance only after the event has been
+// successfully serialised and written. If hashing, marshalling, or the
+// underlying writer fail, neither w.seq nor w.prevHash move, so retries do
+// not produce gaps or break the chain.
 func (w *Writer) Write(event Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	w.seq++
+	nextSeq := w.seq + 1
 	event.SchemaVersion = CurrentSchemaVersion
 	event.SessionID = w.sessionID
-	event.Sequence = w.seq
+	event.Sequence = nextSeq
 
 	if w.tamperEvident {
 		event.PrevHash = w.prevHash
@@ -137,6 +142,8 @@ func (w *Writer) Write(event Event) error {
 		return err
 	}
 
+	// Commit state only after a successful write.
+	w.seq = nextSeq
 	if w.tamperEvident {
 		w.prevHash = event.Hash
 	}

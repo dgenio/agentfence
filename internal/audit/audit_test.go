@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -237,5 +238,57 @@ func TestHashEventRejectsNonEmptyHashField(t *testing.T) {
 	e := Event{CallID: "c", Hash: "already-set"}
 	if _, err := hashEvent(e); err == nil {
 		t.Fatal("expected hashEvent to reject pre-set Hash field")
+	}
+}
+
+// failingWriter returns an error after `okWrites` successful Write calls. This
+// simulates a transient I/O failure (disk full, broken pipe, etc.) to verify
+// the audit Writer does not advance its sequence counter or chain state when
+// the underlying writer fails.
+type failingWriter struct {
+	okWrites int
+	calls    int
+}
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	f.calls++
+	if f.calls > f.okWrites {
+		return 0, io.ErrClosedPipe
+	}
+	return len(p), nil
+}
+
+func TestWriteFailureDoesNotAdvanceSequence(t *testing.T) {
+	fw := &failingWriter{okWrites: 1}
+	w := NewWriter(fw)
+	if err := w.Write(Event{CallID: "c1", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+		t.Fatalf("first Write unexpected error: %v", err)
+	}
+	if w.seq != 1 {
+		t.Fatalf("seq after first Write = %d, want 1", w.seq)
+	}
+	if err := w.Write(Event{CallID: "c2", Tool: "t", Decision: policy.DecisionAllow}); err == nil {
+		t.Fatal("expected error from failing writer on second Write")
+	}
+	if w.seq != 1 {
+		t.Errorf("seq advanced to %d after failed Write, want 1", w.seq)
+	}
+}
+
+func TestWriteFailureDoesNotAdvanceChainState(t *testing.T) {
+	fw := &failingWriter{okWrites: 1}
+	w := NewWriterOptions(fw, Options{TamperEvident: true, SessionID: "test"})
+	if err := w.Write(Event{CallID: "c1", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+		t.Fatalf("first Write unexpected error: %v", err)
+	}
+	firstHash := w.prevHash
+	if firstHash == "" {
+		t.Fatal("first Write did not record prevHash")
+	}
+	if err := w.Write(Event{CallID: "c2", Tool: "t", Decision: policy.DecisionAllow}); err == nil {
+		t.Fatal("expected error from failing writer on second Write")
+	}
+	if w.prevHash != firstHash {
+		t.Errorf("prevHash changed after failed Write: was %q, now %q", firstHash, w.prevHash)
 	}
 }

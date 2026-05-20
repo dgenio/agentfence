@@ -2,22 +2,25 @@ package audit
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 )
 
-// ErrNoChain is returned by VerifyChain when no event in the log carried a
-// hash chain field. The audit log is parseable, but it was not written in
-// tamper-evident mode and integrity cannot be verified.
+// ErrNoChain is returned by VerifyChain when at least one event is present but
+// no event carried a hash chain field. The audit log is parseable, but it was
+// not written in tamper-evident mode and integrity cannot be verified.
+//
+// An empty input (no events at all) returns (0, nil), not ErrNoChain.
 var ErrNoChain = errors.New("audit: log was not written with tamper-evident chaining")
 
 // VerifyError describes a chain-integrity failure at a specific event.
 //
-// EventNumber is 1-indexed and refers to event position in the input, not the
-// Sequence field on the event itself. The two should match when the writer
-// has not been tampered with.
+// EventNumber is the 1-based position of the offending event in the input,
+// counting only non-blank lines. Blank/whitespace-only lines are skipped and
+// do not advance the counter.
 type VerifyError struct {
 	EventNumber int
 	Reason      string
@@ -30,17 +33,19 @@ func (e *VerifyError) Error() string {
 // VerifyChain reads JSONL audit events from r and verifies the tamper-evident
 // hash chain.
 //
-// Returns the number of events read on success, regardless of whether they were
-// chained. If the log was not written with tamper-evident chaining (no event
-// carried prev_hash or hash fields), it returns ErrNoChain alongside the event
-// count. If chain verification fails, it returns a *VerifyError pinpointing the
-// offending event. Other errors (I/O, malformed JSON) are wrapped and returned.
+// Returns the number of non-blank events read on success, regardless of
+// whether they were chained:
+//
+//   - Empty input (no events): returns (0, nil).
+//   - At least one event but none chained: returns (n, ErrNoChain).
+//   - Modification/deletion/reordering: returns (n, *VerifyError) where
+//     EventNumber pinpoints the offending event.
+//   - I/O or malformed JSON: returns a wrapped error or *VerifyError.
+//
+// VerifyChain uses bufio.Reader.ReadBytes so individual events may be
+// arbitrarily large (bounded only by available memory).
 func VerifyChain(r io.Reader) (int, error) {
-	scanner := bufio.NewScanner(r)
-	// Audit events with large argument payloads can exceed bufio's default 64KB
-	// line limit; bump it to 1 MiB which is still bounded.
-	const maxLineBytes = 1 << 20
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	br := bufio.NewReader(r)
 
 	var (
 		prevHash    string
@@ -48,12 +53,24 @@ func VerifyChain(r io.Reader) (int, error) {
 		anyChained  bool
 	)
 
-	for scanner.Scan() {
-		eventNumber++
-		line := scanner.Bytes()
-		if len(line) == 0 {
+	for {
+		line, readErr := br.ReadBytes('\n')
+		// ReadBytes returns the data read so far together with io.EOF if the
+		// input did not end with a newline. Process the partial line first,
+		// then exit the loop.
+
+		line = bytes.TrimRight(line, "\r\n")
+		if len(bytes.TrimSpace(line)) == 0 {
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					break
+				}
+				return eventNumber, fmt.Errorf("audit: read input: %w", readErr)
+			}
 			continue
 		}
+
+		eventNumber++
 
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
@@ -74,6 +91,12 @@ func VerifyChain(r io.Reader) (int, error) {
 			}
 		} else {
 			// Not chained at all yet; just count and move on.
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					break
+				}
+				return eventNumber, fmt.Errorf("audit: read input: %w", readErr)
+			}
 			continue
 		}
 
@@ -99,14 +122,22 @@ func VerifyChain(r io.Reader) (int, error) {
 		}
 
 		prevHash = claimed
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return eventNumber, fmt.Errorf("audit: read input: %w", readErr)
+		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return eventNumber, fmt.Errorf("audit: read input: %w", err)
-	}
-
-	if !anyChained {
+	switch {
+	case eventNumber == 0:
+		// Empty input: nothing to verify, nothing to complain about.
+		return 0, nil
+	case !anyChained:
 		return eventNumber, ErrNoChain
+	default:
+		return eventNumber, nil
 	}
-	return eventNumber, nil
 }

@@ -42,12 +42,25 @@ func TestVerifyChainValid(t *testing.T) {
 }
 
 func TestVerifyChainEmpty(t *testing.T) {
+	// Empty input is not a chain-absent case; nothing to verify and nothing
+	// to complain about.
 	n, err := VerifyChain(strings.NewReader(""))
+	if err != nil {
+		t.Errorf("VerifyChain(\"\") err = %v, want nil", err)
+	}
 	if n != 0 {
 		t.Errorf("verified count = %d, want 0", n)
 	}
-	if !errors.Is(err, ErrNoChain) {
-		t.Errorf("err = %v, want ErrNoChain", err)
+}
+
+func TestVerifyChainBlankOnlyInput(t *testing.T) {
+	// A file containing only blank lines is equivalent to empty input.
+	n, err := VerifyChain(strings.NewReader("\n\n   \n\n"))
+	if err != nil {
+		t.Errorf("VerifyChain(blanks) err = %v, want nil", err)
+	}
+	if n != 0 {
+		t.Errorf("verified count = %d, want 0", n)
 	}
 }
 
@@ -143,16 +156,56 @@ func TestVerifyChainDetectsMalformedJSON(t *testing.T) {
 func TestVerifyChainSkipsBlankLines(t *testing.T) {
 	log, _ := buildChainedLog(t, 3)
 	withBlanks := bytes.NewBuffer(nil)
-	withBlanks.WriteString("\n")
+	withBlanks.WriteString("\n\n")
 	withBlanks.Write(log)
-	withBlanks.WriteString("\n")
+	withBlanks.WriteString("\n  \n")
 	n, err := VerifyChain(withBlanks)
 	if err != nil {
 		t.Fatalf("VerifyChain() unexpected error = %v", err)
 	}
-	// EventNumber count includes blank lines because we count input lines, but
-	// blanks should not break verification. We just assert no error and n >= 3.
-	if n < 3 {
-		t.Errorf("verified count = %d, want >= 3", n)
+	// Blank/whitespace-only lines must not advance the event counter.
+	if n != 3 {
+		t.Errorf("verified count = %d, want 3 (blank lines should not count)", n)
+	}
+}
+
+func TestVerifyChainHandlesLargeEvents(t *testing.T) {
+	// Audit events with large argument payloads can easily exceed bufio.Scanner's
+	// default token limit (#48 review feedback). Build a single event whose
+	// argument payload is ~2 MiB and confirm verification still completes.
+	buf := &bytes.Buffer{}
+	w := NewWriterOptions(buf, Options{TamperEvident: true, SessionID: "large"})
+	big := strings.Repeat("x", 2*1024*1024)
+	if err := w.Write(Event{
+		Timestamp: "2026-01-01T00:00:00Z",
+		CallID:    "c1",
+		Tool:      "filesystem.write",
+		Decision:  policy.DecisionAllow,
+		Reason:    "allowed",
+		Arguments: map[string]interface{}{"blob": big},
+	}); err != nil {
+		t.Fatalf("Write large event: %v", err)
+	}
+	if buf.Len() < 2*1024*1024 {
+		t.Fatalf("setup: serialized event smaller than expected (%d)", buf.Len())
+	}
+	n, err := VerifyChain(buf)
+	if err != nil {
+		t.Fatalf("VerifyChain on large event: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("verified count = %d, want 1", n)
+	}
+}
+
+func TestVerifyChainAcceptsLineWithoutTrailingNewline(t *testing.T) {
+	log, _ := buildChainedLog(t, 2)
+	noTrailing := bytes.TrimRight(log, "\n")
+	n, err := VerifyChain(bytes.NewReader(noTrailing))
+	if err != nil {
+		t.Fatalf("VerifyChain without trailing newline: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("verified count = %d, want 2", n)
 	}
 }
