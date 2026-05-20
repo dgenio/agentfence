@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,7 +12,9 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/dgenio/agentfence/internal/approval"
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/demo"
 	"github.com/dgenio/agentfence/internal/engine"
@@ -87,6 +90,9 @@ func runCheck(args []string) error {
 	outputMode := fs.String("output", "text", "Output mode: text, json, jsonl")
 	failOn := fs.String("fail-on", "", "Comma-separated decisions to fail on: deny, ask")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
+	dryRun := fs.Bool("dry-run", false, "Evaluate and audit without enforcing: ask decisions are not prompted, and --fail-on does not change the exit code")
+	noInteractive := fs.Bool("no-interactive", false, "Do not prompt the operator on ask decisions; auto-deny instead")
+	approvalTimeout := fs.Duration("approval-timeout", 0, "Maximum time to wait for an ask response (e.g. 30s, 2m). 0 means wait forever; recommended for CI is 30s with --no-interactive")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -147,6 +153,23 @@ func runCheck(args []string) error {
 
 	aw := audit.NewWriterOptions(auditOut, audit.Options{TamperEvident: *tamperEvident})
 
+	// Approver selection. In dry-run we never prompt; otherwise --no-interactive
+	// forces DenyAllApprover, and the default opens a real TTY.
+	var approver approval.Approver
+	switch {
+	case *dryRun:
+		approver = nil // never invoked in dry-run mode
+	case *noInteractive:
+		approver = approval.DenyAllApprover{}
+	default:
+		tty, err := approval.NewTTYApprover()
+		if err != nil {
+			return fmt.Errorf("approval: %w", err)
+		}
+		defer tty.Close()
+		approver = tty
+	}
+
 	callsFile, err := os.Open(*callPath)
 	if err != nil {
 		return err
@@ -190,6 +213,17 @@ func runCheck(args []string) error {
 		}
 
 		res, event := eng.Evaluate(call)
+
+		// On ask, convert to allow/deny via the approver — unless we're in
+		// dry-run, in which case ask is recorded verbatim with mode=dry_run.
+		if res.Decision == policy.DecisionAsk && !*dryRun {
+			res, event = resolveAsk(approver, call, res, event, *approvalTimeout, *noInteractive)
+		}
+
+		if *dryRun {
+			event.Mode = audit.ModeDryRun
+		}
+
 		summary := DecisionSummary{
 			ID:       call.ID,
 			Tool:     call.Tool,
@@ -199,7 +233,11 @@ func runCheck(args []string) error {
 
 		switch *outputMode {
 		case "text":
-			fmt.Printf("%s %s -> %s (%s)\n", call.ID, call.Tool, res.Decision, res.Reason)
+			suffix := ""
+			if *dryRun {
+				suffix = " [dry-run]"
+			}
+			fmt.Printf("%s %s -> %s (%s)%s\n", call.ID, call.Tool, res.Decision, res.Reason, suffix)
 		case "jsonl":
 			b, err := json.Marshal(summary)
 			if err != nil {
@@ -238,7 +276,9 @@ func runCheck(args []string) error {
 		return fmt.Errorf("all %d line(s) failed to parse; no calls were evaluated", lineNum)
 	}
 
-	// --fail-on: exit 1 if any call matched a gated decision.
+	// --fail-on: exit 1 if any call matched a gated decision. In dry-run we
+	// report what would have failed but do not propagate the non-zero exit —
+	// the whole point of dry-run is "evaluate without enforcing."
 	if len(failOnSet) > 0 {
 		matched := 0
 		for d := range failOnSet {
@@ -250,12 +290,47 @@ func runCheck(args []string) error {
 				gated = append(gated, string(d))
 			}
 			sort.Strings(gated)
-			fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
-			return fmt.Errorf("%d call(s) matched --fail-on criteria", matched)
+			if *dryRun {
+				fmt.Fprintf(os.Stderr, "AgentFence: dry-run: %d call(s) would have matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+			} else {
+				fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+				return fmt.Errorf("%d call(s) matched --fail-on criteria", matched)
+			}
 		}
 	}
 
 	return nil
+}
+
+// resolveAsk converts an ask decision into a concrete allow or deny by calling
+// the approver. The audit event is updated in place to reflect the final
+// decision and reason. A zero timeout means "wait forever."
+func resolveAsk(approver approval.Approver, call policy.ToolCall, res policy.EvaluationResult, event audit.Event, timeout time.Duration, noInteractive bool) (policy.EvaluationResult, audit.Event) {
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	approved, err := approver.Request(ctx, call)
+	switch {
+	case approved:
+		res.Decision = policy.DecisionAllow
+		res.Reason = approval.ReasonApprovedInteractively
+	case errors.Is(err, context.DeadlineExceeded):
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonApprovalTimeout
+	case noInteractive:
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonNonInteractive
+	default:
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonDeniedInteractively
+	}
+	event.Decision = res.Decision
+	event.Reason = res.Reason
+	return res, event
 }
 
 func runValidate(args []string) error {
@@ -303,7 +378,7 @@ func runInit() error {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident]")
+	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
