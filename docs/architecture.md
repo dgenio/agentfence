@@ -41,8 +41,15 @@ Planned next step is to run AgentFence as an MCP-aware proxy between agents and 
 ## Audit flow
 
 - Every evaluated call creates one audit event.
-- Event includes timestamp, call id, tool, decision, reason, and optionally redacted arguments.
+- Each event carries a stable schema (`schema_version`), a per-run
+  `session_id`, a monotonic `seq` number, plus `timestamp`, `call_id`, `tool`,
+  `decision`, `reason`, and (optionally) redacted arguments.
 - Events are encoded as JSONL for easy ingestion.
+- `--tamper-evident` enables a SHA-256 hash chain: each event records its own
+  `hash` and the previous event's `hash` in `prev_hash`. The chain can be
+  verified after the fact with `agentfence audit verify --log <file>`. See
+  [`threat-model.md`](threat-model.md#audit-log-integrity) for what this does
+  and does not protect against.
 
 ## Redaction flow
 
