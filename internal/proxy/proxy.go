@@ -20,6 +20,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -66,10 +67,12 @@ type Options struct {
 	// Passthrough is true.
 	Engine *engine.Engine
 
-	// AuditWriter records evaluation decisions. Must be non-nil — pass an
-	// audit.NewWriter(io.Discard) if you do not need persistence. Audit
-	// records are written before the forwarding decision is acted on so
-	// the audit trail reflects every decision the engine made.
+	// AuditWriter records evaluation decisions. Required unless Passthrough
+	// is true (passthrough never invokes the engine, so there is nothing to
+	// audit). Pass audit.NewWriter(io.Discard) to keep audit calls cheap if
+	// you need an enforcement-mode proxy without on-disk audit. Audit records
+	// are written before the forwarding decision is acted on so the audit
+	// trail reflects every decision the engine made.
 	AuditWriter *audit.Writer
 
 	// Approver handles ask decisions. Defaults to DenyAllApprover.
@@ -108,11 +111,13 @@ func Run(ctx context.Context, command string, args []string, opts Options) error
 	if command == "" {
 		return errors.New("proxy: command is required")
 	}
-	if !opts.Passthrough && opts.Engine == nil {
-		return errors.New("proxy: Engine is required when not in passthrough mode")
-	}
-	if opts.AuditWriter == nil {
-		return errors.New("proxy: AuditWriter is required (use audit.NewWriter(io.Discard) to disable)")
+	if !opts.Passthrough {
+		if opts.Engine == nil {
+			return errors.New("proxy: Engine is required when not in passthrough mode")
+		}
+		if opts.AuditWriter == nil {
+			return errors.New("proxy: AuditWriter is required when not in passthrough mode (use audit.NewWriter(io.Discard) to disable)")
+		}
 	}
 	opts = applyDefaults(opts)
 
@@ -167,7 +172,31 @@ func applyDefaults(opts Options) Options {
 	if opts.Approver == nil {
 		opts.Approver = DenyAllApprover{}
 	}
+	// Wrap the agent's stdout in a mutex-protected writer so that the
+	// synthesized-response goroutine (agent->subproc relay, writing deny
+	// and ask-deny responses) cannot interleave a JSON-RPC frame with the
+	// subproc->agent goroutine forwarding a real result. POSIX only
+	// guarantees write atomicity below PIPE_BUF (typically 4 KiB); MCP
+	// tool results routinely exceed that.
+	if _, alreadyLocked := opts.Stdout.(*lockedWriter); !alreadyLocked {
+		opts.Stdout = &lockedWriter{w: opts.Stdout}
+	}
 	return opts
+}
+
+// lockedWriter serialises Write calls onto an underlying writer. Used to
+// keep JSON-RPC frames atomic on the agent's stdout when two relay
+// goroutines write to it concurrently.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// Write delegates to the underlying writer while holding the mutex.
+func (lw *lockedWriter) Write(p []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.w.Write(p)
 }
 
 // relay holds per-Run mutable state (the call counter). It is intentionally
@@ -239,11 +268,23 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 		return err
 	}
 
+	// Notifications are JSON-RPC requests without an id (or with id=null).
+	// The spec forbids sending a response to them, so on deny / ask-deny /
+	// invalid-params we must drop the line instead of synthesising a
+	// response with "id":null that some clients reject.
+	isNotification := isNotificationID(req.ID)
+
 	params, perr := mcp.ParseToolCallParams(req.Params)
 	if perr != nil {
 		// Malformed tools/call: answer the agent with a well-formed error
-		// instead of forwarding garbage to the subprocess. No audit event
-		// here because the engine never saw a valid call.
+		// (for regular requests) or drop the line (for notifications).
+		// No audit event in either case because the engine never saw a
+		// valid call.
+		if isNotification {
+			fmt.Fprintln(r.opts.Logger,
+				"proxy: dropping malformed tools/call notification:", perr)
+			return nil
+		}
 		return writeResponse(agentStdout, mcp.InvalidParamsError(req.ID, perr.Error()))
 	}
 
@@ -263,10 +304,18 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 		_, err := writeLine(subStdin, line)
 		return err
 	case policy.DecisionDeny:
+		if isNotification {
+			return nil
+		}
 		return writeResponse(agentStdout, mcp.BlockedByPolicyError(req.ID, result.Reason))
 	case policy.DecisionAsk:
 		approved, aerr := r.opts.Approver.Request(ctx, call)
 		if aerr != nil {
+			if isNotification {
+				fmt.Fprintln(r.opts.Logger,
+					"proxy: dropping ask-notification on approval error:", aerr)
+				return nil
+			}
 			return writeResponse(agentStdout,
 				mcp.BlockedByPolicyError(req.ID, "approval error: "+aerr.Error()))
 		}
@@ -274,20 +323,39 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 			_, err := writeLine(subStdin, line)
 			return err
 		}
+		if isNotification {
+			return nil
+		}
 		return writeResponse(agentStdout,
 			mcp.BlockedByPolicyError(req.ID, result.Reason+" (denied via ask)"))
 	default:
 		// Unknown decision (engine extension): default-deny so a future
 		// decision value cannot silently widen the allow set.
+		if isNotification {
+			return nil
+		}
 		return writeResponse(agentStdout,
 			mcp.BlockedByPolicyError(req.ID,
 				"unknown decision: "+string(result.Decision)))
 	}
 }
 
+// isNotificationID reports whether a JSON-RPC request ID indicates a
+// notification (absent or null). Per JSON-RPC 2.0 §4.1 a notification is a
+// request without an id member, and the server MUST NOT reply to one. We
+// also treat explicit null IDs the same way: there is no useful response
+// id to echo, and some clients treat "id":null as a notification.
+func isNotificationID(id json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(id)
+	return len(trimmed) == 0 || string(trimmed) == "null"
+}
+
 func writeLine(w io.Writer, line []byte) (int, error) {
-	// Build a single contiguous slice to avoid two Write syscalls that could
-	// interleave with another goroutine writing to the same Stdout.
+	// Build a single contiguous slice and let the writer (a lockedWriter
+	// when Stdout is shared by both relay goroutines — see applyDefaults)
+	// keep the JSON-RPC frame atomic. POSIX only guarantees write atomicity
+	// below PIPE_BUF, so two non-locked Write calls — or even one large
+	// Write — could be interleaved by the kernel without the lock.
 	buf := make([]byte, len(line)+1)
 	copy(buf, line)
 	buf[len(line)] = '\n'

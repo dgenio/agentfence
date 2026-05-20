@@ -264,6 +264,118 @@ func TestProcessAgentLineMalformedParamsReturnsInvalidParams(t *testing.T) {
 	}
 }
 
+// TestNotificationDenyDropsInsteadOfResponding verifies the JSON-RPC §4.1
+// rule: notifications (requests without an id) MUST NOT receive a response.
+// A deny on a notification audits the decision but drops the line.
+func TestNotificationDenyDropsInsteadOfResponding(t *testing.T) {
+	r, agent, sub, audit := newTestRelay(t, DenyAllApprover{}, false)
+	// id field omitted entirely — this is a notification.
+	line := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"filesystem.write","arguments":{"path":".env"}}}`)
+	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
+		t.Fatalf("processAgentLine: %v", err)
+	}
+	if sub.Len() != 0 {
+		t.Errorf("denied notification must NOT forward to subprocess; got %q", sub.String())
+	}
+	if agent.Len() != 0 {
+		t.Errorf("denied notification must NOT synthesize a response; got %q", agent.String())
+	}
+	if !bytes.Contains(audit.Bytes(), []byte(`"decision":"deny"`)) {
+		t.Errorf("denied notification must still audit; got %q", audit.String())
+	}
+}
+
+func TestNotificationAskDeniedDropsInsteadOfResponding(t *testing.T) {
+	r, agent, sub, _ := newTestRelay(t, DenyAllApprover{}, false)
+	line := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"github.create_issue","arguments":{"title":"hi"}}}`)
+	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
+		t.Fatalf("processAgentLine: %v", err)
+	}
+	if sub.Len() != 0 || agent.Len() != 0 {
+		t.Errorf("denied ask-notification must drop silently; sub=%q agent=%q",
+			sub.String(), agent.String())
+	}
+}
+
+func TestNotificationAllowForwards(t *testing.T) {
+	r, agent, sub, _ := newTestRelay(t, DenyAllApprover{}, false)
+	// Same shape as the deny test but for an allowed tool.
+	line := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"filesystem.read","arguments":{"path":"README.md"}}}`)
+	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
+		t.Fatalf("processAgentLine: %v", err)
+	}
+	if sub.Len() == 0 {
+		t.Errorf("allowed notification must still forward to subprocess")
+	}
+	if agent.Len() != 0 {
+		t.Errorf("allowed notification must not produce a response; got %q", agent.String())
+	}
+}
+
+func TestNotificationWithNullIDIsTreatedAsNotification(t *testing.T) {
+	// JSON-RPC technically distinguishes "id":null from a missing id, but
+	// the proxy treats both as notifications because there is no useful
+	// response identifier to echo and some clients treat null id as
+	// fire-and-forget.
+	r, agent, sub, _ := newTestRelay(t, DenyAllApprover{}, false)
+	line := []byte(`{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"filesystem.write","arguments":{"path":".env"}}}`)
+	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
+		t.Fatalf("processAgentLine: %v", err)
+	}
+	if sub.Len() != 0 || agent.Len() != 0 {
+		t.Errorf("null-id deny must drop silently; sub=%q agent=%q",
+			sub.String(), agent.String())
+	}
+}
+
+func TestNotificationMalformedParamsDropsInsteadOfResponding(t *testing.T) {
+	r, agent, sub, audit := newTestRelay(t, DenyAllApprover{}, false)
+	// tools/call notification with no name → InvalidParams in the request
+	// path, must drop silently here.
+	line := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{}}`)
+	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
+		t.Fatalf("processAgentLine: %v", err)
+	}
+	if sub.Len() != 0 || agent.Len() != 0 {
+		t.Errorf("malformed notification must drop silently; sub=%q agent=%q",
+			sub.String(), agent.String())
+	}
+	// No audit event either — engine never saw a valid call.
+	if audit.Len() != 0 {
+		t.Errorf("malformed notification must not produce an audit event; got %q", audit.String())
+	}
+}
+
+func TestLockedWriterSerialisesConcurrentWrites(t *testing.T) {
+	// Race-detector-targeted test: many goroutines writing to a
+	// lockedWriter must serialise into a coherent byte stream.
+	var underlying bytes.Buffer
+	lw := &lockedWriter{w: &underlying}
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			payload := []byte("frame-" + strings.Repeat("x", 16) + "-end\n")
+			_ = payload
+			payload = append([]byte{}, []byte("frame-")...)
+			payload = append(payload, byte('0'+(i%10)))
+			payload = append(payload, []byte("-end\n")...)
+			if _, err := lw.Write(payload); err != nil {
+				t.Errorf("Write: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	// Every line must begin with "frame-" and end with "-end" — if writes
+	// interleaved we would see corrupted frames.
+	for i, line := range strings.Split(strings.TrimRight(underlying.String(), "\n"), "\n") {
+		if !strings.HasPrefix(line, "frame-") || !strings.HasSuffix(line, "-end") {
+			t.Errorf("line %d corrupted by interleaving: %q", i, line)
+		}
+	}
+}
+
 func TestProcessAgentLinePassthroughForwardsEverything(t *testing.T) {
 	r, agent, sub, audit := newTestRelay(t, DenyAllApprover{}, true /*passthrough*/)
 	// Even a deny-policy tool is forwarded in passthrough mode — that's the
@@ -305,14 +417,34 @@ func TestRunRequiresEngineWhenNotPassthrough(t *testing.T) {
 	}
 }
 
-func TestRunRequiresAuditWriter(t *testing.T) {
-	err := Run(context.Background(), os.Args[0], nil, Options{
-		Engine:      nil,
+func TestRunRequiresAuditWriterWhenEnforcing(t *testing.T) {
+	p := allowDenyAskPolicy(t)
+	eng, err := engine.New(p)
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	err = Run(context.Background(), os.Args[0], nil, Options{
+		Engine:      eng,
+		AuditWriter: nil,
+		Passthrough: false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "AuditWriter is required") {
+		t.Errorf("expected AuditWriter-required error in enforcement mode, got %v", err)
+	}
+}
+
+// TestRunAllowsNilAuditWriterInPassthrough verifies that the passthrough
+// skeleton does not require an audit writer (its docstring promise). We
+// can't realistically spawn a subprocess in this short test, so we provide
+// an empty command name to force the "command is required" failure
+// *after* the audit-writer check — proving the audit check did not fire.
+func TestRunAllowsNilAuditWriterInPassthrough(t *testing.T) {
+	err := Run(context.Background(), "", nil, Options{
 		AuditWriter: nil,
 		Passthrough: true,
 	})
-	if err == nil || !strings.Contains(err.Error(), "AuditWriter is required") {
-		t.Errorf("expected AuditWriter-required error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "command is required") {
+		t.Errorf("passthrough must tolerate a nil AuditWriter; got %v", err)
 	}
 }
 

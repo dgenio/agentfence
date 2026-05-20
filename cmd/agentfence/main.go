@@ -77,6 +77,16 @@ func main() {
 	}
 
 	if err != nil {
+		// Subprocess exit propagation: the proxy returns *exec.ExitError when
+		// the downstream MCP server exits non-zero. We surface that exit code
+		// verbatim so wrappers can distinguish "policy proxy failed" from
+		// "the MCP server itself errored" without parsing stderr. We only
+		// reach this branch after every defer (including audit-log close) has
+		// run.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -507,14 +517,12 @@ func runProxy(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := proxy.Run(ctx, cmdName, cmdArgs, opts); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.ExitCode())
-		}
-		return err
-	}
-	return nil
+	// Return the proxy.Run error unchanged. When the downstream MCP server
+	// exits non-zero, it is an *exec.ExitError; main() detects that and
+	// exits with the same code. Returning here (instead of calling
+	// os.Exit inside runProxy) lets the deferred closeAudit() flush and
+	// close the audit log before the process exits.
+	return proxy.Run(ctx, cmdName, cmdArgs, opts)
 }
 
 // openAuditOutput returns the audit destination Writer + a close func. When
@@ -522,6 +530,12 @@ func runProxy(args []string) error {
 // interleave audit JSONL with the agent's stdout, which is reserved for
 // JSON-RPC responses). The tamper-evident flag with no log file triggers a
 // stderr warning consistent with `check`.
+//
+// New files are created with 0o600 (owner-read/write) so audit events —
+// which can contain redacted-but-still-sensitive tool arguments — do not
+// inherit a permissive umask. Pre-existing files are opened in append mode
+// without altering their permissions, on the assumption that the operator
+// chose those bits deliberately.
 func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func(), error) {
 	if auditLogPath == "" {
 		if tamperEvident {
@@ -529,7 +543,7 @@ func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func()
 		}
 		return io.Discard, func() {}, nil
 	}
-	f, err := os.Create(auditLogPath)
+	f, err := os.OpenFile(auditLogPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, nil, err
 	}

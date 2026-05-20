@@ -206,7 +206,7 @@ agentfence audit verify --log audit.jsonl
 
 ## Troubleshooting
 
-**`proxy: a downstream command is required after `--``** — you forgot the
+**"proxy: a downstream command is required after `--`"** — you forgot the
 `--` separator and the command. Compare:
 
 ```bash

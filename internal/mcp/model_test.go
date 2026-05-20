@@ -151,8 +151,14 @@ func TestCallIDFromRequestID(t *testing.T) {
 		{"string", `"abc-123"`, "fb", "abc-123"},
 		{"integer", `42`, "fb", "42"},
 		{"float", `1.5`, "fb", "1.5"},
+		// JSON allows integers larger than 2^53; we must not silently
+		// truncate them by going through float64. Use the exact on-wire
+		// bytes instead.
+		{"large-integer", `9007199254740993`, "fb", "9007199254740993"},
 		{"null", `null`, "fb", "fb"},
 		{"empty", ``, "fb", "fb"},
+		{"whitespace-only", `   `, "fb", "fb"},
+		{"whitespace-padded-number", `  7  `, "fb", "7"},
 		{"object", `{"k":1}`, "fb", `{"k":1}`},
 	}
 	for _, tc := range cases {

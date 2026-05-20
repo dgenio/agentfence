@@ -1,8 +1,21 @@
-# AgentFence architecture (MVP)
+# AgentFence architecture
 
-## Current MVP architecture
+AgentFence operates in two modes:
 
-AgentFence currently works as a local policy evaluator and audit logger:
+- **Batch `check` mode** — evaluate a JSONL stream of recorded tool calls
+  offline. Does not execute tool calls; produces decisions + audit events.
+- **MCP proxy mode (`agentfence proxy`)** — live policy gate that sits
+  between an agent and an MCP tool server, intercepting `tools/call`
+  requests in real time. Does not execute tool calls itself; it forwards
+  allowed calls to the downstream MCP server and synthesizes JSON-RPC
+  error responses for denied ones.
+
+Neither mode is a sandbox: AgentFence enforces policy *before* a tool call
+executes; it does not contain a tool call that has already been forwarded.
+
+## Batch (`check`) architecture
+
+AgentFence works as a local policy evaluator and audit logger:
 
 1. Load YAML policy.
 2. Read JSONL tool-call records.
@@ -12,8 +25,6 @@ AgentFence currently works as a local policy evaluator and audit logger:
 6. Emit audit events as JSONL.
 
 Fail-safe behavior: a single malformed line never aborts evaluation of remaining calls. An all-malformed input (every line fails to parse) returns a non-zero exit code.
-
-In MVP mode, AgentFence does **not** execute or proxy tool calls.
 
 ## MCP proxy architecture
 

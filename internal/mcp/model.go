@@ -9,10 +9,10 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/dgenio/agentfence/internal/policy"
 )
@@ -166,27 +166,23 @@ func InvalidParamsError(id json.RawMessage, reason string) JSONRPCResponse {
 
 // CallIDFromRequestID derives a short, audit-friendly call identifier from a
 // JSON-RPC request ID. Strings are unquoted; numbers and other shapes are
-// rendered verbatim. When the request has no ID (notification, or malformed),
-// fallback is used so the audit event still has a non-empty CallID.
+// rendered verbatim from their on-wire JSON bytes (with surrounding
+// whitespace trimmed) so large integer IDs do not lose precision the way
+// a float64 round-trip would. When the request has no ID (notification, or
+// malformed), fallback is used so the audit event still has a non-empty
+// CallID.
 func CallIDFromRequestID(id json.RawMessage, fallback string) string {
-	if len(id) == 0 || string(id) == "null" {
+	trimmed := bytes.TrimSpace(id)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
 		return fallback
 	}
 	// Try a JSON string first (the common case for MCP clients).
 	var s string
-	if err := json.Unmarshal(id, &s); err == nil && s != "" {
+	if err := json.Unmarshal(trimmed, &s); err == nil && s != "" {
 		return s
 	}
-	// Then a JSON number — render with strconv to avoid the trailing ".0"
-	// that json.Marshal would re-emit for an integer round-trip.
-	var n float64
-	if err := json.Unmarshal(id, &n); err == nil {
-		if n == float64(int64(n)) {
-			return strconv.FormatInt(int64(n), 10)
-		}
-		return strconv.FormatFloat(n, 'g', -1, 64)
-	}
-	// Fallback: the raw JSON bytes (objects, arrays, etc. — not valid per
-	// JSON-RPC 2.0 but be lenient on input).
-	return string(id)
+	// For numbers, objects, arrays, booleans: return the raw JSON bytes.
+	// This preserves full precision for large integers (>2^53) which would
+	// be silently rounded by decoding through float64.
+	return string(trimmed)
 }
