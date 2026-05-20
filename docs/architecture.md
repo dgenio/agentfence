@@ -15,14 +15,31 @@ Fail-safe behavior: a single malformed line never aborts evaluation of remaining
 
 In MVP mode, AgentFence does **not** execute or proxy tool calls.
 
-## Future MCP proxy architecture
+## MCP proxy architecture
 
-Planned next step is to run AgentFence as an MCP-aware proxy between agents and tool providers:
+AgentFence can also run as an MCP-aware stdio proxy between an agent and
+its tool servers (`agentfence proxy --policy <file> -- <command> [args...]`).
+See [`integration-guide.md`](integration-guide.md) for end-to-end
+configuration examples.
 
-- Agent -> AgentFence proxy -> MCP server/tools
-- AgentFence evaluates and gates each call before forwarding.
-- `ask` decisions can trigger interactive approval.
-- Audit trail covers requests, approvals, and final disposition.
+- Agent → AgentFence proxy → MCP server/tools.
+- The proxy spawns the MCP server as a subprocess and relays newline-
+  delimited JSON-RPC messages in both directions.
+- Every `tools/call` request is parsed (`internal/mcp`) and converted to a
+  `policy.ToolCall`, then evaluated by the engine. Non-`tools/call`
+  messages (initialize, ping, notifications) are forwarded untouched.
+- On `allow` the original request is forwarded to the subprocess.
+- On `deny` the proxy answers the agent with a JSON-RPC error response
+  (code `-32001`, "blocked by AgentFence policy: <reason>") and the
+  subprocess never sees the request.
+- On `ask` a pluggable `Approver` decides at runtime; an approved call is
+  forwarded, a denied one becomes the same blocked-by-policy response.
+  The default `DenyAllApprover` denies every `ask` until a TTY-backed
+  approver lands (issues #29, #30).
+- Every evaluated request produces one audit event using the same
+  `audit.Writer` as `check`, so `--tamper-evident` and `agentfence audit
+  verify` work identically against proxy logs.
+- HTTP / streamable transport remains future work.
 
 ## Policy evaluation flow
 
