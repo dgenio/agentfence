@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dgenio/agentfence/internal/policy"
@@ -169,5 +170,394 @@ func TestWindowsRelativePathAllowed(t *testing.T) {
 	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{"path": `src\main.go`}})
 	if res.Decision != policy.DecisionAllow {
 		t.Fatalf("expected allow for Windows-style relative path, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+// ── #21: Wildcard tool name matching & tool groups ────────────────────────────
+
+func TestWildcardSuffixMatch(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.*:
+    decision: allow
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	for _, tool := range []string{"filesystem.read", "filesystem.write", "filesystem.list"} {
+		res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: tool, Arguments: map[string]interface{}{}})
+		if res.Decision != policy.DecisionAllow {
+			t.Errorf("expected allow for %s, got %s: %s", tool, res.Decision, res.Reason)
+		}
+	}
+}
+
+func TestExactBeatsWildcard(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.*:
+    decision: ask
+  filesystem.read:
+    decision: allow
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{}})
+	if res.Decision != policy.DecisionAllow {
+		t.Fatalf("exact rule should beat wildcard; got %s: %s", res.Decision, res.Reason)
+	}
+	// Other filesystem.* still hit the wildcard rule.
+	res, _ = e.Evaluate(policy.ToolCall{ID: "2", Tool: "filesystem.write", Arguments: map[string]interface{}{}})
+	if res.Decision != policy.DecisionAsk {
+		t.Fatalf("expected ask for filesystem.write via wildcard, got %s", res.Decision)
+	}
+}
+
+func TestGroupMatch(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+groups:
+  fs-tools:
+    - filesystem.read
+    - filesystem.write
+    - filesystem.*
+tools:
+  fs-tools:
+    decision: ask
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	for _, tool := range []string{"filesystem.read", "filesystem.write", "filesystem.list"} {
+		res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: tool, Arguments: map[string]interface{}{}})
+		if res.Decision != policy.DecisionAsk {
+			t.Errorf("expected ask via group for %s, got %s: %s", tool, res.Decision, res.Reason)
+		}
+	}
+}
+
+func TestExactBeatsGroup(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+groups:
+  fs-tools:
+    - filesystem.*
+tools:
+  fs-tools:
+    decision: ask
+  filesystem.read:
+    decision: allow
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.read", Arguments: map[string]interface{}{}})
+	if res.Decision != policy.DecisionAllow {
+		t.Fatalf("exact rule should beat group; got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestGroupBeatsWildcard(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+groups:
+  fs-tools:
+    - filesystem.*
+tools:
+  fs-tools:
+    decision: ask
+  filesystem.*:
+    decision: deny
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "filesystem.write", Arguments: map[string]interface{}{}})
+	if res.Decision != policy.DecisionAsk {
+		t.Fatalf("group rule should beat wildcard key; got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+// ── #22: Argument value constraints ──────────────────────────────────────────
+
+func TestArgConstraintAllow(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  github.create_issue:
+    decision: ask
+    constraints:
+      args:
+        repo:
+          allow: ["dgenio/*", "myorg/*"]
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "github.create_issue", Arguments: map[string]interface{}{"repo": "dgenio/agentfence"}})
+	if res.Decision != policy.DecisionAsk {
+		t.Fatalf("expected ask for allowed repo, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestArgConstraintDeny(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  github.create_issue:
+    decision: ask
+    constraints:
+      args:
+        repo:
+          allow: ["dgenio/*"]
+          deny: ["dgenio/private-*"]
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "github.create_issue", Arguments: map[string]interface{}{"repo": "dgenio/private-api"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for private repo, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestArgConstraintMissingField(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  github.create_issue:
+    decision: ask
+    constraints:
+      args:
+        repo:
+          allow: ["dgenio/*"]
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "github.create_issue", Arguments: map[string]interface{}{}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for missing constrained arg, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+// ── #23: URL constraints ──────────────────────────────────────────────────────
+
+func TestURLConstraintAllow(t *testing.T) {
+	e := mustURLEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "browser.navigate", Arguments: map[string]interface{}{"url": "https://docs.github.com/en"}})
+	if res.Decision != policy.DecisionAllow {
+		t.Fatalf("expected allow for docs.github.com, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestURLConstraintDeniedScheme(t *testing.T) {
+	e := mustURLEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "browser.navigate", Arguments: map[string]interface{}{"url": "http://evil.example.com"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for plain http, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestURLConstraintFileSchemeAlwaysDenied(t *testing.T) {
+	e := mustURLEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "browser.navigate", Arguments: map[string]interface{}{"url": "file:///etc/passwd"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for file:// URL, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestURLConstraintBareIPAlwaysDenied(t *testing.T) {
+	e := mustURLEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "browser.navigate", Arguments: map[string]interface{}{"url": "https://192.168.1.1/admin"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for bare IP, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestURLConstraintInvalidURL(t *testing.T) {
+	e := mustURLEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "browser.navigate", Arguments: map[string]interface{}{"url": "not a url"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for invalid URL, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestURLConstraintMissingArg(t *testing.T) {
+	e := mustURLEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "browser.navigate", Arguments: map[string]interface{}{}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for missing url arg, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func mustURLEngine(t *testing.T) *Engine {
+	t.Helper()
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  browser.navigate:
+    decision: allow
+    constraints:
+      urls:
+        allow:
+          - "https://docs.github.com/**"
+          - "https://*.company.com/**"
+        deny:
+          - "http://**"
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	return e
+}
+
+// ── #24: Shell command constraints ───────────────────────────────────────────
+
+func TestCommandConstraintAllowExecutable(t *testing.T) {
+	e := mustCommandEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "shell.exec", Arguments: map[string]interface{}{"command": "git status"}})
+	if res.Decision != policy.DecisionAsk {
+		t.Fatalf("expected ask for allowed executable 'git', got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestCommandConstraintDeniedPattern(t *testing.T) {
+	e := mustCommandEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "shell.exec", Arguments: map[string]interface{}{"command": "rm -rf /"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for 'rm -rf /', got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestCommandConstraintForbiddenExecutable(t *testing.T) {
+	e := mustCommandEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "shell.exec", Arguments: map[string]interface{}{"command": "curl https://example.com"}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for non-allowed executable 'curl', got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestCommandConstraintMissingArg(t *testing.T) {
+	e := mustCommandEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{ID: "1", Tool: "shell.exec", Arguments: map[string]interface{}{}})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for missing command arg, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func mustCommandEngine(t *testing.T) *Engine {
+	t.Helper()
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  shell.exec:
+    decision: ask
+    constraints:
+      command:
+        allow_executables: ["git", "go", "make"]
+        deny_patterns: ["rm -rf*", "curl * | bash", "wget * | sh"]
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	return e
+}
+
+// ── #19: TraceEvaluate ────────────────────────────────────────────────────────
+
+func TestTraceEvaluateExplicitRule(t *testing.T) {
+	e := mustEngine(t)
+	result, trace := e.TraceEvaluate(policy.ToolCall{ID: "1", Tool: "github.delete_repo", Arguments: map[string]interface{}{}})
+	if result.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny, got %s", result.Decision)
+	}
+	if len(trace) == 0 {
+		t.Fatal("expected non-empty trace")
+	}
+}
+
+func TestTraceEvaluateDefaultDecision(t *testing.T) {
+	e := mustEngine(t)
+	result, trace := e.TraceEvaluate(policy.ToolCall{ID: "1", Tool: "unknown.tool", Arguments: map[string]interface{}{}})
+	if result.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny (default), got %s", result.Decision)
+	}
+	if len(trace) == 0 {
+		t.Fatal("expected non-empty trace for default decision")
+	}
+	found := false
+	for _, step := range trace {
+		if strings.Contains(step, "default") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected trace to mention 'default'; got: %v", trace)
+	}
+}
+
+func TestTraceEvaluatePathDeny(t *testing.T) {
+	e := mustEngine(t)
+	result, trace := e.TraceEvaluate(policy.ToolCall{ID: "1", Tool: "filesystem.write", Arguments: map[string]interface{}{"path": ".env"}})
+	if result.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny for .env path, got %s", result.Decision)
+	}
+	if len(trace) == 0 {
+		t.Fatal("expected non-empty trace")
 	}
 }

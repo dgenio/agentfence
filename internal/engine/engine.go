@@ -2,9 +2,12 @@ package engine
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/dgenio/agentfence/internal/audit"
@@ -26,38 +29,119 @@ func New(p policy.Policy) (*Engine, error) {
 }
 
 func (e *Engine) Evaluate(call policy.ToolCall) (policy.EvaluationResult, audit.Event) {
-	result := e.evaluateDecision(call)
+	result := e.evaluateDecisionCore(call, nil)
 	redacted := e.redactor.RedactArguments(call.Arguments)
 	event := audit.NewEvent(call, result, redacted, e.policy.Audit.IncludeRedactedArguments)
 	return result, event
 }
 
-func (e *Engine) evaluateDecision(call policy.ToolCall) policy.EvaluationResult {
-	rule, ok := e.policy.Tools[call.Tool]
-	if !ok {
+// TraceEvaluate evaluates a tool call and returns a human-readable trace of each
+// evaluation step alongside the decision. Intended for the explain command.
+func (e *Engine) TraceEvaluate(call policy.ToolCall) (policy.EvaluationResult, []string) {
+	var trace []string
+	result := e.evaluateDecisionCore(call, &trace)
+	return result, trace
+}
+
+func (e *Engine) evaluateDecisionCore(call policy.ToolCall, trace *[]string) policy.EvaluationResult {
+	rule, found, matchedKey := e.lookupRule(call.Tool)
+	if !found {
+		appendTrace(trace, fmt.Sprintf("no rule found for %q; applying default decision %q", call.Tool, e.policy.Defaults.Decision))
 		return policy.EvaluationResult{
 			Decision: e.policy.Defaults.Decision,
 			Reason:   fmt.Sprintf("no rule for %s; using default decision", call.Tool),
 		}
 	}
 
-	if deny, reason := evaluatePathConstraints(rule, call); deny {
+	appendTrace(trace, fmt.Sprintf("matched rule %q (decision: %s)", matchedKey, rule.Decision))
+
+	if deny, reason := evaluatePathConstraints(rule, call, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	}
+	if deny, reason := evaluateArgConstraints(rule, call, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	}
+	if deny, reason := evaluateURLConstraints(rule, call, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	}
+	if deny, reason := evaluateCommandConstraints(rule, call, trace); deny {
 		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
 	}
 
+	appendTrace(trace, fmt.Sprintf("all constraints passed; decision: %s", rule.Decision))
 	return policy.EvaluationResult{
 		Decision: rule.Decision,
 		Reason:   fmt.Sprintf("tool %s matched explicit policy rule", call.Tool),
 	}
 }
 
-func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall) (bool, string) {
+// lookupRule finds the first applicable rule for toolName using this precedence:
+//  1. Exact match against Tools keys.
+//  2. Group match: tool matches a member pattern of a named group that has a Tools entry.
+//     Groups are checked in alphabetical order for determinism.
+//  3. Wildcard/glob match against remaining Tools keys, checked in alphabetical order.
+//
+// TODO(perf): precompute sorted group names, group set, and pattern keys in New()
+// to eliminate per-call allocations when processing large batches.
+func (e *Engine) lookupRule(toolName string) (policy.Rule, bool, string) {
+	// 1. Exact match.
+	if r, ok := e.policy.Tools[toolName]; ok {
+		return r, true, toolName
+	}
+
+	// 2. Group match: sorted group names for determinism.
+	groupNames := make([]string, 0, len(e.policy.Groups))
+	for gn := range e.policy.Groups {
+		groupNames = append(groupNames, gn)
+	}
+	sort.Strings(groupNames)
+	for _, groupName := range groupNames {
+		for _, member := range e.policy.Groups[groupName] {
+			if matchesGlob(member, toolName) {
+				if r, ok := e.policy.Tools[groupName]; ok {
+					return r, true, groupName
+				}
+				break // group exists but has no rule; keep searching
+			}
+		}
+	}
+
+	// 3. Wildcard/glob match on non-exact, non-group tool keys, sorted for determinism.
+	groupSet := make(map[string]bool, len(e.policy.Groups))
+	for gn := range e.policy.Groups {
+		groupSet[gn] = true
+	}
+	patternKeys := make([]string, 0, len(e.policy.Tools))
+	for k := range e.policy.Tools {
+		if k != toolName && !groupSet[k] {
+			patternKeys = append(patternKeys, k)
+		}
+	}
+	sort.Strings(patternKeys)
+	for _, pattern := range patternKeys {
+		if matchesGlob(pattern, toolName) {
+			return e.policy.Tools[pattern], true, pattern
+		}
+	}
+
+	return policy.Rule{}, false, ""
+}
+
+// appendTrace appends msg to the trace slice when trace is non-nil.
+func appendTrace(trace *[]string, msg string) {
+	if trace != nil {
+		*trace = append(*trace, msg)
+	}
+}
+
+func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
 	paths := rule.Constraints.Paths
 	if len(paths.Allow) == 0 && len(paths.Deny) == 0 {
 		return false, ""
 	}
 	pathArg, ok := call.Arguments["path"].(string)
 	if !ok || pathArg == "" {
+		appendTrace(trace, "path constraint: missing path argument → deny")
 		return true, "missing required path argument for constrained tool"
 	}
 
@@ -66,11 +150,13 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall) (bool, stri
 
 	// Detect UNC paths (\\server\share → //server/share after normalization).
 	if isUNCPath(normalized) {
+		appendTrace(trace, fmt.Sprintf("path %q is UNC/absolute → deny", pathArg))
 		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
 	}
 
 	// Detect Windows drive-letter absolute paths (C:/...).
 	if isWindowsAbsPath(normalized) {
+		appendTrace(trace, fmt.Sprintf("path %q is Windows absolute → deny", pathArg))
 		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
 	}
 
@@ -80,14 +166,19 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall) (bool, stri
 	// filepath.IsAbs covers Windows drive-letter and UNC paths; the additional
 	// HasPrefix check covers Unix-style absolute paths on Windows hosts.
 	if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "/") {
+		appendTrace(trace, fmt.Sprintf("path %q is absolute → deny", pathArg))
 		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
 	}
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		appendTrace(trace, fmt.Sprintf("path %q escapes project root → deny", pathArg))
 		return true, fmt.Sprintf("path %q escapes the project root", pathArg)
 	}
 
+	appendTrace(trace, fmt.Sprintf("checking path constraints for %q (normalized: %q)", pathArg, cleaned))
+
 	for _, deny := range paths.Deny {
 		if matchesGlob(deny, cleaned) {
+			appendTrace(trace, fmt.Sprintf("path %q denied by pattern %q", pathArg, deny))
 			return true, fmt.Sprintf("path %q denied by pattern %q", pathArg, deny)
 		}
 	}
@@ -95,11 +186,173 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall) (bool, stri
 	if len(paths.Allow) > 0 {
 		for _, allow := range paths.Allow {
 			if matchesGlob(allow, cleaned) {
+				appendTrace(trace, fmt.Sprintf("path %q matched allow pattern %q", pathArg, allow))
 				return false, ""
 			}
 		}
+		appendTrace(trace, fmt.Sprintf("path %q not matched by any allow pattern → deny", pathArg))
 		return true, fmt.Sprintf("path %q not in allowed paths", pathArg)
 	}
+	return false, ""
+}
+
+// evaluateArgConstraints checks constraints.args: per-field allow/deny glob lists.
+// Non-string values are converted to string via fmt.Sprintf("%v", v) before matching.
+// A missing constrained field is denied.
+func evaluateArgConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
+	if len(rule.Constraints.Args) == 0 {
+		return false, ""
+	}
+	// Sort field names for deterministic evaluation order.
+	fields := make([]string, 0, len(rule.Constraints.Args))
+	for f := range rule.Constraints.Args {
+		fields = append(fields, f)
+	}
+	sort.Strings(fields)
+
+	for _, field := range fields {
+		constraint := rule.Constraints.Args[field]
+		v, ok := call.Arguments[field]
+		if !ok || v == nil {
+			appendTrace(trace, fmt.Sprintf("arg constraint %q: argument missing → deny", field))
+			return true, fmt.Sprintf("missing required argument %q for constrained tool", field)
+		}
+
+		var strVal string
+		if s, isStr := v.(string); isStr {
+			strVal = s
+		} else {
+			strVal = fmt.Sprintf("%v", v)
+		}
+
+		appendTrace(trace, fmt.Sprintf("checking arg constraint %q against value %q", field, strVal))
+
+		for _, deny := range constraint.Deny {
+			if matchesGlob(deny, strVal) {
+				appendTrace(trace, fmt.Sprintf("arg %q value %q denied by pattern %q", field, strVal, deny))
+				return true, fmt.Sprintf("argument %q value %q denied by pattern %q", field, strVal, deny)
+			}
+		}
+
+		if len(constraint.Allow) > 0 {
+			matched := false
+			for _, allow := range constraint.Allow {
+				if matchesGlob(allow, strVal) {
+					appendTrace(trace, fmt.Sprintf("arg %q value %q matched allow pattern %q", field, strVal, allow))
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				appendTrace(trace, fmt.Sprintf("arg %q value %q not matched by any allow pattern → deny", field, strVal))
+				return true, fmt.Sprintf("argument %q value %q not in allowed values", field, strVal)
+			}
+		}
+	}
+	return false, ""
+}
+
+// evaluateURLConstraints checks constraints.urls against the url argument.
+// file:// scheme and bare IP hostnames are always denied regardless of the allow list.
+func evaluateURLConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
+	urls := rule.Constraints.URLs
+	if len(urls.Allow) == 0 && len(urls.Deny) == 0 {
+		return false, ""
+	}
+
+	raw, ok := call.Arguments["url"].(string)
+	if !ok || raw == "" {
+		appendTrace(trace, "url constraint: missing url argument → deny")
+		return true, "missing required url argument for constrained tool"
+	}
+
+	appendTrace(trace, fmt.Sprintf("checking url constraints for %q", raw))
+
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		appendTrace(trace, fmt.Sprintf("url %q is not a valid URL → deny", raw))
+		return true, fmt.Sprintf("url %q is not a valid URL", raw)
+	}
+
+	// Always deny file:// scheme.
+	if parsed.Scheme == "file" {
+		appendTrace(trace, fmt.Sprintf("url %q uses file:// scheme → deny (always denied)", raw))
+		return true, fmt.Sprintf("url %q uses file:// scheme which is always denied", raw)
+	}
+
+	// Always deny bare IP hostnames.
+	host := parsed.Hostname()
+	if net.ParseIP(host) != nil {
+		appendTrace(trace, fmt.Sprintf("url %q has bare IP host %q → deny (always denied)", raw, host))
+		return true, fmt.Sprintf("url %q uses a bare IP address which is always denied", raw)
+	}
+
+	for _, deny := range urls.Deny {
+		if matchesGlob(deny, raw) {
+			appendTrace(trace, fmt.Sprintf("url %q denied by pattern %q", raw, deny))
+			return true, fmt.Sprintf("url %q denied by pattern %q", raw, deny)
+		}
+	}
+
+	if len(urls.Allow) > 0 {
+		for _, allow := range urls.Allow {
+			if matchesGlob(allow, raw) {
+				appendTrace(trace, fmt.Sprintf("url %q matched allow pattern %q", raw, allow))
+				return false, ""
+			}
+		}
+		appendTrace(trace, fmt.Sprintf("url %q not matched by any allow pattern → deny", raw))
+		return true, fmt.Sprintf("url %q not in allowed URLs", raw)
+	}
+	return false, ""
+}
+
+// evaluateCommandConstraints checks constraints.command for shell/terminal tools.
+// deny_patterns are matched against the full command string; allow_executables checks
+// only the first token. Deny takes precedence over allow.
+//
+// WARNING: This is a best-effort guardrail only. Shell metacharacters (|, ;, &&, $())
+// can bypass these checks. Do not rely on this as a security sandbox.
+func evaluateCommandConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
+	cmd := rule.Constraints.Command
+	if len(cmd.AllowExecutables) == 0 && len(cmd.DenyPatterns) == 0 {
+		return false, ""
+	}
+
+	raw, ok := call.Arguments["command"].(string)
+	if !ok || raw == "" {
+		appendTrace(trace, "command constraint: missing command argument → deny")
+		return true, "missing required command argument for constrained tool"
+	}
+
+	appendTrace(trace, fmt.Sprintf("checking command constraints for %q", raw))
+
+	// Check deny patterns first (matched against full command string).
+	for _, pattern := range cmd.DenyPatterns {
+		if matchesGlob(pattern, raw) {
+			appendTrace(trace, fmt.Sprintf("command %q denied by pattern %q", raw, pattern))
+			return true, fmt.Sprintf("command %q denied by pattern %q", raw, pattern)
+		}
+	}
+
+	// Check allow_executables against the first token.
+	if len(cmd.AllowExecutables) > 0 {
+		fields := strings.Fields(raw)
+		if len(fields) == 0 {
+			appendTrace(trace, "command is empty after splitting → deny")
+			return true, "command is empty"
+		}
+		executable := fields[0]
+		for _, allowed := range cmd.AllowExecutables {
+			if allowed == executable {
+				appendTrace(trace, fmt.Sprintf("executable %q is in allow_executables list", executable))
+				return false, ""
+			}
+		}
+		appendTrace(trace, fmt.Sprintf("executable %q not in allow_executables list → deny", executable))
+		return true, fmt.Sprintf("executable %q is not in the allowed executables list", executable)
+	}
+
 	return false, ""
 }
 
@@ -137,7 +390,7 @@ func matchesGlob(pattern, value string) bool {
 }
 
 func normalizePath(p string) string {
-	n := strings.TrimPrefix(strings.ReplaceAll(p, "\\", "/"), "./")
+	n := strings.TrimPrefix(filepath.ToSlash(p), "./")
 	if n == "" {
 		return "."
 	}

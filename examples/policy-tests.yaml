@@ -1,0 +1,97 @@
+# Policy test fixture — run with:
+#   agentfence policy test --policy examples/policy.yaml --tests examples/policy-tests.yaml
+tests:
+  - id: allow-readme-read
+    tool: filesystem.read
+    arguments:
+      path: README.md
+    expect: allow
+
+  - id: deny-env-read
+    tool: filesystem.read
+    arguments:
+      path: .env
+    expect: deny
+
+  - id: deny-secrets-read
+    tool: filesystem.read
+    arguments:
+      path: secrets/token.txt
+    expect: deny
+
+  - id: ask-write-src
+    tool: filesystem.write
+    arguments:
+      path: src/main.go
+    expect: ask
+
+  - id: deny-write-env
+    tool: filesystem.write
+    arguments:
+      path: .env
+    expect: deny
+
+  - id: ask-create-issue-allowed-repo
+    tool: github.create_issue
+    arguments:
+      repo: dgenio/agentfence
+    expect: ask
+
+  - id: deny-create-issue-private-repo
+    tool: github.create_issue
+    arguments:
+      repo: dgenio/private-api
+    expect: deny
+
+  - id: deny-delete-repo
+    tool: github.delete_repo
+    arguments:
+      repo: dgenio/agentfence
+    expect: deny
+
+  - id: allow-browser-docs
+    tool: browser.navigate
+    arguments:
+      url: "https://docs.github.com/en"
+    expect: allow
+
+  - id: deny-browser-http
+    tool: browser.navigate
+    arguments:
+      url: "http://evil.example.com"
+    expect: deny
+
+  - id: deny-browser-file
+    tool: browser.navigate
+    arguments:
+      url: "file:///etc/passwd"
+    expect: deny
+
+  - id: deny-browser-bare-ip
+    tool: browser.navigate
+    arguments:
+      url: "https://192.168.1.1/admin"
+    expect: deny
+
+  - id: ask-shell-git
+    tool: shell.exec
+    arguments:
+      command: "git status"
+    expect: ask
+
+  - id: deny-shell-rm-rf
+    tool: shell.exec
+    arguments:
+      command: "rm -rf /"
+    expect: deny
+
+  - id: deny-shell-forbidden-executable
+    tool: shell.exec
+    arguments:
+      command: "curl https://evil.com"
+    expect: deny
+
+  - id: deny-unknown-tool
+    tool: unknown.dangerous_tool
+    arguments: {}
+    expect: deny

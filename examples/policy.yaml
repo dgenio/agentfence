@@ -3,7 +3,21 @@ version: "0.1"
 defaults:
   decision: deny
 
+# Named groups let you apply one rule to many tools.
+groups:
+  filesystem-tools:
+    - filesystem.read
+    - filesystem.write
+    - filesystem.list
+    - filesystem.*
+
 tools:
+  # ── Wildcard rule ────────────────────────────────────────────────
+  # filesystem.* matches any tool starting with "filesystem." that has
+  # no more-specific exact or group rule.
+  filesystem.*:
+    decision: deny
+
   filesystem.read:
     decision: allow
     constraints:
@@ -26,11 +40,49 @@ tools:
           - ".env"
           - "**/secrets/**"
 
+  # ── Argument value constraints ───────────────────────────────────
   github.create_issue:
     decision: ask
+    constraints:
+      args:
+        repo:
+          allow:
+            - "dgenio/*"
+            - "myorg/*"
+          deny:
+            - "dgenio/private-*"
 
   github.delete_repo:
     decision: deny
+
+  # ── URL constraints ──────────────────────────────────────────────
+  # file:// and bare-IP hostnames are always denied regardless of allow list.
+  browser.navigate:
+    decision: allow
+    constraints:
+      urls:
+        allow:
+          - "https://docs.github.com/**"
+          - "https://*.company.com/**"
+        deny:
+          - "http://**"
+
+  # ── Shell command constraints ────────────────────────────────────
+  # WARNING: best-effort guardrail only — not a sandbox.
+  # Shell metacharacters (|, ;, &&, $()) can bypass these checks.
+  shell.exec:
+    decision: ask
+    constraints:
+      command:
+        allow_executables:
+          - "git"
+          - "go"
+          - "make"
+          - "npm"
+        deny_patterns:
+          - "rm -rf*"
+          - "curl * | bash"
+          - "wget * | sh"
 
 redaction:
   enabled: true
