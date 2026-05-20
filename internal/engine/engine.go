@@ -80,6 +80,9 @@ func (e *Engine) evaluateDecisionCore(call policy.ToolCall, trace *[]string) pol
 //  2. Group match: tool matches a member pattern of a named group that has a Tools entry.
 //     Groups are checked in alphabetical order for determinism.
 //  3. Wildcard/glob match against remaining Tools keys, checked in alphabetical order.
+//
+// TODO(perf): precompute sorted group names, group set, and pattern keys in New()
+// to eliminate per-call allocations when processing large batches.
 func (e *Engine) lookupRule(toolName string) (policy.Rule, bool, string) {
 	// 1. Exact match.
 	if r, ok := e.policy.Tools[toolName]; ok {

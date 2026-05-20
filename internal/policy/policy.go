@@ -311,9 +311,12 @@ type PolicyTestFixture struct {
 }
 
 // ParsePolicyTestFixture parses a YAML policy test fixture file.
+// It uses KnownFields(true) to reject unknown keys and catch typos.
 func ParsePolicyTestFixture(b []byte) (PolicyTestFixture, error) {
 	var f PolicyTestFixture
-	if err := yaml.Unmarshal(b, &f); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil {
 		return PolicyTestFixture{}, err
 	}
 	if len(f.Tests) == 0 {

@@ -10,6 +10,14 @@ import (
 	"testing"
 )
 
+// writeTestFile writes data to path and fails the test if the write errors.
+func writeTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunCheckRequiresFlags(t *testing.T) {
 	err := runCheck([]string{})
 	if err == nil {
@@ -67,7 +75,7 @@ func TestRunInitFailsIfFileExists(t *testing.T) {
 	defer os.Chdir(orig)
 	os.Chdir(dir)
 
-	os.WriteFile("agentfence.yaml", []byte("existing"), 0o644)
+	writeTestFile(t, "agentfence.yaml", []byte("existing"))
 
 	err := runInit()
 	if err == nil {
@@ -244,11 +252,11 @@ func TestCheckOutputUnknownMode(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
 	callFile := filepath.Join(dir, "calls.jsonl")
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
-`), 0o644)
-	os.WriteFile(callFile, []byte(""), 0o644)
+`))
+	writeTestFile(t, callFile, []byte(""))
 
 	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--output", "xml"})
 	if err == nil {
@@ -322,11 +330,11 @@ func TestCheckAllMalformedReturnsError(t *testing.T) {
 	policyFile := filepath.Join(dir, "policy.yaml")
 	callFile := filepath.Join(dir, "calls.jsonl")
 
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
-`), 0o644)
-	os.WriteFile(callFile, []byte("not json\nalso not json\n"), 0o644)
+`))
+	writeTestFile(t, callFile, []byte("not json\nalso not json\n"))
 
 	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
 	if err == nil {
@@ -341,16 +349,16 @@ func TestCheckFailOnDeny(t *testing.T) {
 	policyFile := filepath.Join(dir, "policy.yaml")
 	callFile := filepath.Join(dir, "calls.jsonl")
 
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
 tools:
   filesystem.read:
     decision: allow
-`), 0o644)
-	os.WriteFile(callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
 {"id":"c2","tool":"unknown.tool","arguments":{}}
-`), 0o644)
+`))
 
 	// Without --fail-on: should succeed even though one call is denied.
 	if err := runCheck([]string{"--policy", policyFile, "--call", callFile}); err != nil {
@@ -369,15 +377,15 @@ func TestCheckFailOnAsk(t *testing.T) {
 	policyFile := filepath.Join(dir, "policy.yaml")
 	callFile := filepath.Join(dir, "calls.jsonl")
 
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
 tools:
   github.create_issue:
     decision: ask
-`), 0o644)
-	os.WriteFile(callFile, []byte(`{"id":"c1","tool":"github.create_issue","arguments":{}}
-`), 0o644)
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"github.create_issue","arguments":{}}
+`))
 
 	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "ask"})
 	if err == nil {
@@ -390,7 +398,7 @@ func TestCheckFailOnAllCallsEvaluated(t *testing.T) {
 	policyFile := filepath.Join(dir, "policy.yaml")
 	callFile := filepath.Join(dir, "calls.jsonl")
 
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
 tools:
@@ -400,13 +408,13 @@ tools:
     decision: deny
   tool.c:
     decision: allow
-`), 0o644)
+`))
 	// Three calls: a (allow), b (deny triggers --fail-on), c (allow).
 	// All three should be evaluated; error returned at end.
-	os.WriteFile(callFile, []byte(`{"id":"c1","tool":"tool.a","arguments":{}}
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"tool.a","arguments":{}}
 {"id":"c2","tool":"tool.b","arguments":{}}
 {"id":"c3","tool":"tool.c","arguments":{}}
-`), 0o644)
+`))
 
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout
@@ -435,11 +443,11 @@ func TestCheckFailOnRejectsAllow(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
 	callFile := filepath.Join(dir, "calls.jsonl")
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
-`), 0o644)
-	os.WriteFile(callFile, []byte(""), 0o644)
+`))
+	writeTestFile(t, callFile, []byte(""))
 
 	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "allow"})
 	if err == nil {
@@ -449,10 +457,24 @@ defaults:
 
 // ── #19: explain command ──────────────────────────────────────────────────────
 
+func TestExplainCommandRejectsNullArgs(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+`))
+
+	err := runExplain([]string{"--policy", policyFile, "--tool", "foo", "--args", "null"})
+	if err == nil {
+		t.Fatal("expected error for --args null")
+	}
+}
+
 func TestExplainCommandExplicitRule(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
 tools:
@@ -462,7 +484,7 @@ tools:
       paths:
         allow: ["./src/**"]
         deny: [".env"]
-`), 0o644)
+`))
 
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout
@@ -490,10 +512,10 @@ tools:
 func TestExplainCommandDefaultDecision(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
-`), 0o644)
+`))
 
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout
@@ -518,13 +540,13 @@ defaults:
 func TestExplainCommandJSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
 tools:
   github.delete_repo:
     decision: deny
-`), 0o644)
+`))
 
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout
@@ -560,14 +582,28 @@ tools:
 func TestExplainCommandMissingTool(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
-`), 0o644)
+`))
 
 	err := runExplain([]string{"--policy", policyFile})
 	if err == nil {
 		t.Fatal("expected error when --tool is missing")
+	}
+}
+
+func TestExplainCommandUnknownOutput(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+`))
+
+	err := runExplain([]string{"--policy", policyFile, "--tool", "foo", "--output", "xml"})
+	if err == nil {
+		t.Fatal("expected error for unknown --output mode")
 	}
 }
 
@@ -578,7 +614,7 @@ func TestPolicyTestCommandAllPass(t *testing.T) {
 	policyFile := filepath.Join(dir, "policy.yaml")
 	testsFile := filepath.Join(dir, "tests.yaml")
 
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
 tools:
@@ -588,8 +624,8 @@ tools:
       paths:
         allow: ["./"]
         deny: [".env"]
-`), 0o644)
-	os.WriteFile(testsFile, []byte(`tests:
+`))
+	writeTestFile(t, testsFile, []byte(`tests:
   - id: allow-readme
     tool: filesystem.read
     arguments:
@@ -604,7 +640,7 @@ tools:
     tool: unknown.tool
     arguments: {}
     expect: deny
-`), 0o644)
+`))
 
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout
@@ -631,16 +667,16 @@ func TestPolicyTestCommandFailure(t *testing.T) {
 	policyFile := filepath.Join(dir, "policy.yaml")
 	testsFile := filepath.Join(dir, "tests.yaml")
 
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
-`), 0o644)
-	os.WriteFile(testsFile, []byte(`tests:
+`))
+	writeTestFile(t, testsFile, []byte(`tests:
   - id: wrong-expectation
     tool: some.tool
     arguments: {}
     expect: allow
-`), 0o644)
+`))
 
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout
@@ -667,19 +703,19 @@ func TestPolicyTestCommandVerbose(t *testing.T) {
 	policyFile := filepath.Join(dir, "policy.yaml")
 	testsFile := filepath.Join(dir, "tests.yaml")
 
-	os.WriteFile(policyFile, []byte(`version: "0.1"
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
 defaults:
   decision: deny
 tools:
   filesystem.read:
     decision: allow
-`), 0o644)
-	os.WriteFile(testsFile, []byte(`tests:
+`))
+	writeTestFile(t, testsFile, []byte(`tests:
   - id: allow-read
     tool: filesystem.read
     arguments: {}
     expect: allow
-`), 0o644)
+`))
 
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout

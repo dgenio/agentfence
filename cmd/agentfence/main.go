@@ -330,6 +330,9 @@ func runExplain(args []string) error {
 	if err := json.Unmarshal([]byte(*argsStr), &arguments); err != nil {
 		return fmt.Errorf("--args: invalid JSON: %w", err)
 	}
+	if arguments == nil {
+		return fmt.Errorf("--args: must be a JSON object, got null")
+	}
 
 	call := policy.ToolCall{
 		ID:        "explain",
@@ -350,9 +353,12 @@ func runExplain(args []string) error {
 			Reason:   result.Reason,
 			Trace:    trace,
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
+		b, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return fmt.Errorf("explain: json marshal: %w", err)
+		}
 		fmt.Printf("%s\n", b)
-	default:
+	case "text":
 		fmt.Printf("tool:     %s\n", *toolName)
 		fmt.Printf("decision: %s\n", result.Decision)
 		fmt.Printf("reason:   %s\n", result.Reason)
@@ -362,6 +368,8 @@ func runExplain(args []string) error {
 				fmt.Printf("  - %s\n", step)
 			}
 		}
+	default:
+		return fmt.Errorf("--output: unknown mode %q; valid values: text, json", *outputMode)
 	}
 	return nil
 }
