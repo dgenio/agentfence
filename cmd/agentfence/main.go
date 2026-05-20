@@ -170,7 +170,10 @@ func runCheck(args []string) error {
 			case "text":
 				fmt.Printf("%s  -> deny (%s)\n", callID, reason)
 			case "jsonl":
-				b, _ := json.Marshal(summary)
+				b, err := json.Marshal(summary)
+				if err != nil {
+					return fmt.Errorf("marshal summary: %w", err)
+				}
 				fmt.Printf("%s\n", b)
 			case "json":
 				summaries = append(summaries, summary)
@@ -191,7 +194,10 @@ func runCheck(args []string) error {
 		case "text":
 			fmt.Printf("%s %s -> %s (%s)\n", call.ID, call.Tool, res.Decision, res.Reason)
 		case "jsonl":
-			b, _ := json.Marshal(summary)
+			b, err := json.Marshal(summary)
+			if err != nil {
+				return fmt.Errorf("marshal summary: %w", err)
+			}
 			fmt.Printf("%s\n", b)
 		case "json":
 			summaries = append(summaries, summary)
