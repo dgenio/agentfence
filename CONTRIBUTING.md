@@ -40,7 +40,7 @@ make build VERSION=0.1.0
 ```bash
 make test            # plain go test ./...
 make test-race       # go test -race with coverage profile (used in CI)
-make cover           # opens an HTML coverage report (after test-race)
+make cover           # runs test-race then opens an HTML coverage report
 ```
 
 To run a single package or test:

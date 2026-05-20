@@ -26,7 +26,7 @@ help:
 	@echo "  lint          Run vet + fmt-check."
 	@echo "  demo          Build and run 'agentfence demo'."
 	@echo "  ci            Run the full pre-push gate: fmt-check, vet, test-race."
-	@echo "  cover         Generate an HTML coverage report from $(COVERAGE)."
+	@echo "  cover         Run test-race and open an HTML coverage report."
 	@echo "  release-check Validate .goreleaser.yml (requires 'goreleaser' on PATH)."
 	@echo "  clean         Remove built artifacts."
 
@@ -70,7 +70,7 @@ demo: build
 ## ci: Run the full pre-push gate: fmt-check, vet, test-race.
 ci: fmt-check vet test-race
 
-## cover: Open an HTML coverage report (requires test-race to have run).
+## cover: Run tests with coverage and open an HTML report.
 cover: test-race
 	$(GO) tool cover -html=$(COVERAGE)
 
