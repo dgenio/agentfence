@@ -543,7 +543,7 @@ func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func()
 		}
 		return io.Discard, func() {}, nil
 	}
-	f, err := os.OpenFile(auditLogPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(auditLogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, nil, err
 	}
