@@ -57,3 +57,13 @@ Planned next step is to run AgentFence as an MCP-aware proxy between agents and 
 - Arguments are recursively traversed.
 - String values matching any configured secret pattern are replaced with `[REDACTED:<pattern_name>]`.
 - Redaction occurs before arguments are written into audit logs.
+
+## Enforcement modes
+
+AgentFence operates in one of four modes depending on the command and flags
+chosen: **detection**, **prevention**, **audit-only**, or **dry-run**. The
+modes differ in whether decisions are enforced, whether the operator is
+prompted, and how the exit code is propagated. The canonical definitions and
+command-to-mode mapping live in [`modes.md`](modes.md); the threat model
+references those modes when describing what each enforcement boundary
+guarantees (see [`threat-model.md`](threat-model.md)).
