@@ -24,9 +24,10 @@ today from what is planned. Do not assume planned features are usable yet.
 | Structured output modes (text / json / jsonl)       | Implemented    | `agentfence check --help` |
 | CI gating via `--fail-on`                           | Implemented    | `agentfence check --help` |
 | Pre-built release binaries                          | Implemented    | [Pre-built binaries](#pre-built-binaries) |
-| MCP stdio proxy (`agentfence proxy`)                | Planned        | [`docs/architecture.md`](docs/architecture.md), issues #4, #27, #32 |
+| MCP stdio proxy (`agentfence proxy`)                | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md), [`docs/architecture.md`](docs/architecture.md) |
+| Policy enforcement on intercepted `tools/call`      | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md) |
+| Tamper-evident hash-chained audit logs              | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | Interactive TTY approval for `ask` decisions        | Planned        | Issues #29, #30 |
-| Tamper-evident hash-chained audit logs              | Planned        | Issues #5, #33, #34 |
 | MCP streamable-HTTP proxy                           | Planned        | [`docs/architecture.md`](docs/architecture.md) |
 
 ## Why this exists
@@ -106,6 +107,19 @@ Check the installed version:
 ```bash
 ./agentfence version
 ```
+
+Run AgentFence as an MCP stdio proxy in front of any MCP server:
+
+```bash
+./agentfence proxy \
+  --policy examples/policy.yaml \
+  --audit-log audit.jsonl \
+  -- \
+  npx -y @modelcontextprotocol/server-filesystem /path/to/workspace
+```
+
+See [`docs/integration-guide.md`](docs/integration-guide.md) for Claude Code
+and VS Code configuration, audit-log inspection, and troubleshooting.
 
 ## Demo output
 
