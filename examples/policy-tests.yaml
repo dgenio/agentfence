@@ -95,3 +95,38 @@ tests:
     tool: unknown.dangerous_tool
     arguments: {}
     expect: deny
+
+  # ── memory_write fixtures (#43) ─────────────────────────────────
+  - id: ask-memory-write-safe-preference
+    tool: memory.write
+    arguments:
+      scope: project
+      value: "user prefers dark mode"
+    expect: ask
+
+  - id: deny-memory-write-secret-payload
+    tool: memory.write
+    arguments:
+      scope: project
+      value: "OPENAI_API_KEY=sk-demo-very-long-secret-value"
+    expect: deny
+
+  - id: deny-memory-write-scope-too-broad
+    tool: memory.write
+    arguments:
+      scope: global
+      value: "team standup is at 10am"
+    expect: deny
+
+  - id: deny-memory-write-oversize
+    tool: memory.write
+    arguments:
+      scope: project
+      value: "a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler. a very long entry that exceeds the configured size cap. this fixture pads the payload past the max_bytes limit by repeating filler."
+    expect: deny
+
+  - id: deny-memory-write-missing-payload
+    tool: memory.write
+    arguments:
+      scope: project
+    expect: deny

@@ -1,6 +1,8 @@
 package redact
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 
@@ -38,6 +40,48 @@ func (r *Redactor) RedactArguments(args map[string]interface{}) map[string]inter
 		cloned[k] = r.redactValue(v)
 	}
 	return cloned
+}
+
+// MatchesAny reports whether s matches any configured redaction pattern.
+// Used by the memory-write classifier to detect secret-like payloads.
+// Returns false when redaction is disabled — callers that want to inspect
+// patterns regardless should not gate on enabled state.
+func (r *Redactor) MatchesAny(s string) bool {
+	if !r.enabled {
+		return false
+	}
+	for _, p := range r.patterns {
+		if p.regex.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchedPatternNames returns the names of every configured redaction
+// pattern that matches s. The order matches the order patterns were
+// configured. Returns nil when redaction is disabled or no pattern matches.
+func (r *Redactor) MatchedPatternNames(s string) []string {
+	if !r.enabled {
+		return nil
+	}
+	var names []string
+	for _, p := range r.patterns {
+		if p.regex.MatchString(s) {
+			names = append(names, p.name)
+		}
+	}
+	return names
+}
+
+// FingerprintPayload returns a short hex prefix of the SHA-256 of s. It is
+// safe to log: collision-resistant for casual comparison but reveals no
+// information about the original payload. Used in audit summaries so two
+// memory writes of the same value can be correlated without exposing the
+// value.
+func FingerprintPayload(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 func (r *Redactor) redactValue(v interface{}) interface{} {

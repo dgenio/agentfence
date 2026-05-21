@@ -67,6 +67,18 @@ tools:
         deny:
           - "http://**"
 
+  # ── Durable memory-write constraints ─────────────────────────────
+  # Limit what an agent can persist to durable memory. Scope, sensitivity,
+  # and size are evaluated together; secret-looking payloads (matched by
+  # the redaction patterns below) auto-classify as high sensitivity.
+  memory.write:
+    decision: ask
+    constraints:
+      memory_write:
+        max_scope: project
+        max_sensitivity: medium
+        max_bytes: 1024
+
   # ── Shell command constraints ────────────────────────────────────
   # WARNING: best-effort guardrail only — not a sandbox.
   # Shell metacharacters (|, ;, &&, $()) can bypass these checks.

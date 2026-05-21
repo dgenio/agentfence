@@ -1,0 +1,33 @@
+# Shared baseline policy. Import this from project policies via:
+#
+#   imports:
+#     - base-policy.yaml
+#
+# Anything an importing policy declares takes precedence over what is
+# defined here; non-conflicting rules are inherited as-is.
+version: "0.1"
+
+defaults:
+  decision: deny
+
+tools:
+  # Always-deny baseline: destructive operations every project should refuse.
+  github.delete_repo:
+    decision: deny
+
+  filesystem.delete:
+    decision: deny
+
+redaction:
+  enabled: true
+  patterns:
+    - name: openai_api_key
+      regex: "sk-[A-Za-z0-9_-]{20,}"
+    - name: github_token
+      regex: "gh[pousr]_[A-Za-z0-9_]{20,}"
+    - name: generic_secret_assignment
+      regex: "(?i)(api_key|token|secret|password)\\s*[:=]\\s*[^\\s]+"
+
+audit:
+  format: jsonl
+  include_redacted_arguments: true

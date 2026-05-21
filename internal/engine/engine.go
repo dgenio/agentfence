@@ -32,6 +32,11 @@ func (e *Engine) Evaluate(call policy.ToolCall) (policy.EvaluationResult, audit.
 	result := e.evaluateDecisionCore(call, nil)
 	redacted := e.redactor.RedactArguments(call.Arguments)
 	event := audit.NewEvent(call, result, redacted, e.policy.Audit.IncludeRedactedArguments)
+	if rule, found, _ := e.lookupRule(call.Tool); found {
+		if summary := e.summarizeMemoryWrite(rule, call); summary != nil {
+			event.MemoryWrite = summary
+		}
+	}
 	return result, event
 }
 
@@ -65,6 +70,9 @@ func (e *Engine) evaluateDecisionCore(call policy.ToolCall, trace *[]string) pol
 		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
 	}
 	if deny, reason := evaluateCommandConstraints(rule, call, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	}
+	if deny, reason := evaluateMemoryWriteConstraints(rule, call, e.redactor, trace); deny {
 		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
 	}
 
@@ -395,4 +403,132 @@ func normalizePath(p string) string {
 		return "."
 	}
 	return n
+}
+
+// evaluateMemoryWriteConstraints enforces a rule's memory_write constraints.
+// A rule opts in by setting any of max_scope, max_sensitivity, max_bytes, or
+// payload_fields. The call must carry a non-empty payload in one of the
+// configured payload fields (default: value, content); a missing payload is
+// denied. Scope defaults to "session". Sensitivity is the higher of any
+// explicit "sensitivity" argument and the redactor's classification of the
+// payload (any pattern match → high).
+func evaluateMemoryWriteConstraints(rule policy.Rule, call policy.ToolCall, redactor *redact.Redactor, trace *[]string) (bool, string) {
+	mw := rule.Constraints.MemoryWrite
+	if !mw.IsSet() {
+		return false, ""
+	}
+
+	appendTrace(trace, "checking memory_write constraints")
+
+	callScope := memoryWriteScope(call)
+	if mw.MaxScope != "" {
+		callRank := policy.MemoryScopeRank(callScope)
+		if callRank < 0 {
+			appendTrace(trace, fmt.Sprintf("memory_write: unknown scope %q → deny", callScope))
+			return true, fmt.Sprintf("memory write scope %q is not recognised", callScope)
+		}
+		maxRank := policy.MemoryScopeRank(mw.MaxScope)
+		if callRank > maxRank {
+			appendTrace(trace, fmt.Sprintf("memory_write: scope %q exceeds max_scope %q → deny", callScope, mw.MaxScope))
+			return true, fmt.Sprintf("memory write scope %q exceeds max allowed %q", callScope, mw.MaxScope)
+		}
+	}
+
+	payload, field := memoryWritePayload(rule, call)
+	if payload == "" {
+		fields := memoryWritePayloadFields(rule)
+		appendTrace(trace, fmt.Sprintf("memory_write: no payload found in fields %v → deny", fields))
+		return true, fmt.Sprintf("memory write requires a non-empty payload in one of %v", fields)
+	}
+
+	if mw.MaxBytes > 0 && len(payload) > mw.MaxBytes {
+		appendTrace(trace, fmt.Sprintf("memory_write: payload %d bytes exceeds max_bytes %d → deny", len(payload), mw.MaxBytes))
+		return true, fmt.Sprintf("memory write payload %d bytes exceeds max allowed %d", len(payload), mw.MaxBytes)
+	}
+
+	if mw.MaxSensitivity != "" {
+		sensitivity := classifyMemoryWriteSensitivity(payload, call.Arguments, redactor)
+		callRank := policy.MemorySensitivityRank(sensitivity)
+		if callRank < 0 {
+			appendTrace(trace, fmt.Sprintf("memory_write: unknown sensitivity %q → deny", sensitivity))
+			return true, fmt.Sprintf("memory write sensitivity %q is not recognised", sensitivity)
+		}
+		maxRank := policy.MemorySensitivityRank(mw.MaxSensitivity)
+		if callRank > maxRank {
+			appendTrace(trace, fmt.Sprintf("memory_write: sensitivity %s exceeds max_sensitivity %s → deny", sensitivity, mw.MaxSensitivity))
+			return true, fmt.Sprintf("memory write sensitivity %q exceeds max allowed %q", sensitivity, mw.MaxSensitivity)
+		}
+	}
+
+	appendTrace(trace, fmt.Sprintf("memory_write: scope=%s field=%s size=%d → all constraints passed", callScope, field, len(payload)))
+	return false, ""
+}
+
+// summarizeMemoryWrite builds the audit MemoryWriteSummary for a rule that
+// opted in to memory-write evaluation. Returns nil when the rule did not
+// opt in. The summary intentionally never carries the raw payload.
+func (e *Engine) summarizeMemoryWrite(rule policy.Rule, call policy.ToolCall) *audit.MemoryWriteSummary {
+	mw := rule.Constraints.MemoryWrite
+	if !mw.IsSet() {
+		return nil
+	}
+	payload, field := memoryWritePayload(rule, call)
+	scope := memoryWriteScope(call)
+	sensitivity := classifyMemoryWriteSensitivity(payload, call.Arguments, e.redactor)
+
+	summary := &audit.MemoryWriteSummary{
+		Scope:       scope,
+		Sensitivity: sensitivity,
+		Field:       field,
+		SizeBytes:   len(payload),
+	}
+	if payload != "" {
+		summary.ContentFingerprint = redact.FingerprintPayload(payload)
+		summary.PatternsMatched = e.redactor.MatchedPatternNames(payload)
+	}
+	return summary
+}
+
+func memoryWriteScope(call policy.ToolCall) string {
+	if s, ok := call.Arguments["scope"].(string); ok && s != "" {
+		return s
+	}
+	return "session"
+}
+
+func memoryWritePayloadFields(rule policy.Rule) []string {
+	if len(rule.Constraints.MemoryWrite.PayloadFields) > 0 {
+		return rule.Constraints.MemoryWrite.PayloadFields
+	}
+	return policy.DefaultPayloadFields
+}
+
+func memoryWritePayload(rule policy.Rule, call policy.ToolCall) (string, string) {
+	for _, f := range memoryWritePayloadFields(rule) {
+		v, ok := call.Arguments[f]
+		if !ok {
+			continue
+		}
+		s, isStr := v.(string)
+		if !isStr || s == "" {
+			continue
+		}
+		return s, f
+	}
+	return "", ""
+}
+
+func classifyMemoryWriteSensitivity(payload string, args map[string]interface{}, redactor *redact.Redactor) string {
+	explicit := ""
+	if s, ok := args["sensitivity"].(string); ok && policy.MemorySensitivityRank(s) >= 0 {
+		explicit = s
+	}
+	detected := "low"
+	if redactor != nil && redactor.MatchesAny(payload) {
+		detected = "high"
+	}
+	if policy.MemorySensitivityRank(explicit) > policy.MemorySensitivityRank(detected) {
+		return explicit
+	}
+	return detected
 }

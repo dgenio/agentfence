@@ -4,6 +4,8 @@
 
 ```yaml
 version: "0.1"
+imports:
+  - ./base-policy.yaml
 defaults:
   decision: deny
 groups:
@@ -182,6 +184,79 @@ Behavior:
 > metacharacters (`|`, `;`, `&&`, `$()`) can bypass `allow_executables` and
 > `deny_patterns` checks. Do not rely on this as a security boundary.
 
+## Durable memory-write constraints
+
+Agents that write to durable memory can persist information across sessions —
+incorrect assumptions, sensitive data, project secrets. The `memory_write`
+constraint family lets a policy reason about scope, payload sensitivity, and
+size before a memory write is allowed.
+
+```yaml
+tools:
+  memory.write:
+    decision: ask
+    constraints:
+      memory_write:
+        max_scope: project        # session < project < global
+        max_sensitivity: medium   # low < medium < high
+        max_bytes: 1024
+        payload_fields:           # optional; defaults to [value, content]
+          - value
+          - content
+```
+
+A rule opts in to memory-write evaluation when any of `max_scope`,
+`max_sensitivity`, `max_bytes`, or `payload_fields` is set. The constraint
+is generic across tool names: `memory.write`, `agentmemory.write`,
+`notes.store` — anything you wire into your policy.
+
+Evaluation rules:
+
+- **Scope** is read from the call's `scope` argument (defaults to `session`).
+  A scope broader than `max_scope` is denied.
+- **Sensitivity** is the higher of the call's explicit `sensitivity`
+  argument and the redactor's auto-classification (any redaction pattern
+  match → `high`). A sensitivity above `max_sensitivity` is denied.
+- **Size** is the byte length of the first non-empty payload field. A
+  payload larger than `max_bytes` (when `max_bytes > 0`) is denied.
+- **Missing payload** in every configured payload field is denied.
+
+Every memory-write evaluation — allow, deny, or ask — adds a
+`memory_write` summary to the audit event so downstream tools can see
+scope, sensitivity, payload size, and a SHA-256 fingerprint of the
+payload without ever logging the payload itself. See the audit schema
+below.
+
+## Policy imports
+
+Share rules across projects by importing other policy files:
+
+```yaml
+imports:
+  - ./base-policy.yaml
+  - ./team-overrides.yaml
+```
+
+Behaviour:
+
+- Paths are relative to the importing file and may not escape its
+  directory (no absolute paths, no `../` past the directory root).
+- Import depth is capped at three levels below the root policy.
+- Circular imports are detected via canonicalized absolute paths and
+  rejected with an error naming the cycle.
+- The importing policy's explicit rules override anything inherited:
+  `tools` and `groups` are merged with the importing file winning on key
+  conflicts; `defaults.decision` and `audit.format` follow the same rule.
+- `redaction.patterns` are unioned (every layer's regex runs).
+- `redaction.enabled` and `audit.include_redacted_arguments` follow OR
+  semantics — once any layer enables them they stay enabled.
+- When two sibling imports define the same tool key, the later import
+  wins (consistent with the override pattern).
+
+See [`examples/base-policy.yaml`](../examples/base-policy.yaml) and
+[`examples/project-policy.yaml`](../examples/project-policy.yaml) for a
+worked example.
+
 ## Redaction patterns
 
 Regex patterns can redact sensitive-looking values before audit logging:
@@ -278,11 +353,11 @@ agentfence explain --policy examples/policy.yaml --tool filesystem.write \
 ## Audit event schema
 
 Each evaluated call produces one JSONL audit event with the following fields
-(schema version `1`):
+(schema version `2`):
 
 | Field            | Type    | Description |
 |------------------|---------|-------------|
-| `schema_version` | string  | On-wire schema identifier. Currently `"1"`. |
+| `schema_version` | string  | On-wire schema identifier. Currently `"2"`. |
 | `session_id`     | string  | UUIDv4 generated once per `agentfence` run. |
 | `seq`            | integer | Monotonic 1-based sequence number within the session. |
 | `timestamp`      | string  | RFC 3339 nano UTC timestamp of the decision. |
@@ -291,6 +366,7 @@ Each evaluated call produces one JSONL audit event with the following fields
 | `decision`       | string  | `allow`, `deny`, or `ask`. |
 | `reason`         | string  | Human-readable explanation. |
 | `arguments`      | object  | Redacted arguments (omitted when `audit.include_redacted_arguments` is false). |
+| `memory_write`   | object  | Safe summary of a durable memory-write call. Only present when the matched rule has `constraints.memory_write` set. Contains `scope`, `sensitivity`, `field`, `size_bytes`, `content_fingerprint`, and `patterns_matched`. Never includes the raw payload. |
 | `prev_hash`      | string  | Previous event's `hash`. Only present when `--tamper-evident` is set. Empty for the first event in a chain. |
 | `hash`           | string  | This event's SHA-256 (hex). Only present when `--tamper-evident` is set. |
 
