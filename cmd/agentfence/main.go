@@ -326,7 +326,8 @@ func printUsage() {
 	fmt.Println("  agentfence policy  validate --policy <file>")
 	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--passthrough] [--no-interactive] [--debug] -- <command> [args...]")
 	fmt.Println("  agentfence validate --policy <file>")
-	fmt.Println("  agentfence audit   verify   --log <file>")
+	fmt.Println("  agentfence audit   verify    --log <file>")
+	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
 	fmt.Println("  agentfence version")
 	fmt.Println("  agentfence demo")
 	fmt.Println("  agentfence init")
@@ -409,14 +410,63 @@ func runExplain(args []string) error {
 // runAuditSubcmd dispatches audit sub-commands: verify.
 func runAuditSubcmd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("audit requires a subcommand: verify")
+		return fmt.Errorf("audit requires a subcommand: verify, summarize")
 	}
 	switch args[0] {
 	case "verify":
 		return runAuditVerify(args[1:])
+	case "summarize":
+		return runAuditSummarize(args[1:])
 	default:
-		return fmt.Errorf("unknown audit subcommand %q; valid: verify", args[0])
+		return fmt.Errorf("unknown audit subcommand %q; valid: verify, summarize", args[0])
 	}
+}
+
+// runAuditSummarize aggregates an existing JSONL audit log and prints either a
+// human-readable summary or a JSON document with the same fields. Malformed
+// lines are counted as Malformed but never abort the run, so summarising a
+// partially corrupted log is still useful.
+func runAuditSummarize(args []string) error {
+	fs := flag.NewFlagSet("audit summarize", flag.ContinueOnError)
+	logPath := fs.String("log", "", "Path to audit JSONL log to summarise")
+	outputMode := fs.String("output", "text", "Output mode: text, json")
+	topN := fs.Int("top", 10, "Maximum number of rows in each top-N section")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *logPath == "" {
+		return errors.New("--log is required")
+	}
+	switch *outputMode {
+	case "text", "json":
+	default:
+		return fmt.Errorf("unknown --output mode %q; valid values: text, json", *outputMode)
+	}
+
+	f, err := os.Open(*logPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	summary, err := audit.Summarize(f, *topN)
+	if err != nil {
+		return err
+	}
+
+	switch *outputMode {
+	case "json":
+		b, err := json.MarshalIndent(summary, "", "  ")
+		if err != nil {
+			return fmt.Errorf("audit summarize: json marshal: %w", err)
+		}
+		fmt.Printf("%s\n", b)
+	default:
+		if err := summary.FormatText(os.Stdout); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runAuditVerify checks the tamper-evident hash chain of a JSONL audit log.

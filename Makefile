@@ -10,7 +10,9 @@ COVERAGE   ?= coverage.out
 VERSION    ?= dev
 LDFLAGS    ?= -X main.Version=$(VERSION)
 
-.PHONY: all build test test-race vet fmt fmt-check lint demo ci cover release-check clean help
+FUZZTIME   ?= 30s
+
+.PHONY: all build test test-race vet fmt fmt-check lint demo ci cover release-check clean help fuzz
 
 all: ci
 
@@ -27,6 +29,7 @@ help:
 	@echo "  demo          Build and run 'agentfence demo'."
 	@echo "  ci            Run the full pre-push gate: fmt-check, vet, test-race."
 	@echo "  cover         Run test-race and open an HTML coverage report."
+	@echo "  fuzz          Run each fuzz target for FUZZTIME (default $(FUZZTIME))."
 	@echo "  release-check Validate .goreleaser.yml (requires 'goreleaser' on PATH)."
 	@echo "  clean         Remove built artifacts."
 
@@ -73,6 +76,16 @@ ci: fmt-check vet test-race
 ## cover: Run tests with coverage and open an HTML report.
 cover: test-race
 	$(GO) tool cover -html=$(COVERAGE)
+
+## fuzz: Run every Go fuzz target sequentially for FUZZTIME each (default 30s).
+##       Set FUZZTIME=2s for a quick smoke run; longer values (e.g. 5m) for
+##       overnight runs. Go's native fuzzer only fuzzes one target per
+##       invocation, so we iterate explicitly.
+fuzz:
+	$(GO) test -run=- -fuzz=FuzzParsePolicy   -fuzztime=$(FUZZTIME) ./internal/policy
+	$(GO) test -run=- -fuzz=FuzzParseToolCall -fuzztime=$(FUZZTIME) ./internal/policy
+	$(GO) test -run=- -fuzz=FuzzMatchesGlob   -fuzztime=$(FUZZTIME) ./internal/engine
+	$(GO) test -run=- -fuzz=FuzzRedactArguments -fuzztime=$(FUZZTIME) ./internal/redact
 
 ## release-check: Validate .goreleaser.yml without producing a release.
 release-check:

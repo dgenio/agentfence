@@ -385,7 +385,12 @@ func matchesGlob(pattern, value string) bool {
 	regexPattern = strings.ReplaceAll(regexPattern, `\*\*/`, "(.*/)?")
 	regexPattern = strings.ReplaceAll(regexPattern, `\*\*`, ".*")
 	regexPattern = strings.ReplaceAll(regexPattern, `\*`, "[^/]*")
-	re := regexp.MustCompile(regexPattern)
+	// regexp.Compile (not MustCompile) so fuzz-discovered or future malformed
+	// patterns degrade to "no match" instead of panicking the whole evaluator.
+	re, err := regexp.Compile(regexPattern)
+	if err != nil {
+		return false
+	}
 	return re.MatchString(normValue)
 }
 
