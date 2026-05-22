@@ -53,6 +53,92 @@ audit:
 	}
 }
 
+func TestParsePolicyRejectsUnknownFields(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "top level",
+			yaml: `version: "0.1"
+defaultz:
+  decision: deny
+`,
+			want: "defaultz",
+		},
+		{
+			name: "path constraints",
+			yaml: `version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allowwww: ["./"]
+`,
+			want: "allowwww",
+		},
+		{
+			name: "argument constraints",
+			yaml: `version: "0.1"
+defaults:
+  decision: deny
+tools:
+  github.create_issue:
+    decision: ask
+    constraints:
+      args:
+        title:
+          allowwww: ["bug*"]
+`,
+			want: "allowwww",
+		},
+		{
+			name: "url constraints",
+			yaml: `version: "0.1"
+defaults:
+  decision: deny
+tools:
+  browser.open:
+    decision: allow
+    constraints:
+      urls:
+        domainz: ["example.com"]
+`,
+			want: "domainz",
+		},
+		{
+			name: "command constraints",
+			yaml: `version: "0.1"
+defaults:
+  decision: deny
+tools:
+  shell.exec:
+    decision: allow
+    constraints:
+      command:
+        executablez: ["git"]
+`,
+			want: "executablez",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParsePolicy([]byte(tt.yaml))
+			if err == nil {
+				t.Fatal("ParsePolicy() expected unknown-field error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ParsePolicy() error %q does not contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // TestValidateStrict covers the strict schema-plus-semantic validation added
 // by ValidateStrict.
 func TestValidateStrict(t *testing.T) {
