@@ -63,13 +63,16 @@ func TestTTYApproverDecisions(t *testing.T) {
 
 func TestTTYApproverTimeout(t *testing.T) {
 	out := &bytes.Buffer{}
-	// blockingReader never returns from Read, simulating a user who doesn't type.
-	a := NewTTYApproverWithIO(blockingReader{}, out)
+	// blockingReader never returns from Read until we close done,
+	// simulating a user who doesn't type.
+	br := newBlockingReader()
+	a := NewTTYApproverWithIO(br, out)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	approved, err := a.Request(ctx, policy.ToolCall{ID: "c1", Tool: "github.create_issue"})
+	close(br.done)
 	if approved {
 		t.Fatal("expected approved = false on timeout")
 	}
@@ -83,12 +86,14 @@ func TestTTYApproverTimeout(t *testing.T) {
 
 func TestTTYApproverContextAlreadyCancelled(t *testing.T) {
 	out := &bytes.Buffer{}
-	a := NewTTYApproverWithIO(blockingReader{}, out)
+	br := newBlockingReader()
+	a := NewTTYApproverWithIO(br, out)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	approved, err := a.Request(ctx, policy.ToolCall{ID: "c2", Tool: "shell.exec"})
+	close(br.done)
 	if approved {
 		t.Fatal("expected approved = false when context is already cancelled")
 	}
@@ -131,14 +136,19 @@ func TestTTYApproverCloseIsSafeWithoutOpenFile(t *testing.T) {
 	}
 }
 
-// blockingReader implements io.Reader and never returns from Read until
-// the test goroutine exits, simulating a user who never types.
-type blockingReader struct{}
+// blockingReader implements io.Reader and blocks until done is closed,
+// allowing the test goroutine to unblock it deterministically after the
+// timeout/cancel path is exercised.
+type blockingReader struct {
+	done chan struct{}
+}
 
-func (blockingReader) Read(_ []byte) (int, error) {
-	// Block "forever" — for test purposes, sleep then return EOF so we don't
-	// leak goroutines if the test framework outlives the timeout.
-	time.Sleep(time.Hour)
+func newBlockingReader() *blockingReader {
+	return &blockingReader{done: make(chan struct{})}
+}
+
+func (b *blockingReader) Read(_ []byte) (int, error) {
+	<-b.done
 	return 0, io.EOF
 }
 

@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/dgenio/agentfence/internal/policy"
 )
@@ -29,6 +30,15 @@ const ReasonDeniedInteractively = "denied interactively"
 // ReasonApprovalTimeout is the audit reason recorded when an approval prompt
 // times out and the call is auto-denied.
 const ReasonApprovalTimeout = "approval timeout"
+
+// ReasonApprovalCancelled is the audit reason recorded when the approval
+// context is cancelled (e.g., parent shutdown) and the call is auto-denied.
+const ReasonApprovalCancelled = "approval cancelled"
+
+// ReasonApprovalIOError is the audit reason recorded when the approver
+// encounters an I/O failure (TTY gone, broken pipe) and the call is
+// auto-denied. The error detail is surfaced to stderr.
+const ReasonApprovalIOError = "approval I/O error"
 
 // ReasonNonInteractive is the audit reason recorded when the operator disabled
 // interactive approval (--no-interactive) and an ask decision was auto-denied.
@@ -62,6 +72,7 @@ func (DenyAllApprover) Request(_ context.Context, _ policy.ToolCall) (bool, erro
 // falls back to os.Stdin/os.Stderr); use NewTTYApproverWithIO in tests to
 // inject fake reader/writer pairs.
 type TTYApprover struct {
+	mu     sync.Mutex
 	in     io.Reader
 	out    io.Writer
 	closer io.Closer
@@ -107,6 +118,18 @@ func (a *TTYApprover) Close() error {
 // input — including empty Enter, "n", "no", EOF, or unrecognised text —
 // denies. Context cancellation or deadline expiry auto-denies.
 func (a *TTYApprover) Request(ctx context.Context, call policy.ToolCall) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Short-circuit if the context is already done — avoids spawning a
+	// goroutine that would immediately race against ctx.Done().
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(a.out, "AgentFence: approval timeout for [%s] %s — denying\n", call.ID, call.Tool)
+		}
+		return false, err
+	}
+
 	if _, err := fmt.Fprintf(a.out, "AgentFence: approve %s [%s]? (y/N): ", call.Tool, call.ID); err != nil {
 		return false, fmt.Errorf("approval: write prompt: %w", err)
 	}
@@ -134,8 +157,9 @@ func (a *TTYApprover) Request(ctx context.Context, call policy.ToolCall) (bool, 
 		}
 		return r.approved, nil
 	case <-ctx.Done():
-		// Newline so the timeout message lands on a fresh line.
-		fmt.Fprintf(a.out, "\nAgentFence: approval timeout for [%s] %s — denying\n", call.ID, call.Tool)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			fmt.Fprintf(a.out, "\nAgentFence: approval timeout for [%s] %s — denying\n", call.ID, call.Tool)
+		}
 		return false, ctx.Err()
 	}
 }

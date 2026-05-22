@@ -321,6 +321,13 @@ func resolveAsk(approver approval.Approver, call policy.ToolCall, res policy.Eva
 	case errors.Is(err, context.DeadlineExceeded):
 		res.Decision = policy.DecisionDeny
 		res.Reason = approval.ReasonApprovalTimeout
+	case errors.Is(err, context.Canceled):
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonApprovalCancelled
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "AgentFence: approval I/O error for [%s] %s: %v\n", call.ID, call.Tool, err)
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonApprovalIOError
 	case noInteractive:
 		res.Decision = policy.DecisionDeny
 		res.Reason = approval.ReasonNonInteractive
