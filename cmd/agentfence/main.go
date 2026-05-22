@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dgenio/agentfence/internal/approval"
@@ -19,6 +22,7 @@ import (
 	"github.com/dgenio/agentfence/internal/demo"
 	"github.com/dgenio/agentfence/internal/engine"
 	"github.com/dgenio/agentfence/internal/policy"
+	"github.com/dgenio/agentfence/internal/proxy"
 )
 
 // Version is the current release version. Override at build time with:
@@ -63,6 +67,8 @@ func main() {
 		err = runInit()
 	case "policy":
 		err = runPolicySubcmd(os.Args[2:])
+	case "proxy":
+		err = runProxy(os.Args[2:])
 	case "validate":
 		err = runValidate(os.Args[2:])
 	case "version":
@@ -73,6 +79,16 @@ func main() {
 	}
 
 	if err != nil {
+		// Subprocess exit propagation: the proxy returns *exec.ExitError when
+		// the downstream MCP server exits non-zero. We surface that exit code
+		// verbatim so wrappers can distinguish "policy proxy failed" from
+		// "the MCP server itself errored" without parsing stderr. We only
+		// reach this branch after every defer (including audit-log close) has
+		// run.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -389,6 +405,7 @@ func printUsage() {
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
+	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--passthrough] [--no-interactive] [--debug] -- <command> [args...]")
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence audit   verify   --log <file>")
 	fmt.Println("  agentfence version")
@@ -516,6 +533,102 @@ func runAuditVerify(args []string) error {
 		}
 		return fmt.Errorf("audit verify: %w", err)
 	}
+}
+
+// runProxy launches the MCP stdio proxy. The downstream MCP server command
+// is supplied as positional arguments after `--`:
+//
+//	agentfence proxy --policy policy.yaml -- node my-mcp-server.js --foo
+//
+// The proxy spawns the command, relays JSON-RPC messages in both directions,
+// and intercepts tools/call requests for policy evaluation. See
+// docs/integration-guide.md for end-to-end configuration examples.
+func runProxy(args []string) error {
+	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
+	policyPath := fs.String("policy", "", "Path to policy YAML (required unless --passthrough)")
+	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
+	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
+	passthrough := fs.Bool("passthrough", false, "Forward every message without policy evaluation (skeleton mode; useful for validating the relay)")
+	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting (reserved for the TTY approver in issue #29)")
+	debug := fs.Bool("debug", false, "Log every forwarded message to stderr")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	_ = noInteractive // The current default approver is deny-all; the TTY
+	// approver landing in #29 will branch on this flag.
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return errors.New("proxy: a downstream command is required after `--` (e.g. `agentfence proxy --policy policy.yaml -- node server.js`)")
+	}
+	cmdName := rest[0]
+	cmdArgs := rest[1:]
+
+	var eng *engine.Engine
+	if !*passthrough {
+		if *policyPath == "" {
+			return errors.New("--policy is required (or pass --passthrough to run the relay without enforcement)")
+		}
+		p, err := policy.LoadFile(*policyPath)
+		if err != nil {
+			return err
+		}
+		eng, err = engine.New(p)
+		if err != nil {
+			return err
+		}
+	}
+
+	auditOut, closeAudit, err := openAuditOutput(*auditLogPath, *tamperEvident)
+	if err != nil {
+		return err
+	}
+	defer closeAudit()
+	aw := audit.NewWriterOptions(auditOut, audit.Options{TamperEvident: *tamperEvident})
+
+	opts := proxy.Options{
+		Engine:      eng,
+		AuditWriter: aw,
+		Approver:    proxy.DenyAllApprover{},
+		Passthrough: *passthrough,
+		Debug:       *debug,
+		Logger:      os.Stderr,
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Return the proxy.Run error unchanged. When the downstream MCP server
+	// exits non-zero, it is an *exec.ExitError; main() detects that and
+	// exits with the same code. Returning here (instead of calling
+	// os.Exit inside runProxy) lets the deferred closeAudit() flush and
+	// close the audit log before the process exits.
+	return proxy.Run(ctx, cmdName, cmdArgs, opts)
+}
+
+// openAuditOutput returns the audit destination Writer + a close func. When
+// auditLogPath is empty, audit events are discarded (the proxy MUST NOT
+// interleave audit JSONL with the agent's stdout, which is reserved for
+// JSON-RPC responses). The tamper-evident flag with no log file triggers a
+// stderr warning consistent with `check`.
+//
+// New files are created with 0o600 (owner-read/write) so audit events —
+// which can contain redacted-but-still-sensitive tool arguments — do not
+// inherit a permissive umask. Pre-existing files are opened in append mode
+// without altering their permissions, on the assumption that the operator
+// chose those bits deliberately.
+func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func(), error) {
+	if auditLogPath == "" {
+		if tamperEvident {
+			fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log discards audit events; nothing to verify.")
+		}
+		return io.Discard, func() {}, nil
+	}
+	f, err := os.OpenFile(auditLogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() { _ = f.Close() }, nil
 }
 
 // runPolicySubcmd dispatches policy sub-commands: test, validate.

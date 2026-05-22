@@ -1,0 +1,1 @@
+{ repository(owner: "dgenio", name: "contextweaver") { pullRequest(number: 283) { reviewThreads(first: 20) { nodes { id isResolved comments(first: 1) { nodes { path line databaseId } } } } } } }

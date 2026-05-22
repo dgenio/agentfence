@@ -1154,3 +1154,36 @@ func TestCheckDryRunTextOutputContainsMarker(t *testing.T) {
 		t.Errorf("expected [dry-run] marker in text output; got:\n%s", buf.String())
 	}
 }
+
+// TestRunProxyRequiresCommand verifies that omitting the downstream command
+// produces a clear error pointing at the `--` convention.
+func TestRunProxyRequiresCommand(t *testing.T) {
+	err := runProxy([]string{"--policy", "/dev/null"})
+	if err == nil {
+		t.Fatal("expected error when downstream command is missing")
+	}
+	if !strings.Contains(err.Error(), "command is required") {
+		t.Errorf("error message %q must mention the missing command", err.Error())
+	}
+}
+
+// TestRunProxyRequiresPolicyUnlessPassthrough verifies the --policy/--passthrough
+// invariant: enforcement-mode runs must point at a policy.
+func TestRunProxyRequiresPolicyUnlessPassthrough(t *testing.T) {
+	err := runProxy([]string{"--", "true"})
+	if err == nil {
+		t.Fatal("expected error when --policy is missing in enforcement mode")
+	}
+	if !strings.Contains(err.Error(), "--policy is required") {
+		t.Errorf("error message %q must mention --policy", err.Error())
+	}
+}
+
+// TestRunProxyRejectsMissingPolicyFile verifies that a non-existent policy
+// path surfaces as a load error, not silently falls through to passthrough.
+func TestRunProxyRejectsMissingPolicyFile(t *testing.T) {
+	err := runProxy([]string{"--policy", filepath.Join(t.TempDir(), "nope.yaml"), "--", "true"})
+	if err == nil {
+		t.Fatal("expected error when --policy file does not exist")
+	}
+}
