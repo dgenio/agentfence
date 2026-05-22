@@ -372,6 +372,33 @@ tools:
 	}
 }
 
+func TestCheckRejectsTypoPolicy(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allowwww: ["./"]
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"./test"}}
+`))
+
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
+	if err == nil {
+		t.Fatal("expected runCheck to reject unknown policy field")
+	}
+	if !strings.Contains(err.Error(), "allowwww") {
+		t.Fatalf("expected error to mention allowwww, got %v", err)
+	}
+}
+
 func TestCheckFailOnAsk(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")

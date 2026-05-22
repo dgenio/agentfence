@@ -207,6 +207,9 @@ agentfence policy validate --policy bad-policy.yaml
 ```
 
 Strict validation catches unknown fields, invalid decisions, bad regexes, and more.
+The same unknown-field check runs when policy files are loaded by `check`,
+`proxy`, `explain`, and `policy test`, so typo'd rules are rejected instead of
+being ignored at runtime.
 
 ## Policy testing
 

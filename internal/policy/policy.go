@@ -154,7 +154,9 @@ func LoadFile(path string) (Policy, error) {
 
 func ParsePolicy(b []byte) (Policy, error) {
 	var p Policy
-	if err := yaml.Unmarshal(b, &p); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&p); err != nil {
 		return Policy{}, err
 	}
 
@@ -236,7 +238,7 @@ func (e ValidationError) Error() string {
 
 // ValidateStrict parses b with unknown-field detection enabled and runs semantic
 // validation. All errors are collected and returned; the caller should check
-// len(errs) > 0. Does not modify the behaviour of ParsePolicy or LoadFile.
+// len(errs) > 0.
 func ValidateStrict(b []byte) []ValidationError {
 	var errs []ValidationError
 

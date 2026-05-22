@@ -98,6 +98,10 @@ Validate a policy file before use (catches typos and unknown fields):
 ./agentfence validate --policy examples/policy.yaml
 ```
 
+The same strict schema check is also applied when policies are loaded by
+`check`, `proxy`, `explain`, and `policy test`, so a typo is rejected before any
+tool call is evaluated.
+
 ## Approval and dry-run modes
 
 `check` exposes three operator controls for the `ask` decision and for
