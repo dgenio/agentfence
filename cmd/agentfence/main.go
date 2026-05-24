@@ -39,21 +39,25 @@ type DecisionSummary struct {
 }
 
 func main() {
-	// Handle --version / -version before the subcommand switch so it works
-	// regardless of argument position.
-	for _, arg := range os.Args[1:] {
-		if arg == "--version" || arg == "-version" {
-			runVersion()
-			return
-		}
-	}
-
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
 
+	// Handle --version / -version before the subcommand switch so it works
+	// regardless of argument position.
 	var err error
+	for i, arg := range os.Args[1:] {
+		if arg == "--version" || arg == "-version" {
+			// Pass only the arguments after the found flag to the subcommand
+			err = runVersion(os.Args[i+2:])
+			if err == nil {
+				os.Exit(0)
+			}
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	}
 	switch os.Args[1] {
 	case "audit":
 		err = runAuditSubcmd(os.Args[2:])
@@ -64,7 +68,7 @@ func main() {
 	case "explain":
 		err = runExplain(os.Args[2:])
 	case "init":
-		err = runInit()
+		err = runInit(os.Args[2:])
 	case "policy":
 		err = runPolicySubcmd(os.Args[2:])
 	case "proxy":
@@ -72,7 +76,7 @@ func main() {
 	case "validate":
 		err = runValidate(os.Args[2:])
 	case "version":
-		runVersion()
+		err = runVersion(os.Args[2:])
 	default:
 		printUsage()
 		err = fmt.Errorf("unknown command: %s", os.Args[1])
@@ -94,8 +98,20 @@ func main() {
 	}
 }
 
-func runVersion() {
+func runVersion(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Print the agentfence version.")
+		fmt.Fprintln(fs.Output(), "Usage: agentfence version")
+	}
+	if err := fs.Parse(args); err != nil {
+		return handleFlagParseErr(err)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("version: unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
 	fmt.Printf("agentfence %s %s/%s\n", Version, runtime.GOOS, runtime.GOARCH)
+	return nil
 }
 
 func runCheck(args []string) error {
@@ -387,7 +403,26 @@ func runValidate(args []string) error {
 	return fmt.Errorf("%s: %d validation error(s)", *policyPath, len(errs))
 }
 
-func runInit() error {
+func handleFlagParseErr(err error) error {
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
+}
+
+func runInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Initialize a starter policy in the current directory.")
+		fmt.Fprintln(fs.Output(), "This writes a new file agentfence.yaml in the current directory.")
+		fmt.Fprintln(fs.Output(), "Usage: agentfence init")
+	}
+	if err := fs.Parse(args); err != nil {
+		return handleFlagParseErr(err)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("init: unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
 	const fileName = "agentfence.yaml"
 	if _, err := os.Stat(fileName); err == nil {
 		return fmt.Errorf("%s already exists", fileName)

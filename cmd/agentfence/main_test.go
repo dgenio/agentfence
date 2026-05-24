@@ -59,7 +59,7 @@ func TestRunInitCreatesFile(t *testing.T) {
 	defer os.Chdir(orig)
 	os.Chdir(dir)
 
-	err := runInit()
+	err := runInit([]string{})
 	if err != nil {
 		t.Fatalf("runInit() error = %v", err)
 	}
@@ -77,7 +77,7 @@ func TestRunInitFailsIfFileExists(t *testing.T) {
 
 	writeTestFile(t, "agentfence.yaml", []byte("existing"))
 
-	err := runInit()
+	err := runInit([]string{})
 	if err == nil {
 		t.Fatal("expected error when file already exists")
 	}
@@ -93,7 +93,7 @@ func TestVersionCommand(t *testing.T) {
 	oldStdout := os.Stdout
 	os.Stdout = w
 
-	runVersion()
+	runVersion([]string{})
 
 	w.Close()
 	os.Stdout = oldStdout
@@ -125,6 +125,29 @@ defaults:
 
 	if err := runValidate([]string{"--policy", policyFile}); err != nil {
 		t.Fatalf("runValidate() unexpected error: %v", err)
+	}
+}
+
+func TestInitHelpDoesNotCreateFile(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer os.Chdir(orig)
+	os.Chdir(dir)
+
+	if err := runInit([]string{"--help"}); err != nil {
+		t.Fatalf("expected nil error for help, got %v", err)
+	}
+
+	if _, err := os.Stat("agentfence.yaml"); err == nil {
+		t.Fatal("agentfence.yaml should not be created when asking for help")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected stat error: %v", err)
+	}
+}
+
+func TestVersionRejectsExtraArgs(t *testing.T) {
+	if err := runVersion([]string{"garbage"}); err == nil {
+		t.Fatal("expected error for extra args to version")
 	}
 }
 
