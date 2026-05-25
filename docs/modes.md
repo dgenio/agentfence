@@ -1,9 +1,8 @@
 # AgentFence enforcement modes
 
-AgentFence defines four distinct operating modes (see the Command-to-mode
-mapping table below for current implementation status). They differ in
-**whether policy decisions are enforced**, **whether the operator is
-prompted**, and **how the exit code is propagated**. The wording in this document is the
+AgentFence supports four distinct operating modes. They differ in **whether
+policy decisions are enforced**, **whether the operator is prompted**, and
+**how the exit code is propagated**. The wording in this document is the
 canonical source — `README.md`, `docs/architecture.md`, and
 `docs/threat-model.md` all link here rather than restating the definitions.
 
@@ -75,15 +74,12 @@ converted into `allow` or `deny`.
 |-------------------------------------------------------|---------------------|-------------------------|
 | `agentfence check --call <jsonl>`                     | Audit-only          | Implemented             |
 | `agentfence check --call <jsonl> --fail-on deny`      | Audit-only (CI gate)| Implemented             |
-| `agentfence check --call <jsonl> --dry-run`           | Dry-run             | In-progress (PR #50)    |
-| `agentfence proxy --policy <file> -- <tool-server>`   | Prevention          | In-progress (PR #49)    |
-| `agentfence proxy --passthrough ...`                  | Detection           | In-progress (PR #49)    |
+| `agentfence check --call <jsonl> --dry-run`           | Dry-run             | Implemented             |
+| `agentfence proxy --policy <file> -- <tool-server>`   | Prevention          | Implemented             |
+| `agentfence proxy --passthrough ...`                  | Detection           | Implemented             |
 | `agentfence audit verify --log <file>`                | Integrity check     | Implemented             |
 
-The `In-progress` rows depend on PRs that are open at the time of writing
-(#49 for the MCP proxy, #50 for dry-run). The mode taxonomy itself is
-already canonical; flipping these rows to `Implemented` is a mechanical
-follow-up once those PRs merge.
+All modes listed above are implemented on `main`.
 
 `audit verify` is not a runtime evaluation mode — it inspects an
 already-produced audit log for tamper-evident chain integrity. It is listed

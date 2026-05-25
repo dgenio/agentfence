@@ -88,9 +88,8 @@ configuration examples.
 
 ## Enforcement modes
 
-AgentFence defines four enforcement modes (not all implemented at time of
-writing; see [`modes.md`](modes.md) for status): **detection**,
-**prevention**, **audit-only**, and **dry-run**. The
+AgentFence defines four enforcement modes (see [`modes.md`](modes.md) for
+details): **detection**, **prevention**, **audit-only**, and **dry-run**. The
 modes differ in whether decisions are enforced, whether the operator is
 prompted, and how the exit code is propagated. The canonical definitions and
 command-to-mode mapping live in [`modes.md`](modes.md); the threat model
