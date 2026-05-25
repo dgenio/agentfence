@@ -17,7 +17,16 @@ import (
 // CurrentSchemaVersion is the schema_version value written into every Event.
 // Bump this when the on-wire layout changes in a way that downstream parsers
 // must distinguish.
-const CurrentSchemaVersion = "1"
+//
+// History:
+//
+//	"1" — initial schema with session_id, seq, optional hash chain.
+//	"2" — added optional "mode" field ("dry_run" for simulated enforcement).
+const CurrentSchemaVersion = "2"
+
+// ModeDryRun marks an audit event produced under dry-run evaluation. Events
+// without an explicit Mode are treated as enforced.
+const ModeDryRun = "dry_run"
 
 // Event is a single audit record written to the JSONL stream.
 //
@@ -37,6 +46,7 @@ type Event struct {
 	Decision      policy.Decision        `json:"decision"`
 	Reason        string                 `json:"reason"`
 	Arguments     map[string]interface{} `json:"arguments,omitempty"`
+	Mode          string                 `json:"mode,omitempty"`
 	PrevHash      string                 `json:"prev_hash,omitempty"`
 	Hash          string                 `json:"hash,omitempty"`
 }

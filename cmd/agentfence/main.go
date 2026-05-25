@@ -2,20 +2,27 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/dgenio/agentfence/internal/approval"
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/demo"
 	"github.com/dgenio/agentfence/internal/engine"
 	"github.com/dgenio/agentfence/internal/policy"
+	"github.com/dgenio/agentfence/internal/proxy"
 )
 
 // Version is the current release version. Override at build time with:
@@ -60,6 +67,8 @@ func main() {
 		err = runInit()
 	case "policy":
 		err = runPolicySubcmd(os.Args[2:])
+	case "proxy":
+		err = runProxy(os.Args[2:])
 	case "validate":
 		err = runValidate(os.Args[2:])
 	case "version":
@@ -70,6 +79,16 @@ func main() {
 	}
 
 	if err != nil {
+		// Subprocess exit propagation: the proxy returns *exec.ExitError when
+		// the downstream MCP server exits non-zero. We surface that exit code
+		// verbatim so wrappers can distinguish "policy proxy failed" from
+		// "the MCP server itself errored" without parsing stderr. We only
+		// reach this branch after every defer (including audit-log close) has
+		// run.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -87,6 +106,9 @@ func runCheck(args []string) error {
 	outputMode := fs.String("output", "text", "Output mode: text, json, jsonl")
 	failOn := fs.String("fail-on", "", "Comma-separated decisions to fail on: deny, ask")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
+	dryRun := fs.Bool("dry-run", false, "Evaluate and audit without enforcing: ask decisions are not prompted, and --fail-on does not change the exit code")
+	noInteractive := fs.Bool("no-interactive", false, "Do not prompt the operator on ask decisions; auto-deny instead")
+	approvalTimeout := fs.Duration("approval-timeout", 0, "Maximum time to wait for an ask response (e.g. 30s, 2m). 0 means wait forever; recommended for CI is 30s with --no-interactive")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -147,6 +169,23 @@ func runCheck(args []string) error {
 
 	aw := audit.NewWriterOptions(auditOut, audit.Options{TamperEvident: *tamperEvident})
 
+	// Approver selection. In dry-run we never prompt; otherwise --no-interactive
+	// forces DenyAllApprover, and the default opens a real TTY.
+	var approver approval.Approver
+	switch {
+	case *dryRun:
+		approver = nil // never invoked in dry-run mode
+	case *noInteractive:
+		approver = approval.DenyAllApprover{}
+	default:
+		tty, err := approval.NewTTYApprover()
+		if err != nil {
+			return fmt.Errorf("approval: %w", err)
+		}
+		defer tty.Close()
+		approver = tty
+	}
+
 	callsFile, err := os.Open(*callPath)
 	if err != nil {
 		return err
@@ -190,6 +229,17 @@ func runCheck(args []string) error {
 		}
 
 		res, event := eng.Evaluate(call)
+
+		// On ask, convert to allow/deny via the approver — unless we're in
+		// dry-run, in which case ask is recorded verbatim with mode=dry_run.
+		if res.Decision == policy.DecisionAsk && !*dryRun {
+			res, event = resolveAsk(approver, call, res, event, *approvalTimeout, *noInteractive)
+		}
+
+		if *dryRun {
+			event.Mode = audit.ModeDryRun
+		}
+
 		summary := DecisionSummary{
 			ID:       call.ID,
 			Tool:     call.Tool,
@@ -199,7 +249,11 @@ func runCheck(args []string) error {
 
 		switch *outputMode {
 		case "text":
-			fmt.Printf("%s %s -> %s (%s)\n", call.ID, call.Tool, res.Decision, res.Reason)
+			suffix := ""
+			if *dryRun {
+				suffix = " [dry-run]"
+			}
+			fmt.Printf("%s %s -> %s (%s)%s\n", call.ID, call.Tool, res.Decision, res.Reason, suffix)
 		case "jsonl":
 			b, err := json.Marshal(summary)
 			if err != nil {
@@ -238,7 +292,9 @@ func runCheck(args []string) error {
 		return fmt.Errorf("all %d line(s) failed to parse; no calls were evaluated", lineNum)
 	}
 
-	// --fail-on: exit 1 if any call matched a gated decision.
+	// --fail-on: exit 1 if any call matched a gated decision. In dry-run we
+	// report what would have failed but do not propagate the non-zero exit —
+	// the whole point of dry-run is "evaluate without enforcing."
 	if len(failOnSet) > 0 {
 		matched := 0
 		for d := range failOnSet {
@@ -250,12 +306,54 @@ func runCheck(args []string) error {
 				gated = append(gated, string(d))
 			}
 			sort.Strings(gated)
-			fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
-			return fmt.Errorf("%d call(s) matched --fail-on criteria", matched)
+			if *dryRun {
+				fmt.Fprintf(os.Stderr, "AgentFence: dry-run: %d call(s) would have matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+			} else {
+				fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+				return fmt.Errorf("%d call(s) matched --fail-on criteria", matched)
+			}
 		}
 	}
 
 	return nil
+}
+
+// resolveAsk converts an ask decision into a concrete allow or deny by calling
+// the approver. The audit event is updated in place to reflect the final
+// decision and reason. A zero timeout means "wait forever."
+func resolveAsk(approver approval.Approver, call policy.ToolCall, res policy.EvaluationResult, event audit.Event, timeout time.Duration, noInteractive bool) (policy.EvaluationResult, audit.Event) {
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	approved, err := approver.Request(ctx, call)
+	switch {
+	case approved:
+		res.Decision = policy.DecisionAllow
+		res.Reason = approval.ReasonApprovedInteractively
+	case errors.Is(err, context.DeadlineExceeded):
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonApprovalTimeout
+	case errors.Is(err, context.Canceled):
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonApprovalCancelled
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "AgentFence: approval I/O error for [%s] %s: %v\n", call.ID, call.Tool, err)
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonApprovalIOError
+	case noInteractive:
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonNonInteractive
+	default:
+		res.Decision = policy.DecisionDeny
+		res.Reason = approval.ReasonDeniedInteractively
+	}
+	event.Decision = res.Decision
+	event.Reason = res.Reason
+	return res, event
 }
 
 func runValidate(args []string) error {
@@ -303,10 +401,11 @@ func runInit() error {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident]")
+	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
+	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--passthrough] [--no-interactive] [--debug] -- <command> [args...]")
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence audit   verify   --log <file>")
 	fmt.Println("  agentfence version")
@@ -436,6 +535,102 @@ func runAuditVerify(args []string) error {
 		}
 		return fmt.Errorf("audit verify: %w", err)
 	}
+}
+
+// runProxy launches the MCP stdio proxy. The downstream MCP server command
+// is supplied as positional arguments after `--`:
+//
+//	agentfence proxy --policy policy.yaml -- node my-mcp-server.js --foo
+//
+// The proxy spawns the command, relays JSON-RPC messages in both directions,
+// and intercepts tools/call requests for policy evaluation. See
+// docs/integration-guide.md for end-to-end configuration examples.
+func runProxy(args []string) error {
+	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
+	policyPath := fs.String("policy", "", "Path to policy YAML (required unless --passthrough)")
+	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
+	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
+	passthrough := fs.Bool("passthrough", false, "Forward every message without policy evaluation (skeleton mode; useful for validating the relay)")
+	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting (reserved for the TTY approver in issue #29)")
+	debug := fs.Bool("debug", false, "Log every forwarded message to stderr")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	_ = noInteractive // The current default approver is deny-all; the TTY
+	// approver landing in #29 will branch on this flag.
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return errors.New("proxy: a downstream command is required after `--` (e.g. `agentfence proxy --policy policy.yaml -- node server.js`)")
+	}
+	cmdName := rest[0]
+	cmdArgs := rest[1:]
+
+	var eng *engine.Engine
+	if !*passthrough {
+		if *policyPath == "" {
+			return errors.New("--policy is required (or pass --passthrough to run the relay without enforcement)")
+		}
+		p, err := policy.LoadFile(*policyPath)
+		if err != nil {
+			return err
+		}
+		eng, err = engine.New(p)
+		if err != nil {
+			return err
+		}
+	}
+
+	auditOut, closeAudit, err := openAuditOutput(*auditLogPath, *tamperEvident)
+	if err != nil {
+		return err
+	}
+	defer closeAudit()
+	aw := audit.NewWriterOptions(auditOut, audit.Options{TamperEvident: *tamperEvident})
+
+	opts := proxy.Options{
+		Engine:      eng,
+		AuditWriter: aw,
+		Approver:    proxy.DenyAllApprover{},
+		Passthrough: *passthrough,
+		Debug:       *debug,
+		Logger:      os.Stderr,
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Return the proxy.Run error unchanged. When the downstream MCP server
+	// exits non-zero, it is an *exec.ExitError; main() detects that and
+	// exits with the same code. Returning here (instead of calling
+	// os.Exit inside runProxy) lets the deferred closeAudit() flush and
+	// close the audit log before the process exits.
+	return proxy.Run(ctx, cmdName, cmdArgs, opts)
+}
+
+// openAuditOutput returns the audit destination Writer + a close func. When
+// auditLogPath is empty, audit events are discarded (the proxy MUST NOT
+// interleave audit JSONL with the agent's stdout, which is reserved for
+// JSON-RPC responses). The tamper-evident flag with no log file triggers a
+// stderr warning consistent with `check`.
+//
+// New files are created with 0o600 (owner-read/write) so audit events —
+// which can contain redacted-but-still-sensitive tool arguments — do not
+// inherit a permissive umask. Pre-existing files are opened in append mode
+// without altering their permissions, on the assumption that the operator
+// chose those bits deliberately.
+func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func(), error) {
+	if auditLogPath == "" {
+		if tamperEvident {
+			fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log discards audit events; nothing to verify.")
+		}
+		return io.Discard, func() {}, nil
+	}
+	f, err := os.OpenFile(auditLogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() { _ = f.Close() }, nil
 }
 
 // runPolicySubcmd dispatches policy sub-commands: test, validate.
