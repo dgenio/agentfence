@@ -124,8 +124,9 @@ adversarial input rather than the operator's intent.
 ## What AgentFence mitigates today
 
 - Local policy decisions (`allow`, `deny`, `ask`) before execution, exposed
-  through four operating modes (detection, prevention, audit-only,
-  dry-run); see [`modes.md`](modes.md) for the canonical definitions.
+  through four operating modes (two implemented, two in-progress:
+  detection, prevention, audit-only, dry-run); see [`modes.md`](modes.md)
+  for the canonical definitions and current implementation status.
 - Safe defaults through default-deny policy.
 - Path-based guardrails for filesystem tools.
 - Runtime enforcement at the MCP boundary: the stdio proxy intercepts

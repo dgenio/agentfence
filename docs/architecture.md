@@ -60,8 +60,9 @@ Planned next step is to run AgentFence as an MCP-aware proxy between agents and 
 
 ## Enforcement modes
 
-AgentFence operates in one of four modes depending on the command and flags
-chosen: **detection**, **prevention**, **audit-only**, or **dry-run**. The
+AgentFence defines four enforcement modes (not all implemented at time of
+writing; see [`modes.md`](modes.md) for status): **detection**,
+**prevention**, **audit-only**, and **dry-run**. The
 modes differ in whether decisions are enforced, whether the operator is
 prompted, and how the exit code is propagated. The canonical definitions and
 command-to-mode mapping live in [`modes.md`](modes.md); the threat model

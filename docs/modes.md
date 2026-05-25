@@ -1,8 +1,9 @@
 # AgentFence enforcement modes
 
-AgentFence supports four distinct operating modes. They differ in **whether
-policy decisions are enforced**, **whether the operator is prompted**, and
-**how the exit code is propagated**. The wording in this document is the
+AgentFence defines four distinct operating modes (see the Command-to-mode
+mapping table below for current implementation status). They differ in
+**whether policy decisions are enforced**, **whether the operator is
+prompted**, and **how the exit code is propagated**. The wording in this document is the
 canonical source — `README.md`, `docs/architecture.md`, and
 `docs/threat-model.md` all link here rather than restating the definitions.
 
