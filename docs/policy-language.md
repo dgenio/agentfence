@@ -25,7 +25,10 @@ audit:
 
 - `allow`: permit action.
 - `deny`: block action.
-- `ask`: require approval flow (simulated in MVP).
+- `ask`: require approval flow.
+
+Successful decisions include a reason that identifies whether the tool matched
+an exact policy rule, a named group rule, or a wildcard rule.
 
 ## Defaults
 
@@ -103,7 +106,9 @@ Behavior:
 
 - Deny path matches always deny.
 - If allow list exists, path must match at least one allow pattern.
-- Absolute paths, UNC paths, and directory traversal (`../`) are always denied.
+- Absolute paths, UNC paths, and directory traversal (`../`) are always denied
+  whenever a string `path` argument is present, even if `constraints.paths` is
+  omitted.
 
 ## Argument value constraints
 
@@ -206,7 +211,9 @@ agentfence policy validate --policy bad-policy.yaml
 # bad-policy.yaml: defaults.decision: must be one of allow, deny, ask (got "maybe")
 ```
 
-Strict validation catches unknown fields, invalid decisions, bad regexes, and more.
+All commands that load a policy reject unknown fields. `validate` also reports
+semantic issues such as invalid decisions and bad regexes before the policy is
+used.
 
 ## Policy testing
 
@@ -273,16 +280,22 @@ agentfence explain --policy examples/policy.yaml \
 # Machine-readable output:
 agentfence explain --policy examples/policy.yaml --tool filesystem.write \
   --args '{"path":".env"}' --output json
+# {
+#   "tool": "filesystem.write",
+#   "decision": "deny",
+#   "reason": "path \".env\" denied by pattern \".env\"",
+#   "trace": [...]
+# }
 ```
 
 ## Audit event schema
 
 Each evaluated call produces one JSONL audit event with the following fields
-(schema version `1`):
+(schema version `2`):
 
 | Field            | Type    | Description |
 |------------------|---------|-------------|
-| `schema_version` | string  | On-wire schema identifier. Currently `"1"`. |
+| `schema_version` | string  | On-wire schema identifier. Currently `"2"`. |
 | `session_id`     | string  | UUIDv4 generated once per `agentfence` run. |
 | `seq`            | integer | Monotonic 1-based sequence number within the session. |
 | `timestamp`      | string  | RFC 3339 nano UTC timestamp of the decision. |
@@ -291,7 +304,8 @@ Each evaluated call produces one JSONL audit event with the following fields
 | `decision`       | string  | `allow`, `deny`, or `ask`. |
 | `reason`         | string  | Human-readable explanation. |
 | `arguments`      | object  | Redacted arguments (omitted when `audit.include_redacted_arguments` is false). |
-| `prev_hash`      | string  | Previous event's `hash`. Only present when `--tamper-evident` is set. Empty for the first event in a chain. |
+| `mode`           | string  | Optional mode marker such as `"dry_run"` for simulated enforcement. |
+| `prev_hash`      | string  | Previous event's `hash`. Only present when `--tamper-evident` is set. Omitted for the first event in a chain. |
 | `hash`           | string  | This event's SHA-256 (hex). Only present when `--tamper-evident` is set. |
 
 ### Tamper-evident chaining
@@ -308,6 +322,12 @@ A modified or deleted event causes verification to exit non-zero with the
 1-based event number that failed. A non-chained log produces a warning rather
 than an error. See [`docs/threat-model.md`](threat-model.md#audit-log-integrity)
 for the threat model.
+
+`--audit-log` opens logs in append mode and creates new files with owner-only
+permissions on Unix (`0600`). When `--tamper-evident` appends to an existing
+chained log, the next event links to the previous event's hash so verification
+continues across runs. Rotate logs by moving or archiving the current file
+before starting a new chain.
 
 ## Complete example
 

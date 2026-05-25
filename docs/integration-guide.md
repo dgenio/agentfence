@@ -65,7 +65,7 @@ Useful flags:
 | Flag                  | What it does |
 |-----------------------|--------------|
 | `--policy <file>`     | Required unless `--passthrough`. Policy YAML to load. |
-| `--audit-log <file>`  | Write JSONL audit events to this file. If omitted, audit events are discarded (the proxy never mixes audit JSONL into the agent's stdout — that channel is reserved for JSON-RPC). |
+| `--audit-log <file>`  | Append JSONL audit events to this file. New files are created owner-readable on Unix (`0600`). If omitted, audit events are discarded (the proxy never mixes audit JSONL into the agent's stdout — that channel is reserved for JSON-RPC). |
 | `--tamper-evident`    | Hash-chain audit events. Verify later with `agentfence audit verify --log <file>`. |
 | `--passthrough`       | Skeleton mode: forward every message without policy evaluation. Useful for validating the relay; do **not** use in production. |
 | `--no-interactive`    | Reserved. Today every `ask` decision is denied (see [Approval today](#approval-today)). |
@@ -187,8 +187,8 @@ and shell-command constraints.
 Each evaluated `tools/call` produces one JSONL audit event:
 
 ```jsonl
-{"schema_version":"1","session_id":"…","seq":1,"timestamp":"…","call_id":"42","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule","arguments":{"path":"README.md"}}
-{"schema_version":"1","session_id":"…","seq":2,"timestamp":"…","call_id":"43","tool":"filesystem.write","decision":"deny","reason":"path \".env\" denied by pattern \".env\"","arguments":{"content":"OPENAI_[REDACTED:openai_api_key]","path":".env"}}
+{"schema_version":"2","session_id":"…","seq":1,"timestamp":"…","call_id":"42","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule","arguments":{"path":"README.md"}}
+{"schema_version":"2","session_id":"…","seq":2,"timestamp":"…","call_id":"43","tool":"filesystem.write","decision":"deny","reason":"path \".env\" denied by pattern \".env\"","arguments":{"content":"OPENAI_[REDACTED:openai_api_key]","path":".env"}}
 ```
 
 Useful one-liners:

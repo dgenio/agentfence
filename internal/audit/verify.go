@@ -45,6 +45,28 @@ func (e *VerifyError) Error() string {
 // VerifyChain uses bufio.Reader.ReadBytes so individual events may be
 // arbitrarily large (bounded only by available memory).
 func VerifyChain(r io.Reader) (int, error) {
+	eventNumber, _, anyChained, err := verifyChain(r)
+	switch {
+	case err != nil:
+		return eventNumber, err
+	case eventNumber == 0:
+		// Empty input: nothing to verify, nothing to complain about.
+		return 0, nil
+	case !anyChained:
+		return eventNumber, ErrNoChain
+	default:
+		return eventNumber, nil
+	}
+}
+
+// LastChainHash verifies r like VerifyChain and returns the last chained
+// event's hash. It returns an empty hash for empty or entirely unchained logs.
+func LastChainHash(r io.Reader) (string, error) {
+	_, lastHash, _, err := verifyChain(r)
+	return lastHash, err
+}
+
+func verifyChain(r io.Reader) (int, string, bool, error) {
 	br := bufio.NewReader(r)
 
 	var (
@@ -65,7 +87,7 @@ func VerifyChain(r io.Reader) (int, error) {
 				if errors.Is(readErr, io.EOF) {
 					break
 				}
-				return eventNumber, fmt.Errorf("audit: read input: %w", readErr)
+				return eventNumber, prevHash, anyChained, fmt.Errorf("audit: read input: %w", readErr)
 			}
 			continue
 		}
@@ -74,7 +96,7 @@ func VerifyChain(r io.Reader) (int, error) {
 
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
-			return eventNumber, &VerifyError{
+			return eventNumber, prevHash, anyChained, &VerifyError{
 				EventNumber: eventNumber,
 				Reason:      fmt.Sprintf("invalid JSON: %s", err),
 			}
@@ -85,7 +107,7 @@ func VerifyChain(r io.Reader) (int, error) {
 		if e.Hash != "" || e.PrevHash != "" {
 			anyChained = true
 		} else if anyChained {
-			return eventNumber, &VerifyError{
+			return eventNumber, prevHash, anyChained, &VerifyError{
 				EventNumber: eventNumber,
 				Reason:      "event is missing hash fields in a chained log (possible truncation or tampering)",
 			}
@@ -95,7 +117,7 @@ func VerifyChain(r io.Reader) (int, error) {
 				if errors.Is(readErr, io.EOF) {
 					break
 				}
-				return eventNumber, fmt.Errorf("audit: read input: %w", readErr)
+				return eventNumber, prevHash, anyChained, fmt.Errorf("audit: read input: %w", readErr)
 			}
 			continue
 		}
@@ -106,16 +128,16 @@ func VerifyChain(r io.Reader) (int, error) {
 		e.Hash = ""
 		recomputed, err := hashEvent(e)
 		if err != nil {
-			return eventNumber, fmt.Errorf("audit: event %d: recompute hash: %w", eventNumber, err)
+			return eventNumber, prevHash, anyChained, fmt.Errorf("audit: event %d: recompute hash: %w", eventNumber, err)
 		}
 		if recomputed != claimed {
-			return eventNumber, &VerifyError{
+			return eventNumber, prevHash, anyChained, &VerifyError{
 				EventNumber: eventNumber,
 				Reason:      fmt.Sprintf("hash mismatch: claimed %q, recomputed %q", claimed, recomputed),
 			}
 		}
 		if e.PrevHash != prevHash {
-			return eventNumber, &VerifyError{
+			return eventNumber, prevHash, anyChained, &VerifyError{
 				EventNumber: eventNumber,
 				Reason:      fmt.Sprintf("prev_hash mismatch: event records %q, previous event's hash was %q", e.PrevHash, prevHash),
 			}
@@ -127,17 +149,9 @@ func VerifyChain(r io.Reader) (int, error) {
 			if errors.Is(readErr, io.EOF) {
 				break
 			}
-			return eventNumber, fmt.Errorf("audit: read input: %w", readErr)
+			return eventNumber, prevHash, anyChained, fmt.Errorf("audit: read input: %w", readErr)
 		}
 	}
 
-	switch {
-	case eventNumber == 0:
-		// Empty input: nothing to verify, nothing to complain about.
-		return 0, nil
-	case !anyChained:
-		return eventNumber, ErrNoChain
-	default:
-		return eventNumber, nil
-	}
+	return eventNumber, prevHash, anyChained, nil
 }

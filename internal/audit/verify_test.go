@@ -41,6 +41,38 @@ func TestVerifyChainValid(t *testing.T) {
 	}
 }
 
+func TestLastChainHashReturnsTailHash(t *testing.T) {
+	log, _ := buildChainedLog(t, 3)
+	lines := bytes.Split(bytes.TrimRight(log, "\n"), []byte("\n"))
+	var last Event
+	if err := json.Unmarshal(lines[len(lines)-1], &last); err != nil {
+		t.Fatalf("unmarshal last event: %v", err)
+	}
+
+	got, err := LastChainHash(bytes.NewReader(log))
+	if err != nil {
+		t.Fatalf("LastChainHash() error = %v", err)
+	}
+	if got != last.Hash {
+		t.Fatalf("LastChainHash() = %q, want %q", got, last.Hash)
+	}
+}
+
+func TestLastChainHashReturnsEmptyForUnchainedLog(t *testing.T) {
+	buf := &bytes.Buffer{}
+	w := NewWriter(buf)
+	if err := w.Write(Event{CallID: "c", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	got, err := LastChainHash(buf)
+	if err != nil {
+		t.Fatalf("LastChainHash() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("LastChainHash() = %q, want empty", got)
+	}
+}
+
 func TestVerifyChainEmpty(t *testing.T) {
 	// Empty input is not a chain-absent case; nothing to verify and nothing
 	// to complain about.

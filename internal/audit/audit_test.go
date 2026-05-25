@@ -193,6 +193,37 @@ func TestTamperEvidentChainLinks(t *testing.T) {
 	}
 }
 
+func TestTamperEvidentChainCanResumeFromPreviousHash(t *testing.T) {
+	buf := &bytes.Buffer{}
+	first := NewWriterOptions(buf, Options{TamperEvident: true, SessionID: "first"})
+	if err := first.Write(Event{CallID: "c1", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+		t.Fatalf("first Write() error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	var firstEvent Event
+	if err := json.Unmarshal([]byte(lines[0]), &firstEvent); err != nil {
+		t.Fatalf("invalid first event JSON: %v", err)
+	}
+
+	second := NewWriterOptions(buf, Options{
+		TamperEvident:   true,
+		SessionID:       "second",
+		InitialPrevHash: firstEvent.Hash,
+	})
+	if err := second.Write(Event{CallID: "c2", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+		t.Fatalf("second Write() error = %v", err)
+	}
+
+	lines = strings.Split(strings.TrimSpace(buf.String()), "\n")
+	var secondEvent Event
+	if err := json.Unmarshal([]byte(lines[1]), &secondEvent); err != nil {
+		t.Fatalf("invalid second event JSON: %v", err)
+	}
+	if secondEvent.PrevHash != firstEvent.Hash {
+		t.Fatalf("resumed prev_hash = %q, want %q", secondEvent.PrevHash, firstEvent.Hash)
+	}
+}
+
 func TestTamperEvidentHashIsDeterministic(t *testing.T) {
 	mk := func() Event {
 		return Event{

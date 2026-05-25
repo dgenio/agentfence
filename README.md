@@ -85,6 +85,12 @@ Run policy checks against example tool calls:
 ./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl
 ```
 
+Write audit events to an append-only, owner-readable log:
+
+```bash
+./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl --audit-log audit.jsonl
+```
+
 Get machine-readable output for CI pipelines:
 
 ```bash
@@ -137,6 +143,12 @@ Check the installed version:
 ./agentfence version
 ```
 
+List commands and flags:
+
+```bash
+./agentfence --help
+```
+
 Run AgentFence as an MCP stdio proxy in front of any MCP server:
 
 ```bash
@@ -160,13 +172,13 @@ second line is the JSONL audit event with secret-looking values redacted.
 $ ./agentfence demo
 AgentFence demo:
 call_001 filesystem.read -> allow (tool filesystem.read matched explicit policy rule)
-{"timestamp":"<rfc3339>","call_id":"call_001","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule","arguments":{"path":"README.md"}}
+{"schema_version":"2","session_id":"<session_id>","seq":1,"timestamp":"<rfc3339>","call_id":"call_001","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule","arguments":{"path":"README.md"}}
 call_002 filesystem.write -> deny (path ".env" denied by pattern ".env")
-{"timestamp":"<rfc3339>","call_id":"call_002","tool":"filesystem.write","decision":"deny","reason":"path \".env\" denied by pattern \".env\"","arguments":{"content":"OPENAI_[REDACTED:generic_secret_assignment]","path":".env"}}
+{"schema_version":"2","session_id":"<session_id>","seq":2,"timestamp":"<rfc3339>","call_id":"call_002","tool":"filesystem.write","decision":"deny","reason":"path \".env\" denied by pattern \".env\"","arguments":{"content":"OPENAI_[REDACTED:generic_secret_assignment]","path":".env"}}
 call_003 github.create_issue -> ask (tool github.create_issue matched explicit policy rule)
-{"timestamp":"<rfc3339>","call_id":"call_003","tool":"github.create_issue","decision":"ask","reason":"tool github.create_issue matched explicit policy rule","arguments":{"body":"Created by an agent","repo":"dgenio/agentfence","title":"Demo issue"}}
+{"schema_version":"2","session_id":"<session_id>","seq":3,"timestamp":"<rfc3339>","call_id":"call_003","tool":"github.create_issue","decision":"ask","reason":"tool github.create_issue matched explicit policy rule","arguments":{"body":"Created by an agent","repo":"dgenio/agentfence","title":"Demo issue"}}
 call_004 github.delete_repo -> deny (tool github.delete_repo matched explicit policy rule)
-{"timestamp":"<rfc3339>","call_id":"call_004","tool":"github.delete_repo","decision":"deny","reason":"tool github.delete_repo matched explicit policy rule","arguments":{"repo":"dgenio/agentfence"}}
+{"schema_version":"2","session_id":"<session_id>","seq":4,"timestamp":"<rfc3339>","call_id":"call_004","tool":"github.delete_repo","decision":"deny","reason":"tool github.delete_repo matched explicit policy rule","arguments":{"repo":"dgenio/agentfence"}}
 ```
 
 `./agentfence check` against the example policy and tool calls produces the
@@ -175,19 +187,20 @@ same decisions plus a one-line summary:
 ```text
 $ ./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl
 call_001 filesystem.read -> allow (tool filesystem.read matched explicit policy rule)
-{"timestamp":"<rfc3339>","call_id":"call_001","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule","arguments":{"path":"README.md"}}
+{"schema_version":"2","session_id":"<session_id>","seq":1,"timestamp":"<rfc3339>","call_id":"call_001","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule","arguments":{"path":"README.md"}}
 call_002 filesystem.write -> deny (path ".env" denied by pattern ".env")
-{"timestamp":"<rfc3339>","call_id":"call_002","tool":"filesystem.write","decision":"deny","reason":"path \".env\" denied by pattern \".env\"","arguments":{"content":"OPENAI_[REDACTED:generic_secret_assignment]","path":".env"}}
+{"schema_version":"2","session_id":"<session_id>","seq":2,"timestamp":"<rfc3339>","call_id":"call_002","tool":"filesystem.write","decision":"deny","reason":"path \".env\" denied by pattern \".env\"","arguments":{"content":"OPENAI_[REDACTED:generic_secret_assignment]","path":".env"}}
 call_003 github.create_issue -> ask (tool github.create_issue matched explicit policy rule)
-{"timestamp":"<rfc3339>","call_id":"call_003","tool":"github.create_issue","decision":"ask","reason":"tool github.create_issue matched explicit policy rule","arguments":{"body":"Created by an agent","repo":"dgenio/agentfence","title":"Demo issue"}}
+{"schema_version":"2","session_id":"<session_id>","seq":3,"timestamp":"<rfc3339>","call_id":"call_003","tool":"github.create_issue","decision":"ask","reason":"tool github.create_issue matched explicit policy rule","arguments":{"body":"Created by an agent","repo":"dgenio/agentfence","title":"Demo issue"}}
 call_004 github.delete_repo -> deny (tool github.delete_repo matched explicit policy rule)
-{"timestamp":"<rfc3339>","call_id":"call_004","tool":"github.delete_repo","decision":"deny","reason":"tool github.delete_repo matched explicit policy rule","arguments":{"repo":"dgenio/agentfence"}}
+{"schema_version":"2","session_id":"<session_id>","seq":4,"timestamp":"<rfc3339>","call_id":"call_004","tool":"github.delete_repo","decision":"deny","reason":"tool github.delete_repo matched explicit policy rule","arguments":{"repo":"dgenio/agentfence"}}
 
 4 call(s) processed, 0 parse error(s): allow=1 deny=2 ask=1
 ```
 
-Timestamps are real `time.RFC3339Nano` values at runtime; they are shown as
-`<rfc3339>` here so this section does not need to be updated on every build.
+Timestamps are real `time.RFC3339Nano` values at runtime, and session IDs are
+UUIDs generated per run. They are shown as placeholders here so this section
+does not need to be updated on every build.
 
 ## Example policy
 

@@ -74,8 +74,9 @@ configuration examples.
   `decision`, `reason`, and (optionally) redacted arguments.
 - Events are encoded as JSONL for easy ingestion.
 - `--tamper-evident` enables a SHA-256 hash chain: each event records its own
-  `hash` and the previous event's `hash` in `prev_hash`. The chain can be
-  verified after the fact with `agentfence audit verify --log <file>`. See
+  `hash`; all but the first chained event record the previous event's `hash`
+  in `prev_hash`. The chain can be verified after the fact with
+  `agentfence audit verify --log <file>`. See
   [`threat-model.md`](threat-model.md#audit-log-integrity) for what this does
   and does not protect against.
 

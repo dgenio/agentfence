@@ -6,8 +6,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/dgenio/agentfence/internal/audit"
 )
 
 // writeTestFile writes data to path and fails the test if the write errors.
@@ -16,6 +19,38 @@ func writeTestFile(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func captureOutput(t *testing.T, fn func() error) (string, string, error) {
+	t.Helper()
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+
+	runErr := fn()
+
+	stdoutW.Close()
+	stderrW.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	var stdout, stderr bytes.Buffer
+	if _, err := io.Copy(&stdout, stdoutR); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(&stderr, stderrR); err != nil {
+		t.Fatal(err)
+	}
+	return stdout.String(), stderr.String(), runErr
 }
 
 func TestRunCheckRequiresFlags(t *testing.T) {
@@ -50,6 +85,74 @@ tools:
 	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
 	if err != nil {
 		t.Fatalf("runCheck() error = %v", err)
+	}
+}
+
+func TestRunCheckRejectsTypoPolicy(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allowwww: ["./"]
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"call_1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
+	if err == nil {
+		t.Fatal("expected typo policy to be rejected")
+	}
+	if !strings.Contains(err.Error(), "allowwww") {
+		t.Fatalf("error %q does not mention typo field", err)
+	}
+}
+
+func TestHelpFlagsExitZero(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "no args", args: []string{}},
+		{name: "top help long", args: []string{"--help"}},
+		{name: "top help short", args: []string{"-h"}},
+		{name: "help command", args: []string{"help"}},
+		{name: "help check", args: []string{"help", "check"}},
+		{name: "check help", args: []string{"check", "--help"}},
+		{name: "proxy help", args: []string{"proxy", "--help"}},
+		{name: "validate help", args: []string{"validate", "-h"}},
+		{name: "policy help", args: []string{"policy", "--help"}},
+		{name: "audit help", args: []string{"audit", "--help"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := captureOutput(t, func() error {
+				return runRoot(tt.args)
+			})
+			if err != nil {
+				t.Fatalf("runRoot(%v) error = %v", tt.args, err)
+			}
+		})
+	}
+}
+
+func TestRunRootUnknownCommandStillErrors(t *testing.T) {
+	_, _, err := captureOutput(t, func() error {
+		return runRoot([]string{"bogus"})
+	})
+	if err == nil {
+		t.Fatal("expected unknown command to error")
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("error = %v, want unknown command", err)
 	}
 }
 
@@ -161,6 +264,25 @@ defaults:
 	}
 }
 
+func TestValidateOutputIncludesGotValue(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: maybe
+`))
+
+	_, stderr, err := captureOutput(t, func() error {
+		return runValidate([]string{"--policy", policyFile})
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(stderr, `(got "maybe")`) {
+		t.Fatalf("stderr %q does not include got-value suffix", stderr)
+	}
+}
+
 // TestValidateCommandRequiresPolicy verifies --policy is mandatory.
 func TestValidateCommandRequiresPolicy(t *testing.T) {
 	if err := runValidate([]string{}); err == nil {
@@ -264,6 +386,121 @@ defaults:
 	}
 }
 
+func TestCheckAuditLogAppends(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+
+	for i := 0; i < 2; i++ {
+		if err := runCheck([]string{
+			"--policy", policyFile,
+			"--call", callFile,
+			"--audit-log", auditFile,
+			"--output", "json",
+		}); err != nil {
+			t.Fatalf("runCheck pass %d: %v", i+1, err)
+		}
+	}
+
+	b, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("audit log line count = %d, want 2\n%s", len(lines), string(b))
+	}
+}
+
+func TestCheckAuditLogPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file mode assertion does not apply on Windows")
+	}
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+	info, err := os.Stat(auditFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("audit file mode = %o, want 600", got)
+	}
+}
+
+func TestCheckAuditLogTamperEvidentChainSurvivesReruns(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+
+	for i := 0; i < 2; i++ {
+		if err := runCheck([]string{
+			"--policy", policyFile,
+			"--call", callFile,
+			"--audit-log", auditFile,
+			"--output", "json",
+			"--tamper-evident",
+		}); err != nil {
+			t.Fatalf("runCheck pass %d: %v", i+1, err)
+		}
+	}
+
+	f, err := os.Open(auditFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	n, err := audit.VerifyChain(f)
+	if err != nil {
+		t.Fatalf("VerifyChain() error = %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("verified event count = %d, want 2", n)
+	}
+}
+
 // TestCheckHandlesMalformedLine verifies that a single bad JSONL line does not
 // abort evaluation of subsequent calls and that the command returns nil.
 func TestCheckHandlesMalformedLine(t *testing.T) {
@@ -320,6 +557,52 @@ this is not json
 	}
 	if !strings.Contains(output, "call_3") {
 		t.Error("expected call_3 to appear in output")
+	}
+}
+
+func TestCheckParseErrorOrderMatchesNormalCall(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+not json
+`))
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runCheck([]string{"--policy", policyFile, "--call", callFile})
+	})
+	if err != nil {
+		t.Fatalf("runCheck() error = %v", err)
+	}
+
+	var lines []string
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) < 5 {
+		t.Fatalf("expected at least 5 output lines, got %d:\n%s", len(lines), stdout)
+	}
+	if !strings.HasPrefix(lines[0], "c1 filesystem.read -> allow") {
+		t.Fatalf("normal call text line = %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "{") {
+		t.Fatalf("normal call audit line = %q", lines[1])
+	}
+	if !strings.HasPrefix(lines[2], "line-2  -> deny") {
+		t.Fatalf("parse error text line = %q", lines[2])
+	}
+	if !strings.HasPrefix(lines[3], "{") {
+		t.Fatalf("parse error audit line = %q", lines[3])
 	}
 }
 
@@ -576,6 +859,7 @@ tools:
 	}
 
 	var out struct {
+		Tool     string   `json:"tool"`
 		Decision string   `json:"decision"`
 		Reason   string   `json:"reason"`
 		Trace    []string `json:"trace"`
@@ -585,6 +869,9 @@ tools:
 	}
 	if out.Decision != "deny" {
 		t.Errorf("expected decision 'deny', got %q", out.Decision)
+	}
+	if out.Tool != "github.delete_repo" {
+		t.Errorf("expected tool 'github.delete_repo', got %q", out.Tool)
 	}
 	if len(out.Trace) == 0 {
 		t.Error("expected non-empty trace in JSON output")

@@ -26,7 +26,8 @@ Agents often run with broad privileges that violate least-privilege principles.
 
 - Local policy decisions (`allow`, `deny`, `ask`) before execution.
 - Safe defaults through default-deny policy.
-- Path-based guardrails for filesystem tools.
+- Path-based guardrails for filesystem tools, including absolute, UNC, and
+  parent-directory escape checks whenever a string `path` argument is present.
 - Audit logging for each decision, with a versioned schema, monotonic sequence
   numbers, and per-run session identifiers.
 - Regex-based redaction for sensitive-looking argument values, applied before
@@ -53,7 +54,8 @@ protection, an attacker with filesystem access can rewrite a `deny` to
 
 - When the writer is run with `--tamper-evident`, each event records its
   SHA-256 (`hash`) and a `prev_hash` field referencing the previous event's
-  hash. The first event records `prev_hash: ""`, which marks the chain start.
+  hash. The first event in a chain omits `prev_hash`, which marks the chain
+  start.
 - `agentfence audit verify --log <file>` walks the chain, re-computes each
   event's hash, and refuses to confirm the log if any event has been altered
   or removed. Modification of a single event causes verification to fail on

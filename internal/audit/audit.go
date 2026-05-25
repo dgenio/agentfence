@@ -59,6 +59,10 @@ type Options struct {
 
 	// SessionID overrides the auto-generated session ID. Intended for tests.
 	SessionID string
+
+	// InitialPrevHash seeds the hash chain when appending to an existing
+	// tamper-evident log. Leave empty for a new chain.
+	InitialPrevHash string
 }
 
 // Writer serialises Events as newline-delimited JSON. It owns the per-session
@@ -91,6 +95,7 @@ func NewWriterOptions(w io.Writer, opts Options) *Writer {
 		w:             w,
 		sessionID:     sid,
 		tamperEvident: opts.TamperEvident,
+		prevHash:      opts.InitialPrevHash,
 	}
 }
 

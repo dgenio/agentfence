@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -50,6 +52,109 @@ audit:
 `))
 	if err == nil {
 		t.Fatal("expected error for unsupported audit format, got nil")
+	}
+}
+
+func TestParsePolicyRejectsUnknownFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantMsg string
+	}{
+		{
+			name: "top level typo",
+			input: `version: "0.1"
+defaultz:
+  decision: deny
+`,
+			wantMsg: "defaultz",
+		},
+		{
+			name: "path constraint typo",
+			input: `version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allowwww: ["./"]
+`,
+			wantMsg: "allowwww",
+		},
+		{
+			name: "arg constraint typo",
+			input: `version: "0.1"
+defaults:
+  decision: deny
+tools:
+  github.create_issue:
+    decision: ask
+    constraints:
+      args:
+        repo:
+          allowwww: ["dgenio/*"]
+`,
+			wantMsg: "allowwww",
+		},
+		{
+			name: "url constraint typo",
+			input: `version: "0.1"
+defaults:
+  decision: deny
+tools:
+  browser.navigate:
+    decision: allow
+    constraints:
+      urls:
+        denywww: ["http://**"]
+`,
+			wantMsg: "denywww",
+		},
+		{
+			name: "command constraint typo",
+			input: `version: "0.1"
+defaults:
+  decision: deny
+tools:
+  shell.exec:
+    decision: ask
+    constraints:
+      command:
+        allow_execs: ["git"]
+`,
+			wantMsg: "allow_execs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParsePolicy([]byte(tt.input))
+			if err == nil {
+				t.Fatal("ParsePolicy() expected unknown-field error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("ParsePolicy() error %q does not contain %q", err, tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestBundledPoliciesLoadStrictly(t *testing.T) {
+	if _, err := ParsePolicy([]byte(StarterPolicyYAML)); err != nil {
+		t.Fatalf("StarterPolicyYAML ParsePolicy() error = %v", err)
+	}
+	for _, name := range []string{"policy.yaml", "unsafe-policy.yaml"} {
+		t.Run(name, func(t *testing.T) {
+			b, err := os.ReadFile(filepath.Join("..", "..", "examples", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParsePolicy(b); err != nil {
+				t.Fatalf("%s ParsePolicy() error = %v", name, err)
+			}
+		})
 	}
 }
 
