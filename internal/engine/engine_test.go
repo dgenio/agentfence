@@ -669,6 +669,58 @@ func TestMemoryWriteSecretPayloadDenied(t *testing.T) {
 	}
 }
 
+// TestMemoryWriteSecretPayloadDeniedWhenRedactionDisabled verifies memory-write
+// classification still inspects configured redaction patterns when audit
+// redaction itself is disabled.
+func TestMemoryWriteSecretPayloadDeniedWhenRedactionDisabled(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  memory.write:
+    decision: ask
+    constraints:
+      memory_write:
+        max_sensitivity: medium
+redaction:
+  enabled: false
+  patterns:
+    - name: openai_api_key
+      regex: "sk-[A-Za-z0-9_-]{20,}"
+audit:
+  include_redacted_arguments: true
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	res, event := e.Evaluate(policy.ToolCall{
+		ID:   "mem-disabled-redaction",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"value": "sk-demo-very-long-secret-value-1234",
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny, got %s (%s)", res.Decision, res.Reason)
+	}
+	if event.MemoryWrite == nil {
+		t.Fatal("expected audit MemoryWrite summary even on deny")
+	}
+	if event.MemoryWrite.Sensitivity != "high" {
+		t.Errorf("sensitivity: got %q want high", event.MemoryWrite.Sensitivity)
+	}
+	if len(event.MemoryWrite.PatternsMatched) != 1 || event.MemoryWrite.PatternsMatched[0] != "openai_api_key" {
+		t.Errorf("patterns_matched: got %v want [openai_api_key]", event.MemoryWrite.PatternsMatched)
+	}
+	if got, ok := event.Arguments["value"].(string); !ok || got != "sk-demo-very-long-secret-value-1234" {
+		t.Errorf("redaction disabled should leave event arguments unchanged, got %#v", event.Arguments["value"])
+	}
+}
+
 // TestMemoryWriteScopeTooBroad covers the "questionable durable assumption"
 // fixture: payload is harmless but scope=global exceeds max_scope=project.
 func TestMemoryWriteScopeTooBroad(t *testing.T) {
@@ -765,6 +817,27 @@ func TestMemoryWriteExplicitSensitivityWins(t *testing.T) {
 	})
 	if res.Decision != policy.DecisionDeny {
 		t.Fatalf("explicit high sensitivity should be honoured; got %s (%s)", res.Decision, res.Reason)
+	}
+}
+
+// TestMemoryWriteInvalidSensitivityDenied verifies malformed sensitivity
+// declarations fail closed when max_sensitivity is configured.
+func TestMemoryWriteInvalidSensitivityDenied(t *testing.T) {
+	e := memoryWriteEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{
+		ID:   "mem-invalid-sensitivity",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"scope":       "project",
+			"sensitivity": "extreme",
+			"value":       "harmless looking string",
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("invalid sensitivity should be denied; got %s (%s)", res.Decision, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "sensitivity") {
+		t.Errorf("expected sensitivity-based reason, got: %s", res.Reason)
 	}
 }
 

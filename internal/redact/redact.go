@@ -43,19 +43,13 @@ func (r *Redactor) RedactArguments(args map[string]interface{}) map[string]inter
 }
 
 // MatchesAny reports whether s matches any configured redaction pattern.
-// Used by the memory-write classifier to detect secret-like payloads.
 // Returns false when redaction is disabled — callers that want to inspect
 // patterns regardless should not gate on enabled state.
 func (r *Redactor) MatchesAny(s string) bool {
 	if !r.enabled {
 		return false
 	}
-	for _, p := range r.patterns {
-		if p.regex.MatchString(s) {
-			return true
-		}
-	}
-	return false
+	return r.MatchesConfiguredPattern(s)
 }
 
 // MatchedPatternNames returns the names of every configured redaction
@@ -65,6 +59,18 @@ func (r *Redactor) MatchedPatternNames(s string) []string {
 	if !r.enabled {
 		return nil
 	}
+	return r.MatchedConfiguredPatternNames(s)
+}
+
+// MatchesConfiguredPattern reports whether s matches any configured redaction
+// pattern, regardless of whether audit redaction is enabled.
+func (r *Redactor) MatchesConfiguredPattern(s string) bool {
+	return len(r.MatchedConfiguredPatternNames(s)) > 0
+}
+
+// MatchedConfiguredPatternNames returns matching pattern names regardless of
+// whether audit redaction is enabled. The order matches configuration order.
+func (r *Redactor) MatchedConfiguredPatternNames(s string) []string {
 	var names []string
 	for _, p := range r.patterns {
 		if p.regex.MatchString(s) {

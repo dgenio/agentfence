@@ -447,6 +447,10 @@ func evaluateMemoryWriteConstraints(rule policy.Rule, call policy.ToolCall, reda
 	}
 
 	if mw.MaxSensitivity != "" {
+		if explicit, present, valid := memoryWriteExplicitSensitivity(call.Arguments); present && !valid {
+			appendTrace(trace, fmt.Sprintf("memory_write: unknown sensitivity %q → deny", explicit))
+			return true, fmt.Sprintf("memory write sensitivity %q is not recognised", explicit)
+		}
 		sensitivity := classifyMemoryWriteSensitivity(payload, call.Arguments, redactor)
 		callRank := policy.MemorySensitivityRank(sensitivity)
 		if callRank < 0 {
@@ -484,7 +488,7 @@ func (e *Engine) summarizeMemoryWrite(rule policy.Rule, call policy.ToolCall) *a
 	}
 	if payload != "" {
 		summary.ContentFingerprint = redact.FingerprintPayload(payload)
-		summary.PatternsMatched = e.redactor.MatchedPatternNames(payload)
+		summary.PatternsMatched = e.redactor.MatchedConfiguredPatternNames(payload)
 	}
 	return summary
 }
@@ -520,15 +524,27 @@ func memoryWritePayload(rule policy.Rule, call policy.ToolCall) (string, string)
 
 func classifyMemoryWriteSensitivity(payload string, args map[string]interface{}, redactor *redact.Redactor) string {
 	explicit := ""
-	if s, ok := args["sensitivity"].(string); ok && policy.MemorySensitivityRank(s) >= 0 {
+	if s, present, valid := memoryWriteExplicitSensitivity(args); present && valid {
 		explicit = s
 	}
 	detected := "low"
-	if redactor != nil && redactor.MatchesAny(payload) {
+	if redactor != nil && redactor.MatchesConfiguredPattern(payload) {
 		detected = "high"
 	}
 	if policy.MemorySensitivityRank(explicit) > policy.MemorySensitivityRank(detected) {
 		return explicit
 	}
 	return detected
+}
+
+func memoryWriteExplicitSensitivity(args map[string]interface{}) (string, bool, bool) {
+	raw, ok := args["sensitivity"]
+	if !ok {
+		return "", false, true
+	}
+	s, ok := raw.(string)
+	if !ok || policy.MemorySensitivityRank(s) < 0 {
+		return fmt.Sprint(raw), true, false
+	}
+	return s, true, true
 }

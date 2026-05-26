@@ -29,8 +29,8 @@ const CurrentSchemaVersion = "2"
 // payload size — and a collision-resistant fingerprint of the raw payload,
 // without including the payload itself.
 type MemoryWriteSummary struct {
-	// Scope is one of session, project, global. Empty when the call did
-	// not declare a scope.
+	// Scope is the effective scope used during evaluation: one of session,
+	// project, global. Missing scope arguments default to session.
 	Scope string `json:"scope,omitempty"`
 	// Sensitivity is the resolved sensitivity (low, medium, high) used
 	// during evaluation.

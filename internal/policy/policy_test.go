@@ -396,6 +396,32 @@ imports:
 	}
 }
 
+// TestPolicyImportsSymlinkEscape verifies that imports cannot escape the
+// importing directory through symlinks that point outside that directory.
+func TestPolicyImportsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	target := writeFile(t, outside, "escape.yaml", `version: "0.1"
+defaults:
+  decision: allow
+`)
+	link := filepath.Join(dir, "escape-link.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable on this platform/configuration: %v", err)
+	}
+	root := writeFile(t, dir, "root.yaml", `version: "0.1"
+imports:
+  - escape-link.yaml
+`)
+	_, err := LoadFile(root)
+	if err == nil {
+		t.Fatal("expected symlink escape rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "escapes") {
+		t.Errorf("expected directory-escape error, got: %v", err)
+	}
+}
+
 // TestPolicyImportsAbsoluteRejected verifies absolute import paths are rejected.
 func TestPolicyImportsAbsoluteRejected(t *testing.T) {
 	dir := t.TempDir()

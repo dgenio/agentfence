@@ -128,6 +128,49 @@ defaults:
 	}
 }
 
+// TestValidateCommandResolvesImports verifies validate catches import
+// resolution errors, not just strict schema errors in the root file.
+func TestValidateCommandResolvesImports(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - missing.yaml
+defaults:
+  decision: deny
+`))
+
+	err := runValidate([]string{"--policy", policyFile})
+	if err == nil {
+		t.Fatal("runValidate() expected error for missing import, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing.yaml") {
+		t.Fatalf("runValidate() error %q does not mention missing import", err)
+	}
+}
+
+// TestValidateCommandAcceptsValidImports verifies validate resolves a valid
+// importing policy before reporting success.
+func TestValidateCommandAcceptsValidImports(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "base.yaml"), []byte(`version: "0.1"
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - base.yaml
+defaults:
+  decision: deny
+`))
+
+	if err := runValidate([]string{"--policy", policyFile}); err != nil {
+		t.Fatalf("runValidate() unexpected error: %v", err)
+	}
+}
+
 // TestValidateCommandDetectsTypo verifies that an unknown field returns an error.
 func TestValidateCommandDetectsTypo(t *testing.T) {
 	dir := t.TempDir()

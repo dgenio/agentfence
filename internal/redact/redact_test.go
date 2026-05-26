@@ -108,6 +108,27 @@ func TestMatchesAnyDisabled(t *testing.T) {
 	}
 }
 
+// TestConfiguredPatternHelpersIgnoreEnabled verifies callers can inspect
+// configured patterns without enabling audit redaction.
+func TestConfiguredPatternHelpersIgnoreEnabled(t *testing.T) {
+	r, err := New(policy.RedactionConfig{
+		Enabled: false,
+		Patterns: []policy.RedactionPattern{
+			{Name: "p", Regex: `secret`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	if !r.MatchesConfiguredPattern("secret") {
+		t.Error("configured pattern should match even when redaction is disabled")
+	}
+	names := r.MatchedConfiguredPatternNames("secret")
+	if len(names) != 1 || names[0] != "p" {
+		t.Fatalf("expected configured pattern name [p], got %v", names)
+	}
+}
+
 // TestFingerprintPayload verifies the fingerprint is deterministic and short.
 func TestFingerprintPayload(t *testing.T) {
 	a := FingerprintPayload("hello")

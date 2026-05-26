@@ -238,17 +238,21 @@ func loadResolved(path string, stack map[string]bool, depth int) (Policy, error)
 		if imp == "" {
 			return Policy{}, fmt.Errorf("import in %q: empty path", path)
 		}
-		if filepath.IsAbs(imp) {
+		if filepath.IsAbs(imp) || strings.HasPrefix(filepath.ToSlash(imp), "/") {
 			return Policy{}, fmt.Errorf("import %q in %q: absolute paths are not allowed", imp, path)
 		}
 		absImp, err := filepath.Abs(filepath.Join(importerDir, imp))
 		if err != nil {
 			return Policy{}, fmt.Errorf("import %q in %q: %w", imp, path, err)
 		}
-		if !pathWithin(importerDir, absImp) {
+		canonImp, err := canonicalizePath(absImp)
+		if err != nil {
+			return Policy{}, fmt.Errorf("resolve import %q in %q: %w", imp, path, err)
+		}
+		if !pathWithin(importerDir, canonImp) {
 			return Policy{}, fmt.Errorf("import %q in %q: escapes the importing file's directory", imp, path)
 		}
-		child, err := loadResolved(absImp, newStack, depth+1)
+		child, err := loadResolved(canonImp, newStack, depth+1)
 		if err != nil {
 			return Policy{}, err
 		}
