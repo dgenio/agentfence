@@ -171,6 +171,31 @@ defaults:
 	}
 }
 
+// TestValidateCommandStrictlyValidatesImportedPolicy verifies imported policies
+// are checked for unknown fields before validate reports success.
+func TestValidateCommandStrictlyValidatesImportedPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "base.yaml"), []byte(`version: "0.1"
+defaults:
+  decisoin: deny
+`))
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - base.yaml
+defaults:
+  decision: deny
+`))
+
+	err := runValidate([]string{"--policy", policyFile})
+	if err == nil {
+		t.Fatal("runValidate() expected error for imported unknown field 'decisoin', got nil")
+	}
+	if !strings.Contains(err.Error(), "base.yaml") {
+		t.Fatalf("runValidate() error %q does not mention imported policy", err)
+	}
+}
+
 // TestValidateCommandDetectsTypo verifies that an unknown field returns an error.
 func TestValidateCommandDetectsTypo(t *testing.T) {
 	dir := t.TempDir()

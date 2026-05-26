@@ -366,6 +366,7 @@ Each evaluated call produces one JSONL audit event with the following fields
 | `decision`       | string  | `allow`, `deny`, or `ask`. |
 | `reason`         | string  | Human-readable explanation. |
 | `arguments`      | object  | Redacted arguments (omitted when `audit.include_redacted_arguments` is false). |
+| `mode`           | string  | Optional evaluation-mode marker. Currently `"dry_run"` for dry-run events; omitted for enforced events. |
 | `memory_write`   | object  | Safe summary of a durable memory-write call. Only present when the matched rule has `constraints.memory_write` set. Contains `scope`, `sensitivity`, `field`, `size_bytes`, `content_fingerprint`, and `patterns_matched`. Never includes the raw payload. |
 | `prev_hash`      | string  | Previous event's `hash`. Only present when `--tamper-evident` is set. Empty for the first event in a chain. |
 | `hash`           | string  | This event's SHA-256 (hex). Only present when `--tamper-evident` is set. |

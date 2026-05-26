@@ -366,24 +366,12 @@ func runValidate(args []string) error {
 		return errors.New("--policy is required")
 	}
 
-	b, err := os.ReadFile(*policyPath)
-	if err != nil {
-		return err
-	}
-
-	errs := policy.ValidateStrict(b)
+	errs := policy.ValidateFileStrict(*policyPath)
 	if len(errs) > 0 {
 		for _, e := range errs {
-			if e.Field == "" {
-				fmt.Fprintf(os.Stderr, "%s: %s\n", *policyPath, e.Message)
-			} else {
-				fmt.Fprintf(os.Stderr, "%s: %s: %s\n", *policyPath, e.Field, e.Message)
-			}
+			fmt.Fprintf(os.Stderr, "%s\n", e.Error())
 		}
-		return fmt.Errorf("%s: %d validation error(s)", *policyPath, len(errs))
-	}
-	if _, err := policy.LoadFile(*policyPath); err != nil {
-		return err
+		return fmt.Errorf("%s: %d validation error(s): %s", *policyPath, len(errs), errs[0])
 	}
 
 	fmt.Printf("%s: OK\n", *policyPath)

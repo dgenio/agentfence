@@ -504,6 +504,37 @@ imports:
 	}
 }
 
+// TestValidateFileStrictValidatesImports verifies strict validation covers the
+// whole import graph, not only the root policy file.
+func TestValidateFileStrictValidatesImports(t *testing.T) {
+	dir := t.TempDir()
+	base := writeFile(t, dir, "base.yaml", `version: "0.1"
+defaults:
+  decisoin: deny
+`)
+	root := writeFile(t, dir, "root.yaml", `version: "0.1"
+imports:
+  - base.yaml
+defaults:
+  decision: deny
+`)
+
+	errs := ValidateFileStrict(root)
+	if len(errs) != 1 {
+		t.Fatalf("ValidateFileStrict() got %d error(s), want 1: %v", len(errs), errs)
+	}
+	wantPath, err := canonicalizePath(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if errs[0].Path != wantPath {
+		t.Fatalf("ValidateFileStrict() error path = %q, want %q", errs[0].Path, wantPath)
+	}
+	if !strings.Contains(errs[0].Error(), "decisoin") {
+		t.Fatalf("ValidateFileStrict() error %q does not mention imported typo", errs[0])
+	}
+}
+
 // TestMemoryWriteConstraintValidation verifies invalid memory_write values
 // surface through ParsePolicy and ValidateStrict.
 func TestMemoryWriteConstraintValidation(t *testing.T) {

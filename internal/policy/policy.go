@@ -475,19 +475,24 @@ func validateMemoryWrite(m MemoryWriteConstraints) error {
 
 // ValidationError describes a single policy validation problem.
 type ValidationError struct {
+	Path    string
 	Field   string
 	Value   string
 	Message string
 }
 
 func (e ValidationError) Error() string {
+	prefix := ""
+	if e.Path != "" {
+		prefix = e.Path + ": "
+	}
 	if e.Field == "" {
-		return e.Message
+		return prefix + e.Message
 	}
 	if e.Value == "" {
-		return fmt.Sprintf("%s: %s", e.Field, e.Message)
+		return fmt.Sprintf("%s%s: %s", prefix, e.Field, e.Message)
 	}
-	return fmt.Sprintf("%s: %s (got %q)", e.Field, e.Message, e.Value)
+	return fmt.Sprintf("%s%s: %s (got %q)", prefix, e.Field, e.Message, e.Value)
 }
 
 // ValidateStrict parses b with unknown-field detection enabled and runs semantic
@@ -573,6 +578,85 @@ func ValidateStrict(b []byte) []ValidationError {
 	}
 
 	return errs
+}
+
+// ValidateFileStrict validates path and every imported policy file with the
+// same strict schema and semantic checks used by ValidateStrict.
+func ValidateFileStrict(path string) []ValidationError {
+	return validateFileStrict(path, map[string]bool{}, 0)
+}
+
+func validateFileStrict(path string, stack map[string]bool, depth int) []ValidationError {
+	if depth > MaxImportDepth {
+		return []ValidationError{{
+			Path:    path,
+			Message: fmt.Sprintf("import depth exceeds limit of %d", MaxImportDepth),
+		}}
+	}
+
+	canon, err := canonicalizePath(path)
+	if err != nil {
+		return []ValidationError{{Path: path, Message: fmt.Sprintf("resolve %q: %s", path, err)}}
+	}
+	if stack[canon] {
+		return []ValidationError{{Path: path, Message: "circular import detected"}}
+	}
+
+	b, err := os.ReadFile(canon)
+	if err != nil {
+		return []ValidationError{{Path: canon, Message: err.Error()}}
+	}
+
+	errs := ValidateStrict(b)
+	if len(errs) > 0 {
+		for i := range errs {
+			errs[i].Path = canon
+		}
+		return errs
+	}
+
+	p, err := ParsePolicy(b)
+	if err != nil {
+		return []ValidationError{{Path: canon, Message: err.Error()}}
+	}
+	if len(p.Imports) == 0 {
+		return nil
+	}
+
+	newStack := make(map[string]bool, len(stack)+1)
+	for k, v := range stack {
+		newStack[k] = v
+	}
+	newStack[canon] = true
+
+	importerDir := filepath.Dir(canon)
+	var allErrs []ValidationError
+	for _, imp := range p.Imports {
+		if imp == "" {
+			allErrs = append(allErrs, ValidationError{Path: canon, Message: "import: empty path"})
+			continue
+		}
+		if filepath.IsAbs(imp) || strings.HasPrefix(filepath.ToSlash(imp), "/") {
+			allErrs = append(allErrs, ValidationError{Path: canon, Message: fmt.Sprintf("import %q: absolute paths are not allowed", imp)})
+			continue
+		}
+		absImp, err := filepath.Abs(filepath.Join(importerDir, imp))
+		if err != nil {
+			allErrs = append(allErrs, ValidationError{Path: canon, Message: fmt.Sprintf("import %q: %s", imp, err)})
+			continue
+		}
+		canonImp, err := canonicalizePath(absImp)
+		if err != nil {
+			allErrs = append(allErrs, ValidationError{Path: canon, Message: fmt.Sprintf("resolve import %q: %s", imp, err)})
+			continue
+		}
+		if !pathWithin(importerDir, canonImp) {
+			allErrs = append(allErrs, ValidationError{Path: canon, Message: fmt.Sprintf("import %q: escapes the importing file's directory", imp)})
+			continue
+		}
+		allErrs = append(allErrs, validateFileStrict(canonImp, newStack, depth+1)...)
+	}
+	return allErrs
 }
 
 // PolicyTest is a single test case in a policy test fixture.
