@@ -18,11 +18,16 @@ import (
 // Bump this when the on-wire layout changes in a way that downstream parsers
 // must distinguish.
 //
-// Version history:
-//   - "1": initial schema.
-//   - "2": optional memory_write summary added for durable-memory-write
-//     audit events.
+// History:
+//
+//	"1" — initial schema with session_id, seq, optional hash chain.
+//	"2" — added optional "mode" field ("dry_run" for simulated enforcement)
+//	      and optional "memory_write" summary for durable-memory-write events.
 const CurrentSchemaVersion = "2"
+
+// ModeDryRun marks an audit event produced under dry-run evaluation. Events
+// without an explicit Mode are treated as enforced.
+const ModeDryRun = "dry_run"
 
 // MemoryWriteSummary is a safe-to-log summary of a durable memory-write tool
 // call. It captures the dimensions a policy cares about — scope, sensitivity,
@@ -67,6 +72,7 @@ type Event struct {
 	Reason        string                 `json:"reason"`
 	Arguments     map[string]interface{} `json:"arguments,omitempty"`
 	MemoryWrite   *MemoryWriteSummary    `json:"memory_write,omitempty"`
+	Mode          string                 `json:"mode,omitempty"`
 	PrevHash      string                 `json:"prev_hash,omitempty"`
 	Hash          string                 `json:"hash,omitempty"`
 }
