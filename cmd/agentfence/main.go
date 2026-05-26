@@ -411,6 +411,8 @@ func printUsage() {
 	fmt.Println("  agentfence version")
 	fmt.Println("  agentfence demo")
 	fmt.Println("  agentfence init")
+	fmt.Println("")
+	fmt.Println("See docs/modes.md for detection / prevention / audit-only / dry-run mode definitions.")
 }
 
 // runExplain evaluates a single tool call and prints a human-readable decision trace.

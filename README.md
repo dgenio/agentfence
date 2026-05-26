@@ -24,6 +24,7 @@ today from what is planned. Do not assume planned features are usable yet.
 | Structured output modes (text / json / jsonl)       | Implemented    | `agentfence check --help` |
 | CI gating via `--fail-on`                           | Implemented    | `agentfence check --help` |
 | Pre-built release binaries                          | Implemented    | [Pre-built binaries](#pre-built-binaries) |
+| Detection / prevention / audit-only / dry-run modes | Documented     | [`docs/modes.md`](docs/modes.md) |
 | Interactive TTY approval for `ask` decisions        | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
 | Approval timeout with default-deny                  | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
 | Dry-run evaluation mode                             | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
@@ -218,8 +219,11 @@ AgentFence is built to reduce practical risks from agent tool calls:
 - secret leakage through logs
 - excessive default permissions
 
-See [`docs/threat-model.md`](docs/threat-model.md) for details and
-[`docs/architecture.md`](docs/architecture.md) for the evaluation flow.
+See [`docs/threat-model.md`](docs/threat-model.md) for the full threat model
+(including the MCP proxy threat surface, confused-deputy-via-MCP-proxy, and
+audit-log integrity), [`docs/architecture.md`](docs/architecture.md) for the
+evaluation flow, and [`docs/modes.md`](docs/modes.md) for the
+detection/prevention/audit-only/dry-run mode taxonomy.
 
 AgentFence is not a sandbox. It enforces policy *before* a tool call executes;
 it does not contain a tool call that has already been forwarded. Pair it with
