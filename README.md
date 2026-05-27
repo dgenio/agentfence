@@ -24,12 +24,15 @@ today from what is planned. Do not assume planned features are usable yet.
 | Structured output modes (text / json / jsonl)       | Implemented    | `agentfence check --help` |
 | CI gating via `--fail-on`                           | Implemented    | `agentfence check --help` |
 | Pre-built release binaries                          | Implemented    | [Pre-built binaries](#pre-built-binaries) |
+| Detection / prevention / audit-only / dry-run modes | Documented     | [`docs/modes.md`](docs/modes.md) |
+| Interactive TTY approval for `ask` decisions        | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
+| Approval timeout with default-deny                  | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
+| Dry-run evaluation mode                             | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
 | MCP stdio proxy (`agentfence proxy`)                | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md), [`docs/architecture.md`](docs/architecture.md) |
 | Policy enforcement on intercepted `tools/call`      | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md) |
 | Tamper-evident hash-chained audit logs              | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | Audit-log summarisation (`audit summarize`)         | Implemented    | `agentfence audit summarize --help` |
 | Fuzz coverage for parser, glob, and redaction       | Implemented    | `make fuzz` |
-| Interactive TTY approval for `ask` decisions        | Planned        | Issues #29, #30 |
 | MCP streamable-HTTP proxy                           | Planned        | [`docs/architecture.md`](docs/architecture.md) |
 
 ## Why this exists
@@ -97,6 +100,33 @@ Validate a policy file before use (catches typos and unknown fields):
 ```bash
 ./agentfence validate --policy examples/policy.yaml
 ```
+
+## Approval and dry-run modes
+
+`check` exposes three operator controls for the `ask` decision and for
+"evaluate without enforcing" workflows:
+
+- `--no-interactive` — never prompt; auto-deny any `ask` decision. The audit
+  reason is `non-interactive: ask auto-denied`. Use this in CI.
+- `--approval-timeout <duration>` — bound the wait for a y/N response (e.g.
+  `30s`, `2m`). On expiry the call is denied with reason `approval timeout`.
+  `0` (the default) waits forever.
+- `--dry-run` — evaluate policy and write audit records but never invoke the
+  approver and never propagate a non-zero exit from `--fail-on`. Each audit
+  record carries `"mode": "dry_run"` so downstream readers can distinguish
+  simulated decisions from enforced ones. Text output is suffixed with
+  `[dry-run]`.
+
+Typical CI invocation:
+
+```bash
+./agentfence check \
+  --policy policy.yaml --call calls.jsonl \
+  --no-interactive --approval-timeout 30s --fail-on deny,ask
+```
+
+Run the same input through `--dry-run` first to see what would happen without
+failing the pipeline.
 
 Initialize a starter policy in your current directory:
 
@@ -204,8 +234,11 @@ AgentFence is built to reduce practical risks from agent tool calls:
 - secret leakage through logs
 - excessive default permissions
 
-See [`docs/threat-model.md`](docs/threat-model.md) for details and
-[`docs/architecture.md`](docs/architecture.md) for the evaluation flow.
+See [`docs/threat-model.md`](docs/threat-model.md) for the full threat model
+(including the MCP proxy threat surface, confused-deputy-via-MCP-proxy, and
+audit-log integrity), [`docs/architecture.md`](docs/architecture.md) for the
+evaluation flow, and [`docs/modes.md`](docs/modes.md) for the
+detection/prevention/audit-only/dry-run mode taxonomy.
 
 AgentFence is not a sandbox. It enforces policy *before* a tool call executes;
 it does not contain a tool call that has already been forwarded. Pair it with
@@ -234,7 +267,6 @@ an agent application and want safety guarantees compiled in.
 
 - MCP stdio proxy mode
 - MCP streamable HTTP proxy mode
-- interactive TTY approval
 - signed audit logs
 - GitHub Action mode for CI policy checks
 - reusable policy packs for filesystem, GitHub, browser, database, and shell tools

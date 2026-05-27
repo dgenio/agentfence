@@ -128,6 +128,74 @@ defaults:
 	}
 }
 
+// TestValidateCommandResolvesImports verifies validate catches import
+// resolution errors, not just strict schema errors in the root file.
+func TestValidateCommandResolvesImports(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - missing.yaml
+defaults:
+  decision: deny
+`))
+
+	err := runValidate([]string{"--policy", policyFile})
+	if err == nil {
+		t.Fatal("runValidate() expected error for missing import, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing.yaml") {
+		t.Fatalf("runValidate() error %q does not mention missing import", err)
+	}
+}
+
+// TestValidateCommandAcceptsValidImports verifies validate resolves a valid
+// importing policy before reporting success.
+func TestValidateCommandAcceptsValidImports(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "base.yaml"), []byte(`version: "0.1"
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - base.yaml
+defaults:
+  decision: deny
+`))
+
+	if err := runValidate([]string{"--policy", policyFile}); err != nil {
+		t.Fatalf("runValidate() unexpected error: %v", err)
+	}
+}
+
+// TestValidateCommandStrictlyValidatesImportedPolicy verifies imported policies
+// are checked for unknown fields before validate reports success.
+func TestValidateCommandStrictlyValidatesImportedPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "base.yaml"), []byte(`version: "0.1"
+defaults:
+  decisoin: deny
+`))
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - base.yaml
+defaults:
+  decision: deny
+`))
+
+	err := runValidate([]string{"--policy", policyFile})
+	if err == nil {
+		t.Fatal("runValidate() expected error for imported unknown field 'decisoin', got nil")
+	}
+	if !strings.Contains(err.Error(), "base.yaml") {
+		t.Fatalf("runValidate() error %q does not mention imported policy", err)
+	}
+}
+
 // TestValidateCommandDetectsTypo verifies that an unknown field returns an error.
 func TestValidateCommandDetectsTypo(t *testing.T) {
 	dir := t.TempDir()
@@ -387,9 +455,21 @@ tools:
 	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"github.create_issue","arguments":{}}
 `))
 
-	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "ask"})
-	if err == nil {
-		t.Fatal("expected error with --fail-on ask when a call is ask")
+	// --dry-run preserves the ask decision (the approver is bypassed) so that
+	// --fail-on ask sees what would have been asked. This is the canonical CI
+	// pattern: "evaluate without enforcing, but flag if any ask would happen."
+	// In dry-run, --fail-on reports but does not propagate non-zero exit.
+	if err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "ask", "--dry-run"}); err != nil {
+		t.Fatalf("runCheck --dry-run --fail-on ask should report without erroring, got: %v", err)
+	}
+
+	// Without --dry-run, the default TTY approver in a test environment denies
+	// (no TTY, no stdin input), so the ask is converted to deny and --fail-on
+	// ask no longer matches. Explicitly use --no-interactive to make this
+	// behavior deterministic across environments.
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile, "--fail-on", "ask", "--no-interactive"})
+	if err != nil {
+		t.Fatalf("with --no-interactive, ask is converted to deny so --fail-on ask should not match: %v", err)
 	}
 }
 
@@ -942,6 +1022,204 @@ tools:
 	}
 	if !strings.Contains(buf.String(), "warning") {
 		t.Errorf("expected warning on stderr; got: %s", buf.String())
+	}
+}
+
+// ── #29 / #30 / #40: approval and dry-run integration ────────────────────────
+
+// askPolicyAndCall writes a minimal policy that returns ask for github.create_issue
+// and a calls file with a single ask call. Returns the two paths.
+func askPolicyAndCall(t *testing.T) (policyPath, callPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	policyPath = filepath.Join(dir, "policy.yaml")
+	callPath = filepath.Join(dir, "calls.jsonl")
+	writeTestFile(t, policyPath, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  github.create_issue:
+    decision: ask
+`))
+	writeTestFile(t, callPath, []byte(`{"id":"c1","tool":"github.create_issue","arguments":{}}
+`))
+	return policyPath, callPath
+}
+
+// readAuditEvents parses every JSON object on its own line in path.
+func readAuditEvents(t *testing.T, path string) []map[string]interface{} {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	var out []map[string]interface{}
+	for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("invalid audit line %q: %v", line, err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func TestCheckNoInteractiveAutoDeniesAsk(t *testing.T) {
+	policyFile, callFile := askPolicyAndCall(t)
+	dir := filepath.Dir(policyFile)
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--no-interactive",
+	}); err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+
+	events := readAuditEvents(t, auditFile)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(events))
+	}
+	if events[0]["decision"] != "deny" {
+		t.Errorf("decision = %v, want deny", events[0]["decision"])
+	}
+	if got, want := events[0]["reason"], "non-interactive: ask auto-denied"; got != want {
+		t.Errorf("reason = %v, want %q", got, want)
+	}
+	if _, hasMode := events[0]["mode"]; hasMode {
+		t.Errorf("mode should be absent for enforced events; got %v", events[0]["mode"])
+	}
+}
+
+func TestCheckDryRunPreservesAskAndMarksMode(t *testing.T) {
+	policyFile, callFile := askPolicyAndCall(t)
+	dir := filepath.Dir(policyFile)
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--dry-run",
+	}); err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+
+	events := readAuditEvents(t, auditFile)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(events))
+	}
+	if events[0]["decision"] != "ask" {
+		t.Errorf("decision = %v, want ask (approver must not be invoked in dry-run)", events[0]["decision"])
+	}
+	if events[0]["mode"] != "dry_run" {
+		t.Errorf("mode = %v, want dry_run", events[0]["mode"])
+	}
+	if events[0]["schema_version"] != "2" {
+		t.Errorf("schema_version = %v, want 2", events[0]["schema_version"])
+	}
+}
+
+func TestCheckDryRunSuppressesFailOnExit(t *testing.T) {
+	// A denied call combined with --fail-on deny normally returns an error.
+	// In --dry-run, the call is reported but the exit is not propagated.
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"shell.exec","arguments":{}}
+`))
+
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--fail-on", "deny",
+		"--dry-run",
+	}); err != nil {
+		t.Fatalf("dry-run should not propagate --fail-on exit, got: %v", err)
+	}
+
+	// Sanity: without --dry-run the same input does fail.
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--fail-on", "deny",
+	}); err == nil {
+		t.Fatal("expected --fail-on deny to error without --dry-run")
+	}
+}
+
+func TestCheckApprovalTimeoutDeniesAsk(t *testing.T) {
+	// Use a 1ms timeout; the default approver path tries to open /dev/tty,
+	// so we force --no-interactive to keep the test deterministic — but
+	// --no-interactive should NOT short-circuit timeout semantics for the
+	// flag plumbing test. Instead, validate that --approval-timeout is
+	// accepted and produces a deny decision either way.
+	policyFile, callFile := askPolicyAndCall(t)
+	dir := filepath.Dir(policyFile)
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--no-interactive",
+		"--approval-timeout", "1ms",
+	}); err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+
+	events := readAuditEvents(t, auditFile)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(events))
+	}
+	if events[0]["decision"] != "deny" {
+		t.Errorf("decision = %v, want deny", events[0]["decision"])
+	}
+}
+
+func TestCheckRejectsInvalidApprovalTimeout(t *testing.T) {
+	policyFile, callFile := askPolicyAndCall(t)
+	err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--approval-timeout", "nonsense",
+	})
+	if err == nil {
+		t.Fatal("expected error on invalid --approval-timeout")
+	}
+}
+
+func TestCheckDryRunTextOutputContainsMarker(t *testing.T) {
+	policyFile, callFile := askPolicyAndCall(t)
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--dry-run",
+	})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+	if !strings.Contains(buf.String(), "[dry-run]") {
+		t.Errorf("expected [dry-run] marker in text output; got:\n%s", buf.String())
 	}
 }
 

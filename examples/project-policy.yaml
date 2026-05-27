@@ -1,0 +1,44 @@
+# Project policy that imports the shared baseline.
+#
+# Validate with:
+#   agentfence validate --policy examples/project-policy.yaml
+version: "0.1"
+
+imports:
+  - base-policy.yaml
+
+defaults:
+  decision: deny
+
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allow:
+          - "./"
+        deny:
+          - ".env"
+          - "**/secrets/**"
+
+  # Override a rule inherited from the base: this project allows asking
+  # for confirmation rather than the base's flat deny.
+  filesystem.delete:
+    decision: ask
+    constraints:
+      paths:
+        allow:
+          - "./build/**"
+          - "./dist/**"
+
+  # Demonstrate the memory_write constraint family. Durable writes are
+  # capped at project scope and medium sensitivity; secret-looking payloads
+  # (matched by the redaction patterns inherited from base-policy.yaml)
+  # auto-classify as high and are denied.
+  memory.write:
+    decision: ask
+    constraints:
+      memory_write:
+        max_scope: project
+        max_sensitivity: medium
+        max_bytes: 1024
