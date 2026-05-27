@@ -3,11 +3,12 @@ package engine
 import "testing"
 
 // FuzzMatchesGlob feeds arbitrary pattern/value pairs to matchesGlob and
-// asserts that it neither panics nor enters catastrophic backtracking.
-// matchesGlob builds a regex from the operator-supplied glob pattern and was
-// previously using regexp.MustCompile, which would panic on a malformed
-// expression — the engine.go change in this PR swaps to regexp.Compile with a
-// fallback so this fuzz target should no longer surface that class of bug.
+// asserts that it never panics. matchesGlob builds a regex from the
+// operator-supplied glob pattern and was previously using regexp.MustCompile,
+// which would panic on a malformed expression — the engine.go change in this
+// PR swaps to regexp.Compile with a fallback so this fuzz target should no
+// longer surface that class of bug. (Go's regexp engine is RE2-based and does
+// not backtrack, so catastrophic backtracking is not a concern here.)
 func FuzzMatchesGlob(f *testing.F) {
 	seeds := []struct {
 		pattern, value string

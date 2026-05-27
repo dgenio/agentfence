@@ -407,7 +407,7 @@ func runExplain(args []string) error {
 	return nil
 }
 
-// runAuditSubcmd dispatches audit sub-commands: verify.
+// runAuditSubcmd dispatches audit sub-commands: verify, summarize.
 func runAuditSubcmd(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("audit requires a subcommand: verify, summarize")

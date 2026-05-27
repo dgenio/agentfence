@@ -979,7 +979,9 @@ func TestRunProxyRejectsMissingPolicyFile(t *testing.T) {
 }
 
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns the
-// captured bytes.
+// captured bytes. The pipe is drained concurrently so fn cannot deadlock when
+// it writes more than the pipe buffer, and os.Stdout is restored (and both fds
+// closed) even if fn panics.
 func captureStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -988,14 +990,20 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	}
 	oldStdout := os.Stdout
 	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		_ = r.Close()
+		done <- buf.String()
+	}()
+
 	runErr := fn()
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatal(err)
-	}
-	return buf.String(), runErr
+	return <-done, runErr
 }
 
 func TestAuditSummarizeRequiresLog(t *testing.T) {

@@ -175,47 +175,64 @@ func topReasonCounts(m map[struct{ decision, reason string }]int, topN int) []Re
 // Output is stable across runs given identical inputs and is intended for
 // terminal consumption. Use json.Marshal on Summary for automation.
 func (s Summary) FormatText(w io.Writer) error {
-	fmt.Fprintf(w, "Audit summary\n")
-	fmt.Fprintf(w, "  total events:   %d\n", s.Total)
-	fmt.Fprintf(w, "  malformed:      %d\n", s.Malformed)
-	fmt.Fprintf(w, "  by decision:    allow=%d deny=%d ask=%d\n",
+	ew := &errWriter{w: w}
+	ew.printf("Audit summary\n")
+	ew.printf("  total events:   %d\n", s.Total)
+	ew.printf("  malformed:      %d\n", s.Malformed)
+	ew.printf("  by decision:    allow=%d deny=%d ask=%d\n",
 		s.ByDecision[string(policy.DecisionAllow)],
 		s.ByDecision[string(policy.DecisionDeny)],
 		s.ByDecision[string(policy.DecisionAsk)])
 
 	if len(s.BySchemaVersion) > 0 {
-		fmt.Fprintf(w, "  schema versions:")
+		ew.printf("  schema versions:")
 		versions := sortedKeys(s.BySchemaVersion)
 		for _, v := range versions {
-			fmt.Fprintf(w, " %s=%d", v, s.BySchemaVersion[v])
+			ew.printf(" %s=%d", v, s.BySchemaVersion[v])
 		}
-		fmt.Fprintln(w)
+		ew.printf("\n")
 	}
 
-	writeToolSection(w, "Top tools (all decisions)", s.TopTools)
-	writeToolSection(w, "Top denied tools", s.TopDeniedTools)
-	writeToolSection(w, "Top allowed tools", s.TopAllowedTools)
-	writeReasonSection(w, "Top reasons", s.TopReasons)
-	return nil
+	writeToolSection(ew, "Top tools (all decisions)", s.TopTools)
+	writeToolSection(ew, "Top denied tools", s.TopDeniedTools)
+	writeToolSection(ew, "Top allowed tools", s.TopAllowedTools)
+	writeReasonSection(ew, "Top reasons", s.TopReasons)
+	return ew.err
 }
 
-func writeToolSection(w io.Writer, title string, rows []ToolCount) {
+// errWriter accumulates the first write error so FormatText can render its
+// whole report with simple printf calls and still surface a broken-pipe or
+// short-write failure to the caller. Once err is set, subsequent writes are
+// skipped.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (ew *errWriter) printf(format string, args ...interface{}) {
+	if ew.err != nil {
+		return
+	}
+	_, ew.err = fmt.Fprintf(ew.w, format, args...)
+}
+
+func writeToolSection(ew *errWriter, title string, rows []ToolCount) {
 	if len(rows) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\n%s:\n", title)
+	ew.printf("\n%s:\n", title)
 	for _, r := range rows {
-		fmt.Fprintf(w, "  %5d  %s\n", r.Count, r.Tool)
+		ew.printf("  %5d  %s\n", r.Count, r.Tool)
 	}
 }
 
-func writeReasonSection(w io.Writer, title string, rows []ReasonCount) {
+func writeReasonSection(ew *errWriter, title string, rows []ReasonCount) {
 	if len(rows) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\n%s:\n", title)
+	ew.printf("\n%s:\n", title)
 	for _, r := range rows {
-		fmt.Fprintf(w, "  %5d  [%s] %s\n", r.Count, r.Decision, r.Reason)
+		ew.printf("  %5d  [%s] %s\n", r.Count, r.Decision, r.Reason)
 	}
 }
 
