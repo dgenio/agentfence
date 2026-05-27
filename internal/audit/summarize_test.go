@@ -3,11 +3,27 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/dgenio/agentfence/internal/policy"
 )
+
+// errAfterWriter fails once cumulative writes exceed limit bytes, simulating a
+// broken pipe partway through output. limit=0 fails on the first write.
+type errAfterWriter struct {
+	limit   int
+	written int
+}
+
+func (w *errAfterWriter) Write(p []byte) (int, error) {
+	w.written += len(p)
+	if w.written > w.limit {
+		return 0, io.ErrClosedPipe
+	}
+	return len(p), nil
+}
 
 // writeLog serialises events through a non-chaining Writer so the input to
 // Summarize matches the on-wire layout that operators see in real audit logs.
@@ -215,5 +231,47 @@ func TestSummarizeJSONShape(t *testing.T) {
 		if !bytes.Contains(b, []byte(f)) {
 			t.Errorf("JSON output missing field %s; got %s", f, b)
 		}
+	}
+}
+
+func TestSummarizeFormatTextPropagatesWriteError(t *testing.T) {
+	log := writeLog(t, []Event{
+		{Tool: "filesystem.read", Decision: policy.DecisionAllow, Reason: "explicit"},
+		{Tool: "github.delete_repo", Decision: policy.DecisionDeny, Reason: "destructive"},
+	})
+	s, err := Summarize(bytes.NewReader(log), 0)
+	if err != nil {
+		t.Fatalf("Summarize() error = %v", err)
+	}
+
+	// limit 0 forces the very first write to fail.
+	if err := s.FormatText(&errAfterWriter{limit: 0}); err == nil {
+		t.Error("FormatText() returned nil despite a writer that fails immediately")
+	}
+	// A mid-stream failure (after the header has been written) must also surface.
+	if err := s.FormatText(&errAfterWriter{limit: 30}); err == nil {
+		t.Error("FormatText() returned nil despite a mid-stream write failure")
+	}
+}
+
+func TestSummarizeEmptyJSONObjectCountedMalformed(t *testing.T) {
+	// A syntactically valid JSON object that carries neither a decision nor a
+	// tool is not a real audit event: it must be counted as malformed, not as
+	// a Total event, and must not create an empty-decision bucket.
+	input := `{}
+{"schema_version":"1","session_id":"s","seq":1,"timestamp":"t","call_id":"c","tool":"x","decision":"allow","reason":"r"}
+`
+	s, err := Summarize(strings.NewReader(input), 0)
+	if err != nil {
+		t.Fatalf("Summarize() error = %v", err)
+	}
+	if s.Total != 1 {
+		t.Errorf("Total = %d, want 1", s.Total)
+	}
+	if s.Malformed != 1 {
+		t.Errorf("Malformed = %d, want 1", s.Malformed)
+	}
+	if _, ok := s.ByDecision[""]; ok {
+		t.Errorf("ByDecision must not contain an empty-decision bucket; got %+v", s.ByDecision)
 	}
 }

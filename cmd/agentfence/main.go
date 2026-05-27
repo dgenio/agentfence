@@ -534,7 +534,9 @@ func runAuditSummarize(args []string) error {
 		if err != nil {
 			return fmt.Errorf("audit summarize: json marshal: %w", err)
 		}
-		fmt.Printf("%s\n", b)
+		if _, err := fmt.Fprintf(os.Stdout, "%s\n", b); err != nil {
+			return fmt.Errorf("audit summarize: write output: %w", err)
+		}
 	default:
 		if err := summary.FormatText(os.Stdout); err != nil {
 			return err

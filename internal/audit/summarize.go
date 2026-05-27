@@ -41,8 +41,10 @@ type Summary struct {
 	TopDeniedTools  []ToolCount `json:"top_denied_tools"`
 	TopAllowedTools []ToolCount `json:"top_allowed_tools"`
 
-	// Malformed counts JSONL lines that failed to parse as audit events.
-	// Lines containing only whitespace are not counted as malformed.
+	// Malformed counts JSONL lines that could not be interpreted as an audit
+	// event: lines that fail to parse as JSON, plus valid JSON that carries
+	// neither a decision nor a tool (e.g. "{}"). Lines containing only
+	// whitespace are not counted as malformed.
 	Malformed int `json:"malformed"`
 }
 
@@ -97,7 +99,10 @@ func Summarize(r io.Reader, topN int) (Summary, error) {
 		}
 
 		var e Event
-		if err := json.Unmarshal(line, &e); err != nil {
+		if err := json.Unmarshal(line, &e); err != nil || (e.Decision == "" && e.Tool == "") {
+			// Malformed JSON, or valid JSON that isn't an audit event (no
+			// decision and no tool, e.g. "{}") — either way it's not a real
+			// event, so count it as malformed rather than inflating Total.
 			s.Malformed++
 		} else {
 			s.Total++

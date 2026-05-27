@@ -395,6 +395,11 @@ func matchesGlob(pattern, value string) bool {
 	regexPattern = strings.ReplaceAll(regexPattern, `\*`, "[^/]*")
 	// regexp.Compile (not MustCompile) so fuzz-discovered or future malformed
 	// patterns degrade to "no match" instead of panicking the whole evaluator.
+	// In practice this branch is unreachable: regexPattern is built from
+	// regexp.QuoteMeta plus a fixed set of glob→regex substitutions, all of
+	// which are valid. If it ever were reachable, "no match" is the safe
+	// default — the engine falls back to the policy's default decision (deny
+	// by default), so a non-compiling pattern never silently grants access.
 	re, err := regexp.Compile(regexPattern)
 	if err != nil {
 		return false
