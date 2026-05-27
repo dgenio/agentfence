@@ -31,6 +31,8 @@ today from what is planned. Do not assume planned features are usable yet.
 | MCP stdio proxy (`agentfence proxy`)                | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md), [`docs/architecture.md`](docs/architecture.md) |
 | Policy enforcement on intercepted `tools/call`      | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md) |
 | Tamper-evident hash-chained audit logs              | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
+| Audit-log summarisation (`audit summarize`)         | Implemented    | `agentfence audit summarize --help` |
+| Fuzz coverage for parser, glob, and redaction       | Implemented    | `make fuzz` |
 | MCP streamable-HTTP proxy                           | Planned        | [`docs/architecture.md`](docs/architecture.md) |
 
 ## Why this exists
@@ -150,6 +152,19 @@ Run AgentFence as an MCP stdio proxy in front of any MCP server:
 
 See [`docs/integration-guide.md`](docs/integration-guide.md) for Claude Code
 and VS Code configuration, audit-log inspection, and troubleshooting.
+
+Summarise an existing audit log to see which tools are most active and which
+rules dominate the deny pile:
+
+```bash
+./agentfence audit summarize --log audit.jsonl
+./agentfence audit summarize --log audit.jsonl --output json --top 20
+```
+
+The text output reports totals, decision counts, schema versions, top tools
+(overall, denied, allowed), and top reasons. The JSON output has the same
+fields under stable snake_case keys for automation. Malformed JSONL lines are
+counted as `malformed` and never abort the run.
 
 ## Demo output
 
