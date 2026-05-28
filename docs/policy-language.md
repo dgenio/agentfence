@@ -320,14 +320,26 @@ agentfence audit verify --log audit.jsonl
 
 A modified or deleted event causes verification to exit non-zero with the
 1-based event number that failed. A non-chained log produces a warning rather
-than an error. See [`docs/threat-model.md`](threat-model.md#audit-log-integrity)
-for the threat model.
+than an error. A *mixed* log — one whose chain does not cover every event —
+exits non-zero with a `PARTIAL` summary, e.g.:
+
+```text
+PARTIAL: 5 event(s); chain starts at event 3; events 1..2 are not integrity-protected
+```
+
+This makes it impossible for `audit verify` to silently report `OK` on a log
+whose prefix is unprotected. See
+[`docs/threat-model.md`](threat-model.md#audit-log-integrity) for the threat
+model.
 
 `--audit-log` opens logs in append mode and creates new files with owner-only
 permissions on Unix (`0600`). When `--tamper-evident` appends to an existing
 chained log, the next event links to the previous event's hash so verification
-continues across runs. Rotate logs by moving or archiving the current file
-before starting a new chain.
+continues across runs. To preserve full-log integrity, `--tamper-evident` is
+**refused** on a non-empty log that has no chain at all — converting an
+unchained log mid-stream would produce exactly the mixed log the verifier
+flags as `PARTIAL`. Rotate the log (move or archive the current file) before
+enabling `--tamper-evident`.
 
 ## Complete example
 

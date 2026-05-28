@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/dgenio/agentfence/internal/audit"
+	"github.com/dgenio/agentfence/internal/policy"
 )
 
 // writeTestFile writes data to path and fails the test if the write errors.
@@ -1177,6 +1178,126 @@ tools:
 	}
 	if !strings.Contains(bout.String(), "PARSED:") {
 		t.Errorf("expected 'PARSED:' summary on stdout, got: %s", bout.String())
+	}
+}
+
+// TestCheckRefusesTamperEvidentOnExistingUnchainedLog confirms that
+// `check --audit-log <file> --tamper-evident` returns a non-zero error when
+// <file> already contains unchained audit events. Allowing the append would
+// produce a mixed log whose prefix is not integrity-protected — exactly the
+// failure mode that PR #67's review surfaced.
+func TestCheckRefusesTamperEvidentOnExistingUnchainedLog(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"))
+
+	// Seed the audit file with an unchained event.
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("seed runCheck: %v", err)
+	}
+
+	// Sanity-check that the seeded file is non-empty and unchained.
+	contents, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatalf("read seeded audit file: %v", err)
+	}
+	if len(contents) == 0 {
+		t.Fatal("seeded audit file is empty; test setup wrong")
+	}
+	if bytes.Contains(contents, []byte(`"hash":`)) {
+		t.Fatalf("seeded audit file already chained; test setup wrong:\n%s", contents)
+	}
+
+	// Now try to append in tamper-evident mode — must fail loudly.
+	err = runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+		"--tamper-evident",
+	})
+	if err == nil {
+		t.Fatal("expected runCheck to refuse --tamper-evident on existing unchained log, got nil error")
+	}
+	if !strings.Contains(err.Error(), "unchained") {
+		t.Errorf("expected error to mention 'unchained', got: %v", err)
+	}
+
+	// The audit file must not have been mutated by the rejected attempt.
+	contentsAfter, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatalf("re-read audit file: %v", err)
+	}
+	if !bytes.Equal(contents, contentsAfter) {
+		t.Errorf("audit file was modified by a rejected --tamper-evident attempt:\nbefore: %q\nafter:  %q", contents, contentsAfter)
+	}
+}
+
+// TestAuditVerifyReportsPartialChain pins the CLI behavior for a mixed log:
+// `audit verify` must return a non-zero error AND print a PARTIAL summary
+// rather than misleadingly reporting OK.
+//
+// We build the mixed log directly (the writer-side refusal in
+// openAuditOutput prevents `check --tamper-evident` from producing one), to
+// represent logs that arrive from external sources or pre-fix tooling.
+func TestAuditVerifyReportsPartialChain(t *testing.T) {
+	dir := t.TempDir()
+	auditFile := filepath.Join(dir, "mixed.jsonl")
+
+	buf := &bytes.Buffer{}
+	plain := audit.NewWriter(buf)
+	for i := 0; i < 2; i++ {
+		if err := plain.Write(audit.Event{CallID: "u", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+			t.Fatalf("plain Write: %v", err)
+		}
+	}
+	chained := audit.NewWriterOptions(buf, audit.Options{TamperEvident: true, SessionID: "mixed"})
+	for i := 0; i < 3; i++ {
+		if err := chained.Write(audit.Event{
+			Timestamp: "2026-01-01T00:00:00Z",
+			CallID:    "c", Tool: "t", Decision: policy.DecisionAllow,
+		}); err != nil {
+			t.Fatalf("chained Write: %v", err)
+		}
+	}
+	if err := os.WriteFile(auditFile, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("write mixed audit file: %v", err)
+	}
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runAuditVerify([]string{"--log", auditFile})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var bout bytes.Buffer
+	io.Copy(&bout, r)
+
+	if err == nil {
+		t.Fatalf("expected runAuditVerify on mixed log to return an error, got nil; stdout: %s", bout.String())
+	}
+	if !strings.Contains(err.Error(), "chain starts at event 3") {
+		t.Errorf("expected error to mention 'chain starts at event 3', got: %v", err)
+	}
+	if !strings.Contains(bout.String(), "PARTIAL: 5 event(s); chain starts at event 3") {
+		t.Errorf("expected stdout to show 'PARTIAL: 5 event(s); chain starts at event 3', got: %s", bout.String())
 	}
 }
 

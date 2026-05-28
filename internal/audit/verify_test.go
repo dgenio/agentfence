@@ -113,6 +113,69 @@ func TestVerifyChainNonChainedLog(t *testing.T) {
 	}
 }
 
+func TestVerifyChainPartialChain(t *testing.T) {
+	// Build a mixed log: 2 unchained events, then 3 chained events appended
+	// to the same buffer. This is the exact scenario openAuditOutput
+	// produces when --tamper-evident is enabled on a pre-existing
+	// unchained log: the suffix is integrity-protected, the prefix is not.
+	buf := &bytes.Buffer{}
+	plain := NewWriter(buf)
+	for i := 0; i < 2; i++ {
+		if err := plain.Write(Event{CallID: "u", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+			t.Fatalf("plain Write() = %v", err)
+		}
+	}
+	chained := NewWriterOptions(buf, Options{TamperEvident: true, SessionID: "mixed"})
+	for i := 0; i < 3; i++ {
+		if err := chained.Write(Event{
+			Timestamp: "2026-01-01T00:00:00Z",
+			CallID:    "c", Tool: "t", Decision: policy.DecisionAllow,
+		}); err != nil {
+			t.Fatalf("chained Write() = %v", err)
+		}
+	}
+
+	n, err := VerifyChain(bytes.NewReader(buf.Bytes()))
+	if !errors.Is(err, ErrPartialChain) {
+		t.Fatalf("err = %v, want ErrPartialChain", err)
+	}
+	if n != 5 {
+		t.Errorf("count = %d, want 5", n)
+	}
+	var pe *PartialChainError
+	if !errors.As(err, &pe) {
+		t.Fatalf("err = %v (%T), want *PartialChainError", err, err)
+	}
+	if pe.Total != 5 || pe.ChainStartEvent != 3 {
+		t.Errorf("PartialChainError = {Total:%d ChainStartEvent:%d}, want {Total:5 ChainStartEvent:3}", pe.Total, pe.ChainStartEvent)
+	}
+}
+
+func TestLastChainStateClassifiesLogs(t *testing.T) {
+	// Empty log.
+	if hash, n, start, err := LastChainState(strings.NewReader("")); err != nil || hash != "" || n != 0 || start != 0 {
+		t.Errorf("empty: got (%q,%d,%d,%v), want (\"\",0,0,nil)", hash, n, start, err)
+	}
+
+	// Fully chained log.
+	chained, _ := buildChainedLog(t, 3)
+	if hash, n, start, err := LastChainState(bytes.NewReader(chained)); err != nil || hash == "" || n != 3 || start != 1 {
+		t.Errorf("chained: got (%q,%d,%d,%v), want (non-empty,3,1,nil)", hash, n, start, err)
+	}
+
+	// Fully unchained log.
+	plainBuf := &bytes.Buffer{}
+	plain := NewWriter(plainBuf)
+	for i := 0; i < 2; i++ {
+		if err := plain.Write(Event{CallID: "u", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+			t.Fatalf("plain Write() = %v", err)
+		}
+	}
+	if hash, n, start, err := LastChainState(plainBuf); err != nil || hash != "" || n != 2 || start != 0 {
+		t.Errorf("unchained: got (%q,%d,%d,%v), want (\"\",2,0,nil)", hash, n, start, err)
+	}
+}
+
 func TestVerifyChainDetectsModifiedEvent(t *testing.T) {
 	log, _ := buildChainedLog(t, 5)
 	lines := bytes.Split(bytes.TrimRight(log, "\n"), []byte("\n"))

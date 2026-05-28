@@ -560,6 +560,13 @@ func runAuditVerify(args []string) error {
 		fmt.Fprintf(os.Stderr, "AgentFence: warning: %s; cannot verify integrity\n", err)
 		fmt.Printf("PARSED: %d event(s); chain absent\n", n)
 		return nil
+	case errors.Is(err, audit.ErrPartialChain):
+		var pe *audit.PartialChainError
+		if errors.As(err, &pe) {
+			fmt.Printf("PARTIAL: %d event(s); chain starts at event %d; events 1..%d are not integrity-protected\n", pe.Total, pe.ChainStartEvent, pe.ChainStartEvent-1)
+			return fmt.Errorf("audit verify: %s", pe.Error())
+		}
+		return fmt.Errorf("audit verify: %w", err)
 	default:
 		var ve *audit.VerifyError
 		if errors.As(err, &ve) {
@@ -672,10 +679,19 @@ func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func()
 			_ = f.Close()
 			return nil, nil, audit.Options{}, err
 		}
-		lastHash, err := audit.LastChainHash(f)
+		lastHash, eventCount, firstChained, err := audit.LastChainState(f)
 		if err != nil {
 			_ = f.Close()
 			return nil, nil, audit.Options{}, fmt.Errorf("audit: existing log chain: %w", err)
+		}
+		// Refuse to append a chain to a non-empty log that has no chain at
+		// all: doing so would produce a mixed log whose prefix is not
+		// integrity-protected. `audit verify` would then surface this as
+		// PARTIAL — better to fail early at write time than to ship a log
+		// that quietly lies about coverage.
+		if eventCount > 0 && firstChained == 0 {
+			_ = f.Close()
+			return nil, nil, audit.Options{}, fmt.Errorf("audit: cannot enable --tamper-evident on existing unchained log %q (%d unchained event(s)); use a new file or convert the log first", auditLogPath, eventCount)
 		}
 		options.InitialPrevHash = lastHash
 		if _, err := f.Seek(0, io.SeekEnd); err != nil {

@@ -238,6 +238,13 @@ reserved for the agent's JSON-RPC channel.
 without `--tamper-evident`. Re-run the proxy with the flag if you want a
 verifiable chain.
 
+**`audit verify` reports `PARTIAL`** — the log mixes unchained and chained
+events; only the chained suffix is integrity-protected. This happens when a
+log written without `--tamper-evident` is later fed into a chain-aware writer
+out of band. `check`/`proxy` refuses `--tamper-evident` on existing unchained
+logs to prevent this; rotate the log (move or archive it) before enabling
+the flag.
+
 ## Limitations and known issues
 
 - The proxy supports stdio transport only. HTTP/SSE proxying is on the
