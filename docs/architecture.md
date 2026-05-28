@@ -86,3 +86,13 @@ configuration examples.
 - Arguments are recursively traversed.
 - String values matching any configured secret pattern are replaced with `[REDACTED:<pattern_name>]`.
 - Redaction occurs before arguments are written into audit logs.
+
+## Enforcement modes
+
+AgentFence defines four enforcement modes (see [`modes.md`](modes.md) for
+details): **detection**, **prevention**, **audit-only**, and **dry-run**. The
+modes differ in whether decisions are enforced, whether the operator is
+prompted, and how the exit code is propagated. The canonical definitions and
+command-to-mode mapping live in [`modes.md`](modes.md); the threat model
+references those modes when describing what each enforcement boundary
+guarantees (see [`threat-model.md`](threat-model.md)).

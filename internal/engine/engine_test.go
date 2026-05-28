@@ -684,3 +684,296 @@ func TestTraceEvaluatePathDeny(t *testing.T) {
 		t.Fatal("expected non-empty trace")
 	}
 }
+
+// memoryWriteEngine builds an engine from a policy with a memory.write rule
+// that enforces the standard memory_write constraints used by the issue #43
+// fixtures.
+func memoryWriteEngine(t *testing.T) *Engine {
+	t.Helper()
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  memory.write:
+    decision: ask
+    constraints:
+      memory_write:
+        max_scope: project
+        max_sensitivity: medium
+        max_bytes: 1024
+redaction:
+  enabled: true
+  patterns:
+    - name: generic_secret_assignment
+      regex: "(?i)(api_key|token|secret|password)\\s*[:=]\\s*[^\\s]+"
+    - name: openai_api_key
+      regex: "sk-[A-Za-z0-9_-]{20,}"
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	return e
+}
+
+// TestMemoryWriteSafePreferenceAllowed covers the issue #43 "safe preference
+// write" fixture: short, low-sensitivity payload within scope → ask (the rule's
+// declared decision).
+func TestMemoryWriteSafePreferenceAllowed(t *testing.T) {
+	e := memoryWriteEngine(t)
+	res, event := e.Evaluate(policy.ToolCall{
+		ID:   "mem-1",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"scope": "project",
+			"value": "user prefers dark mode",
+		},
+	})
+	if res.Decision != policy.DecisionAsk {
+		t.Fatalf("expected ask, got %s (%s)", res.Decision, res.Reason)
+	}
+	if event.MemoryWrite == nil {
+		t.Fatal("expected audit MemoryWrite summary, got nil")
+	}
+	if event.MemoryWrite.Scope != "project" {
+		t.Errorf("scope: got %q want project", event.MemoryWrite.Scope)
+	}
+	if event.MemoryWrite.Sensitivity != "low" {
+		t.Errorf("sensitivity: got %q want low", event.MemoryWrite.Sensitivity)
+	}
+	if event.MemoryWrite.Field != "value" {
+		t.Errorf("field: got %q want value", event.MemoryWrite.Field)
+	}
+	if event.MemoryWrite.SizeBytes != len("user prefers dark mode") {
+		t.Errorf("size_bytes: got %d want %d", event.MemoryWrite.SizeBytes, len("user prefers dark mode"))
+	}
+	if event.MemoryWrite.ContentFingerprint == "" {
+		t.Error("expected non-empty content_fingerprint")
+	}
+	if len(event.MemoryWrite.PatternsMatched) != 0 {
+		t.Errorf("expected no pattern matches; got %v", event.MemoryWrite.PatternsMatched)
+	}
+}
+
+// TestMemoryWriteSecretPayloadDenied covers the "unsafe secret write" fixture:
+// payload matches a redaction pattern → auto-classify high → exceeds
+// max_sensitivity=medium → deny.
+func TestMemoryWriteSecretPayloadDenied(t *testing.T) {
+	e := memoryWriteEngine(t)
+	res, event := e.Evaluate(policy.ToolCall{
+		ID:   "mem-2",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"scope": "project",
+			"value": "OPENAI_API_KEY=sk-demo-very-long-secret-value-1234",
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny, got %s (%s)", res.Decision, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "sensitivity") {
+		t.Errorf("expected sensitivity-based reason, got: %s", res.Reason)
+	}
+	if event.MemoryWrite == nil {
+		t.Fatal("expected audit MemoryWrite summary even on deny")
+	}
+	if event.MemoryWrite.Sensitivity != "high" {
+		t.Errorf("sensitivity: got %q want high", event.MemoryWrite.Sensitivity)
+	}
+	if len(event.MemoryWrite.PatternsMatched) == 0 {
+		t.Error("expected at least one pattern match on secret-like payload")
+	}
+	// Critical: the raw payload must NEVER appear in the summary.
+	if strings.Contains(event.MemoryWrite.ContentFingerprint, "sk-demo") {
+		t.Errorf("content_fingerprint must not leak payload bytes, got %q", event.MemoryWrite.ContentFingerprint)
+	}
+}
+
+// TestMemoryWriteSecretPayloadDeniedWhenRedactionDisabled verifies memory-write
+// classification still inspects configured redaction patterns when audit
+// redaction itself is disabled.
+func TestMemoryWriteSecretPayloadDeniedWhenRedactionDisabled(t *testing.T) {
+	p, err := policy.ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  memory.write:
+    decision: ask
+    constraints:
+      memory_write:
+        max_sensitivity: medium
+redaction:
+  enabled: false
+  patterns:
+    - name: openai_api_key
+      regex: "sk-[A-Za-z0-9_-]{20,}"
+audit:
+  include_redacted_arguments: true
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy error: %v", err)
+	}
+	e, err := New(p)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	res, event := e.Evaluate(policy.ToolCall{
+		ID:   "mem-disabled-redaction",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"value": "sk-demo-very-long-secret-value-1234",
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny, got %s (%s)", res.Decision, res.Reason)
+	}
+	if event.MemoryWrite == nil {
+		t.Fatal("expected audit MemoryWrite summary even on deny")
+	}
+	if event.MemoryWrite.Sensitivity != "high" {
+		t.Errorf("sensitivity: got %q want high", event.MemoryWrite.Sensitivity)
+	}
+	if len(event.MemoryWrite.PatternsMatched) != 1 || event.MemoryWrite.PatternsMatched[0] != "openai_api_key" {
+		t.Errorf("patterns_matched: got %v want [openai_api_key]", event.MemoryWrite.PatternsMatched)
+	}
+	if got, ok := event.Arguments["value"].(string); !ok || got != "sk-demo-very-long-secret-value-1234" {
+		t.Errorf("redaction disabled should leave event arguments unchanged, got %#v", event.Arguments["value"])
+	}
+}
+
+// TestMemoryWriteScopeTooBroad covers the "questionable durable assumption"
+// fixture: payload is harmless but scope=global exceeds max_scope=project.
+func TestMemoryWriteScopeTooBroad(t *testing.T) {
+	e := memoryWriteEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{
+		ID:   "mem-3",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"scope": "global",
+			"value": "team standup is at 10am",
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny, got %s (%s)", res.Decision, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "scope") {
+		t.Errorf("expected scope-based reason, got: %s", res.Reason)
+	}
+}
+
+// TestMemoryWriteOversize covers a payload that exceeds max_bytes.
+func TestMemoryWriteOversize(t *testing.T) {
+	e := memoryWriteEngine(t)
+	big := strings.Repeat("x", 1025)
+	res, _ := e.Evaluate(policy.ToolCall{
+		ID:   "mem-4",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"scope": "project",
+			"value": big,
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny, got %s (%s)", res.Decision, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "bytes") {
+		t.Errorf("expected size-based reason, got: %s", res.Reason)
+	}
+}
+
+// TestMemoryWriteMissingPayload covers the call-without-payload deny path.
+func TestMemoryWriteMissingPayload(t *testing.T) {
+	e := memoryWriteEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{
+		ID:   "mem-5",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"scope": "project",
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("expected deny, got %s (%s)", res.Decision, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "payload") {
+		t.Errorf("expected payload-based reason, got: %s", res.Reason)
+	}
+}
+
+// TestMemoryWriteContentFallback verifies the "content" payload field is used
+// when "value" is absent (default payload field list).
+func TestMemoryWriteContentFallback(t *testing.T) {
+	e := memoryWriteEngine(t)
+	res, event := e.Evaluate(policy.ToolCall{
+		ID:   "mem-6",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"content": "small note",
+		},
+	})
+	if res.Decision != policy.DecisionAsk {
+		t.Fatalf("expected ask, got %s (%s)", res.Decision, res.Reason)
+	}
+	if event.MemoryWrite == nil {
+		t.Fatal("expected MemoryWrite summary")
+	}
+	if event.MemoryWrite.Field != "content" {
+		t.Errorf("expected field=content, got %q", event.MemoryWrite.Field)
+	}
+}
+
+// TestMemoryWriteExplicitSensitivityWins verifies that an explicit higher
+// sensitivity argument is honoured when the redactor would have classified
+// the payload lower.
+func TestMemoryWriteExplicitSensitivityWins(t *testing.T) {
+	e := memoryWriteEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{
+		ID:   "mem-7",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"scope":       "project",
+			"sensitivity": "high",
+			"value":       "harmless looking string",
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("explicit high sensitivity should be honoured; got %s (%s)", res.Decision, res.Reason)
+	}
+}
+
+// TestMemoryWriteInvalidSensitivityDenied verifies malformed sensitivity
+// declarations fail closed when max_sensitivity is configured.
+func TestMemoryWriteInvalidSensitivityDenied(t *testing.T) {
+	e := memoryWriteEngine(t)
+	res, _ := e.Evaluate(policy.ToolCall{
+		ID:   "mem-invalid-sensitivity",
+		Tool: "memory.write",
+		Arguments: map[string]interface{}{
+			"scope":       "project",
+			"sensitivity": "extreme",
+			"value":       "harmless looking string",
+		},
+	})
+	if res.Decision != policy.DecisionDeny {
+		t.Fatalf("invalid sensitivity should be denied; got %s (%s)", res.Decision, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "sensitivity") {
+		t.Errorf("expected sensitivity-based reason, got: %s", res.Reason)
+	}
+}
+
+// TestMemoryWriteNoSummaryWhenConstraintAbsent verifies the MemoryWrite
+// summary is nil for rules that don't opt in.
+func TestMemoryWriteNoSummaryWhenConstraintAbsent(t *testing.T) {
+	e := mustEngine(t)
+	_, event := e.Evaluate(policy.ToolCall{
+		ID:        "1",
+		Tool:      "filesystem.read",
+		Arguments: map[string]interface{}{"path": "README.md"},
+	})
+	if event.MemoryWrite != nil {
+		t.Errorf("expected MemoryWrite=nil for rule without memory_write constraint, got %+v", event.MemoryWrite)
+	}
+}

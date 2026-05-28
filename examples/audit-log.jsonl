@@ -1,0 +1,6 @@
+{"schema_version":"1","session_id":"demo","seq":1,"timestamp":"2026-05-01T10:00:00Z","call_id":"call_001","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule"}
+{"schema_version":"1","session_id":"demo","seq":2,"timestamp":"2026-05-01T10:00:01Z","call_id":"call_002","tool":"filesystem.write","decision":"deny","reason":"path .env matches deny pattern"}
+{"schema_version":"1","session_id":"demo","seq":3,"timestamp":"2026-05-01T10:00:02Z","call_id":"call_003","tool":"github.create_issue","decision":"ask","reason":"tool github.create_issue requires approval"}
+{"schema_version":"1","session_id":"demo","seq":4,"timestamp":"2026-05-01T10:00:03Z","call_id":"call_004","tool":"github.delete_repo","decision":"deny","reason":"tool github.delete_repo matched explicit policy rule"}
+{"schema_version":"1","session_id":"demo","seq":5,"timestamp":"2026-05-01T10:00:04Z","call_id":"call_005","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule"}
+{"schema_version":"1","session_id":"demo","seq":6,"timestamp":"2026-05-01T10:00:05Z","call_id":"call_006","tool":"github.delete_repo","decision":"deny","reason":"tool github.delete_repo matched explicit policy rule"}

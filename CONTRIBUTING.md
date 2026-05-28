@@ -60,6 +60,26 @@ go test ./internal/policy -run TestParsePolicy
 - Do **not** use real credentials, even in fixtures. Use clearly fake values
   such as `sk-demo-secret` or `ghp_fake_token_for_tests`.
 
+### Fuzz tests
+
+Go native fuzz targets cover the security-critical parsers — policy YAML,
+tool-call JSONL, the glob matcher, and the redactor. They are kept under the
+same `_test.go` files (`internal/{policy,engine,redact}/fuzz_test.go`).
+
+The seed corpora run as part of `go test ./...` (and therefore `make ci`).
+To actually fuzz, use the `fuzz` target:
+
+```bash
+make fuzz                 # 30s per target (default)
+make fuzz FUZZTIME=2s     # quick smoke
+make fuzz FUZZTIME=5m     # overnight-ish
+```
+
+Go's native fuzzer only fuzzes one target per `go test` invocation, so `make
+fuzz` iterates them sequentially. Any newly discovered failing inputs are
+written to `testdata/fuzz/<TargetName>/…` under the affected package; commit
+them as regression fixtures alongside the fix.
+
 ## Lint
 
 ```bash

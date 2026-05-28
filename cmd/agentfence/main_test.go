@@ -232,6 +232,74 @@ defaults:
 	}
 }
 
+// TestValidateCommandResolvesImports verifies validate catches import
+// resolution errors, not just strict schema errors in the root file.
+func TestValidateCommandResolvesImports(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - missing.yaml
+defaults:
+  decision: deny
+`))
+
+	err := runValidate([]string{"--policy", policyFile})
+	if err == nil {
+		t.Fatal("runValidate() expected error for missing import, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing.yaml") {
+		t.Fatalf("runValidate() error %q does not mention missing import", err)
+	}
+}
+
+// TestValidateCommandAcceptsValidImports verifies validate resolves a valid
+// importing policy before reporting success.
+func TestValidateCommandAcceptsValidImports(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "base.yaml"), []byte(`version: "0.1"
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - base.yaml
+defaults:
+  decision: deny
+`))
+
+	if err := runValidate([]string{"--policy", policyFile}); err != nil {
+		t.Fatalf("runValidate() unexpected error: %v", err)
+	}
+}
+
+// TestValidateCommandStrictlyValidatesImportedPolicy verifies imported policies
+// are checked for unknown fields before validate reports success.
+func TestValidateCommandStrictlyValidatesImportedPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "base.yaml"), []byte(`version: "0.1"
+defaults:
+  decisoin: deny
+`))
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+imports:
+  - base.yaml
+defaults:
+  decision: deny
+`))
+
+	err := runValidate([]string{"--policy", policyFile})
+	if err == nil {
+		t.Fatal("runValidate() expected error for imported unknown field 'decisoin', got nil")
+	}
+	if !strings.Contains(err.Error(), "base.yaml") {
+		t.Fatalf("runValidate() error %q does not mention imported policy", err)
+	}
+}
+
 // TestValidateCommandDetectsTypo verifies that an unknown field returns an error.
 func TestValidateCommandDetectsTypo(t *testing.T) {
 	dir := t.TempDir()
@@ -1593,5 +1661,145 @@ func TestRunProxyRejectsMissingPolicyFile(t *testing.T) {
 	err := runProxy([]string{"--policy", filepath.Join(t.TempDir(), "nope.yaml"), "--", "true"})
 	if err == nil {
 		t.Fatal("expected error when --policy file does not exist")
+	}
+}
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns the
+// captured bytes. The pipe is drained concurrently so fn cannot deadlock when
+// it writes more than the pipe buffer, and os.Stdout is restored (and both fds
+// closed) even if fn panics.
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		_ = r.Close()
+		done <- buf.String()
+	}()
+
+	runErr := fn()
+	_ = w.Close()
+	os.Stdout = oldStdout
+	return <-done, runErr
+}
+
+func TestAuditSummarizeRequiresLog(t *testing.T) {
+	err := runAuditSubcmd([]string{"summarize"})
+	if err == nil {
+		t.Fatal("expected error when --log is missing")
+	}
+	if !strings.Contains(err.Error(), "--log is required") {
+		t.Errorf("error message %q must mention --log", err.Error())
+	}
+}
+
+func TestAuditSummarizeUnknownOutputMode(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "audit.jsonl")
+	writeTestFile(t, logFile, []byte("\n"))
+
+	err := runAuditSubcmd([]string{"summarize", "--log", logFile, "--output", "yaml"})
+	if err == nil {
+		t.Fatal("expected error for unknown --output mode")
+	}
+	if !strings.Contains(err.Error(), "unknown --output mode") {
+		t.Errorf("error message %q must mention unknown --output mode", err.Error())
+	}
+}
+
+func TestAuditSummarizeTextOutput(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "audit.jsonl")
+	writeTestFile(t, logFile, []byte(
+		`{"schema_version":"1","session_id":"s","seq":1,"timestamp":"t","call_id":"c1","tool":"filesystem.read","decision":"allow","reason":"r"}
+{"schema_version":"1","session_id":"s","seq":2,"timestamp":"t","call_id":"c2","tool":"github.delete_repo","decision":"deny","reason":"destructive"}
+`))
+
+	out, err := captureStdout(t, func() error {
+		return runAuditSubcmd([]string{"summarize", "--log", logFile})
+	})
+	if err != nil {
+		t.Fatalf("runAuditSubcmd(summarize) error = %v", err)
+	}
+	for _, want := range []string{
+		"total events:   2",
+		"allow=1 deny=1 ask=0",
+		"filesystem.read",
+		"github.delete_repo",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text output missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+func TestAuditSummarizeJSONOutput(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "audit.jsonl")
+	writeTestFile(t, logFile, []byte(
+		`{"schema_version":"1","session_id":"s","seq":1,"timestamp":"t","call_id":"c1","tool":"filesystem.read","decision":"allow","reason":"r"}
+`))
+
+	out, err := captureStdout(t, func() error {
+		return runAuditSubcmd([]string{"summarize", "--log", logFile, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("runAuditSubcmd(summarize json) error = %v", err)
+	}
+
+	var summary struct {
+		Total      int            `json:"total"`
+		ByDecision map[string]int `json:"by_decision"`
+		Malformed  int            `json:"malformed"`
+	}
+	if err := json.Unmarshal([]byte(out), &summary); err != nil {
+		t.Fatalf("json.Unmarshal(summary) error = %v; raw:\n%s", err, out)
+	}
+	if summary.Total != 1 {
+		t.Errorf("Total = %d, want 1", summary.Total)
+	}
+	if summary.ByDecision["allow"] != 1 {
+		t.Errorf("ByDecision[allow] = %d, want 1", summary.ByDecision["allow"])
+	}
+	if summary.Malformed != 0 {
+		t.Errorf("Malformed = %d, want 0", summary.Malformed)
+	}
+}
+
+func TestAuditSummarizeCountsMalformedLines(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "audit.jsonl")
+	writeTestFile(t, logFile, []byte(
+		`{"schema_version":"1","session_id":"s","seq":1,"timestamp":"t","call_id":"c1","tool":"x","decision":"allow","reason":"r"}
+{not json}
+`))
+
+	out, err := captureStdout(t, func() error {
+		return runAuditSubcmd([]string{"summarize", "--log", logFile})
+	})
+	if err != nil {
+		t.Fatalf("runAuditSubcmd(summarize) error = %v", err)
+	}
+	if !strings.Contains(out, "malformed:      1") {
+		t.Errorf("text output must report malformed=1; got:\n%s", out)
+	}
+}
+
+func TestAuditSubcmdRequiresName(t *testing.T) {
+	err := runAuditSubcmd([]string{})
+	if err == nil {
+		t.Fatal("expected error when audit subcommand is missing")
+	}
+	if !strings.Contains(err.Error(), "summarize") || !strings.Contains(err.Error(), "verify") {
+		t.Errorf("error message %q must list verify and summarize", err.Error())
 	}
 }

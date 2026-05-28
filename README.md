@@ -24,12 +24,15 @@ today from what is planned. Do not assume planned features are usable yet.
 | Structured output modes (text / json / jsonl)       | Implemented    | `agentfence check --help` |
 | CI gating via `--fail-on`                           | Implemented    | `agentfence check --help` |
 | Pre-built release binaries                          | Implemented    | [Pre-built binaries](#pre-built-binaries) |
+| Detection / prevention / audit-only / dry-run modes | Documented     | [`docs/modes.md`](docs/modes.md) |
 | Interactive TTY approval for `ask` decisions        | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
 | Approval timeout with default-deny                  | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
 | Dry-run evaluation mode                             | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
 | MCP stdio proxy (`agentfence proxy`)                | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md), [`docs/architecture.md`](docs/architecture.md) |
 | Policy enforcement on intercepted `tools/call`      | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md) |
 | Tamper-evident hash-chained audit logs              | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
+| Audit-log summarisation (`audit summarize`)         | Implemented    | `agentfence audit summarize --help` |
+| Fuzz coverage for parser, glob, and redaction       | Implemented    | `make fuzz` |
 | MCP streamable-HTTP proxy                           | Planned        | [`docs/architecture.md`](docs/architecture.md) |
 
 ## Why this exists
@@ -162,6 +165,19 @@ Run AgentFence as an MCP stdio proxy in front of any MCP server:
 See [`docs/integration-guide.md`](docs/integration-guide.md) for Claude Code
 and VS Code configuration, audit-log inspection, and troubleshooting.
 
+Summarise an existing audit log to see which tools are most active and which
+rules dominate the deny pile:
+
+```bash
+./agentfence audit summarize --log audit.jsonl
+./agentfence audit summarize --log audit.jsonl --output json --top 20
+```
+
+The text output reports totals, decision counts, schema versions, top tools
+(overall, denied, allowed), and top reasons. The JSON output has the same
+fields under stable snake_case keys for automation. Malformed JSONL lines are
+counted as `malformed` and never abort the run.
+
 ## Demo output
 
 Running the built-in demo against the bundled example tool calls produces the
@@ -231,8 +247,11 @@ AgentFence is built to reduce practical risks from agent tool calls:
 - secret leakage through logs
 - excessive default permissions
 
-See [`docs/threat-model.md`](docs/threat-model.md) for details and
-[`docs/architecture.md`](docs/architecture.md) for the evaluation flow.
+See [`docs/threat-model.md`](docs/threat-model.md) for the full threat model
+(including the MCP proxy threat surface, confused-deputy-via-MCP-proxy, and
+audit-log integrity), [`docs/architecture.md`](docs/architecture.md) for the
+evaluation flow, and [`docs/modes.md`](docs/modes.md) for the
+detection/prevention/audit-only/dry-run mode taxonomy.
 
 AgentFence is not a sandbox. It enforces policy *before* a tool call executes;
 it does not contain a tool call that has already been forwarded. Pair it with
