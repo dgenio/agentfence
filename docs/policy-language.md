@@ -27,7 +27,10 @@ audit:
 
 - `allow`: permit action.
 - `deny`: block action.
-- `ask`: require approval flow (simulated in MVP).
+- `ask`: require approval flow.
+
+Successful decisions include a reason that identifies whether the tool matched
+an exact policy rule, a named group rule, or a wildcard rule.
 
 ## Defaults
 
@@ -105,7 +108,12 @@ Behavior:
 
 - Deny path matches always deny.
 - If allow list exists, path must match at least one allow pattern.
-- Absolute paths, UNC paths, and directory traversal (`../`) are always denied.
+- Absolute paths, UNC paths, and directory traversal (`../`) are always denied
+  whenever a tool matched a policy rule and the call carries a string `path`
+  argument, even if that rule omits `constraints.paths`. Tools that fall
+  through to `defaults.decision` (no matching rule) are not gated by this
+  pre-check — for a security-tool default, keep `defaults.decision: deny` so
+  unmatched calls cannot bypass it.
 
 ## Argument value constraints
 
@@ -281,7 +289,9 @@ agentfence policy validate --policy bad-policy.yaml
 # bad-policy.yaml: defaults.decision: must be one of allow, deny, ask (got "maybe")
 ```
 
-Strict validation catches unknown fields, invalid decisions, bad regexes, and more.
+All commands that load a policy reject unknown fields. `validate` also reports
+semantic issues such as invalid decisions and bad regexes before the policy is
+used.
 
 ## Policy testing
 
@@ -348,6 +358,12 @@ agentfence explain --policy examples/policy.yaml \
 # Machine-readable output:
 agentfence explain --policy examples/policy.yaml --tool filesystem.write \
   --args '{"path":".env"}' --output json
+# {
+#   "tool": "filesystem.write",
+#   "decision": "deny",
+#   "reason": "path \".env\" denied by pattern \".env\"",
+#   "trace": [...]
+# }
 ```
 
 ## Audit event schema
@@ -368,7 +384,7 @@ Each evaluated call produces one JSONL audit event with the following fields
 | `arguments`      | object  | Redacted arguments (omitted when `audit.include_redacted_arguments` is false). |
 | `mode`           | string  | Optional evaluation-mode marker. Currently `"dry_run"` for dry-run events; omitted for enforced events. |
 | `memory_write`   | object  | Safe summary of a durable memory-write call. Only present when the matched rule has `constraints.memory_write` set. Contains `scope`, `sensitivity`, `field`, `size_bytes`, `content_fingerprint`, and `patterns_matched`. Never includes the raw payload. |
-| `prev_hash`      | string  | Previous event's `hash`. Only present when `--tamper-evident` is set. Empty for the first event in a chain. |
+| `prev_hash`      | string  | Previous event's `hash`. Only present when `--tamper-evident` is set. Omitted for the first event in a chain. |
 | `hash`           | string  | This event's SHA-256 (hex). Only present when `--tamper-evident` is set. |
 
 ### Tamper-evident chaining
@@ -383,8 +399,28 @@ agentfence audit verify --log audit.jsonl
 
 A modified or deleted event causes verification to exit non-zero with the
 1-based event number that failed. A non-chained log produces a warning rather
-than an error. See [`docs/threat-model.md`](threat-model.md#audit-log-integrity)
-for the threat model.
+than an error. A *mixed* log — one whose chain does not cover every event —
+exits non-zero with a `PARTIAL` summary, e.g.:
+
+```text
+PARTIAL: 5 event(s); chain starts at event 3; events 1..2 are not integrity-protected
+```
+
+This makes it impossible for `audit verify` to silently report `OK` on a log
+whose prefix is unprotected. See
+[`docs/threat-model.md`](threat-model.md#audit-log-integrity) for the threat
+model.
+
+`--audit-log` opens logs in append mode and creates new files with owner-only
+permissions on Unix (`0600`). When `--tamper-evident` appends to an existing
+fully-chained log, the next event links to the previous event's hash so
+verification continues across runs. To preserve full-log integrity,
+`--tamper-evident` is **refused** on any non-empty log that is not already
+fully chained from event 1 — both unchained logs and partial-chain logs
+(where an unchained prefix precedes a chained suffix) are rejected, since
+either case would produce exactly the mixed log the verifier flags as
+`PARTIAL`. Rotate the log (move or archive the current file) before
+enabling `--tamper-evident`.
 
 ## Complete example
 

@@ -6,8 +6,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/dgenio/agentfence/internal/audit"
+	"github.com/dgenio/agentfence/internal/policy"
 )
 
 // writeTestFile writes data to path and fails the test if the write errors.
@@ -16,6 +20,38 @@ func writeTestFile(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func captureOutput(t *testing.T, fn func() error) (string, string, error) {
+	t.Helper()
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+
+	runErr := fn()
+
+	stdoutW.Close()
+	stderrW.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	var stdout, stderr bytes.Buffer
+	if _, err := io.Copy(&stdout, stdoutR); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(&stderr, stderrR); err != nil {
+		t.Fatal(err)
+	}
+	return stdout.String(), stderr.String(), runErr
 }
 
 func TestRunCheckRequiresFlags(t *testing.T) {
@@ -50,6 +86,74 @@ tools:
 	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
 	if err != nil {
 		t.Fatalf("runCheck() error = %v", err)
+	}
+}
+
+func TestRunCheckRejectsTypoPolicy(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allowwww: ["./"]
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"call_1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+
+	err := runCheck([]string{"--policy", policyFile, "--call", callFile})
+	if err == nil {
+		t.Fatal("expected typo policy to be rejected")
+	}
+	if !strings.Contains(err.Error(), "allowwww") {
+		t.Fatalf("error %q does not mention typo field", err)
+	}
+}
+
+func TestHelpFlagsExitZero(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "no args", args: []string{}},
+		{name: "top help long", args: []string{"--help"}},
+		{name: "top help short", args: []string{"-h"}},
+		{name: "help command", args: []string{"help"}},
+		{name: "help check", args: []string{"help", "check"}},
+		{name: "check help", args: []string{"check", "--help"}},
+		{name: "proxy help", args: []string{"proxy", "--help"}},
+		{name: "validate help", args: []string{"validate", "-h"}},
+		{name: "policy help", args: []string{"policy", "--help"}},
+		{name: "audit help", args: []string{"audit", "--help"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := captureOutput(t, func() error {
+				return runRoot(tt.args)
+			})
+			if err != nil {
+				t.Fatalf("runRoot(%v) error = %v", tt.args, err)
+			}
+		})
+	}
+}
+
+func TestRunRootUnknownCommandStillErrors(t *testing.T) {
+	_, _, err := captureOutput(t, func() error {
+		return runRoot([]string{"bogus"})
+	})
+	if err == nil {
+		t.Fatal("expected unknown command to error")
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("error = %v, want unknown command", err)
 	}
 }
 
@@ -229,6 +333,25 @@ defaults:
 	}
 }
 
+func TestValidateOutputIncludesGotValue(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: maybe
+`))
+
+	_, stderr, err := captureOutput(t, func() error {
+		return runValidate([]string{"--policy", policyFile})
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(stderr, `(got "maybe")`) {
+		t.Fatalf("stderr %q does not include got-value suffix", stderr)
+	}
+}
+
 // TestValidateCommandRequiresPolicy verifies --policy is mandatory.
 func TestValidateCommandRequiresPolicy(t *testing.T) {
 	if err := runValidate([]string{}); err == nil {
@@ -332,6 +455,121 @@ defaults:
 	}
 }
 
+func TestCheckAuditLogAppends(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+
+	for i := 0; i < 2; i++ {
+		if err := runCheck([]string{
+			"--policy", policyFile,
+			"--call", callFile,
+			"--audit-log", auditFile,
+			"--output", "json",
+		}); err != nil {
+			t.Fatalf("runCheck pass %d: %v", i+1, err)
+		}
+	}
+
+	b, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("audit log line count = %d, want 2\n%s", len(lines), string(b))
+	}
+}
+
+func TestCheckAuditLogPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file mode assertion does not apply on Windows")
+	}
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+	info, err := os.Stat(auditFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("audit file mode = %o, want 600", got)
+	}
+}
+
+func TestCheckAuditLogTamperEvidentChainSurvivesReruns(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+`))
+
+	for i := 0; i < 2; i++ {
+		if err := runCheck([]string{
+			"--policy", policyFile,
+			"--call", callFile,
+			"--audit-log", auditFile,
+			"--output", "json",
+			"--tamper-evident",
+		}); err != nil {
+			t.Fatalf("runCheck pass %d: %v", i+1, err)
+		}
+	}
+
+	f, err := os.Open(auditFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	n, err := audit.VerifyChain(f)
+	if err != nil {
+		t.Fatalf("VerifyChain() error = %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("verified event count = %d, want 2", n)
+	}
+}
+
 // TestCheckHandlesMalformedLine verifies that a single bad JSONL line does not
 // abort evaluation of subsequent calls and that the command returns nil.
 func TestCheckHandlesMalformedLine(t *testing.T) {
@@ -388,6 +626,52 @@ this is not json
 	}
 	if !strings.Contains(output, "call_3") {
 		t.Error("expected call_3 to appear in output")
+	}
+}
+
+func TestCheckParseErrorOrderMatchesNormalCall(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}
+not json
+`))
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runCheck([]string{"--policy", policyFile, "--call", callFile})
+	})
+	if err != nil {
+		t.Fatalf("runCheck() error = %v", err)
+	}
+
+	var lines []string
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) < 5 {
+		t.Fatalf("expected at least 5 output lines, got %d:\n%s", len(lines), stdout)
+	}
+	if !strings.HasPrefix(lines[0], "c1 filesystem.read -> allow") {
+		t.Fatalf("normal call text line = %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "{") {
+		t.Fatalf("normal call audit line = %q", lines[1])
+	}
+	if !strings.HasPrefix(lines[2], "line-2  -> deny") {
+		t.Fatalf("parse error text line = %q", lines[2])
+	}
+	if !strings.HasPrefix(lines[3], "{") {
+		t.Fatalf("parse error audit line = %q", lines[3])
 	}
 }
 
@@ -644,6 +928,7 @@ tools:
 	}
 
 	var out struct {
+		Tool     string   `json:"tool"`
 		Decision string   `json:"decision"`
 		Reason   string   `json:"reason"`
 		Trace    []string `json:"trace"`
@@ -653,6 +938,9 @@ tools:
 	}
 	if out.Decision != "deny" {
 		t.Errorf("expected decision 'deny', got %q", out.Decision)
+	}
+	if out.Tool != "github.delete_repo" {
+		t.Errorf("expected tool 'github.delete_repo', got %q", out.Tool)
 	}
 	if len(out.Trace) == 0 {
 		t.Error("expected non-empty trace in JSON output")
@@ -958,6 +1246,199 @@ tools:
 	}
 	if !strings.Contains(bout.String(), "PARSED:") {
 		t.Errorf("expected 'PARSED:' summary on stdout, got: %s", bout.String())
+	}
+}
+
+// TestCheckRefusesTamperEvidentOnExistingUnchainedLog confirms that
+// `check --audit-log <file> --tamper-evident` returns a non-zero error when
+// <file> already contains unchained audit events. Allowing the append would
+// produce a mixed log whose prefix is not integrity-protected — exactly the
+// failure mode that PR #67's review surfaced.
+func TestCheckRefusesTamperEvidentOnExistingUnchainedLog(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"))
+
+	// Seed the audit file with an unchained event.
+	if err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("seed runCheck: %v", err)
+	}
+
+	// Sanity-check that the seeded file is non-empty and unchained.
+	contents, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatalf("read seeded audit file: %v", err)
+	}
+	if len(contents) == 0 {
+		t.Fatal("seeded audit file is empty; test setup wrong")
+	}
+	if bytes.Contains(contents, []byte(`"hash":`)) {
+		t.Fatalf("seeded audit file already chained; test setup wrong:\n%s", contents)
+	}
+
+	// Now try to append in tamper-evident mode — must fail loudly.
+	err = runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+		"--tamper-evident",
+	})
+	if err == nil {
+		t.Fatal("expected runCheck to refuse --tamper-evident on existing unchained log, got nil error")
+	}
+	if !strings.Contains(err.Error(), "unchained") {
+		t.Errorf("expected error to mention 'unchained', got: %v", err)
+	}
+
+	// The audit file must not have been mutated by the rejected attempt.
+	contentsAfter, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatalf("re-read audit file: %v", err)
+	}
+	if !bytes.Equal(contents, contentsAfter) {
+		t.Errorf("audit file was modified by a rejected --tamper-evident attempt:\nbefore: %q\nafter:  %q", contents, contentsAfter)
+	}
+}
+
+// TestCheckRefusesTamperEvidentOnExistingPartialChainLog confirms the writer
+// also refuses to extend an existing log whose chain does not cover every
+// event (the unchained-prefix + chained-suffix shape that audit verify would
+// otherwise flag as PARTIAL). Without this refusal the writer would
+// perpetuate the unprotected prefix on every subsequent run.
+func TestCheckRefusesTamperEvidentOnExistingPartialChainLog(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"))
+
+	// Seed a partial-chain log directly: 2 unchained events then 3 chained
+	// events written via the writer. This mirrors a file that pre-dates the
+	// write-side refusal (e.g., created by an earlier version of the tool).
+	buf := &bytes.Buffer{}
+	plain := audit.NewWriter(buf)
+	for i := 0; i < 2; i++ {
+		if err := plain.Write(audit.Event{CallID: "u", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+			t.Fatalf("plain Write: %v", err)
+		}
+	}
+	chained := audit.NewWriterOptions(buf, audit.Options{TamperEvident: true, SessionID: "mixed"})
+	for i := 0; i < 3; i++ {
+		if err := chained.Write(audit.Event{
+			Timestamp: "2026-01-01T00:00:00Z",
+			CallID:    "c", Tool: "t", Decision: policy.DecisionAllow,
+		}); err != nil {
+			t.Fatalf("chained Write: %v", err)
+		}
+	}
+	contents := buf.Bytes()
+	if err := os.WriteFile(auditFile, contents, 0o600); err != nil {
+		t.Fatalf("write partial audit file: %v", err)
+	}
+
+	// Try to append in tamper-evident mode — must fail loudly with a message
+	// that explains it is a partial chain (not just "unchained").
+	err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+		"--tamper-evident",
+	})
+	if err == nil {
+		t.Fatal("expected runCheck to refuse --tamper-evident on existing partial-chain log, got nil error")
+	}
+	if !strings.Contains(err.Error(), "partial-chain") {
+		t.Errorf("expected error to mention 'partial-chain', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "chain starts at event 3") {
+		t.Errorf("expected error to mention 'chain starts at event 3', got: %v", err)
+	}
+
+	// The audit file must not have been mutated by the rejected attempt.
+	contentsAfter, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatalf("re-read audit file: %v", err)
+	}
+	if !bytes.Equal(contents, contentsAfter) {
+		t.Errorf("audit file was modified by a rejected --tamper-evident attempt on partial-chain log:\nbefore: %q\nafter:  %q", contents, contentsAfter)
+	}
+}
+
+// TestAuditVerifyReportsPartialChain pins the CLI behavior for a mixed log:
+// `audit verify` must return a non-zero error AND print a PARTIAL summary
+// rather than misleadingly reporting OK.
+//
+// We build the mixed log directly (the writer-side refusal in
+// openAuditOutput prevents `check --tamper-evident` from producing one), to
+// represent logs that arrive from external sources or pre-fix tooling.
+func TestAuditVerifyReportsPartialChain(t *testing.T) {
+	dir := t.TempDir()
+	auditFile := filepath.Join(dir, "mixed.jsonl")
+
+	buf := &bytes.Buffer{}
+	plain := audit.NewWriter(buf)
+	for i := 0; i < 2; i++ {
+		if err := plain.Write(audit.Event{CallID: "u", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+			t.Fatalf("plain Write: %v", err)
+		}
+	}
+	chained := audit.NewWriterOptions(buf, audit.Options{TamperEvident: true, SessionID: "mixed"})
+	for i := 0; i < 3; i++ {
+		if err := chained.Write(audit.Event{
+			Timestamp: "2026-01-01T00:00:00Z",
+			CallID:    "c", Tool: "t", Decision: policy.DecisionAllow,
+		}); err != nil {
+			t.Fatalf("chained Write: %v", err)
+		}
+	}
+	if err := os.WriteFile(auditFile, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("write mixed audit file: %v", err)
+	}
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runAuditVerify([]string{"--log", auditFile})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var bout bytes.Buffer
+	io.Copy(&bout, r)
+
+	if err == nil {
+		t.Fatalf("expected runAuditVerify on mixed log to return an error, got nil; stdout: %s", bout.String())
+	}
+	if !strings.Contains(err.Error(), "chain starts at event 3") {
+		t.Errorf("expected error to mention 'chain starts at event 3', got: %v", err)
+	}
+	if !strings.Contains(bout.String(), "PARTIAL: 5 event(s); chain starts at event 3") {
+		t.Errorf("expected stdout to show 'PARTIAL: 5 event(s); chain starts at event 3', got: %s", bout.String())
 	}
 }
 

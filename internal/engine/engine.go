@@ -79,8 +79,18 @@ func (e *Engine) evaluateDecisionCore(call policy.ToolCall, trace *[]string) pol
 	appendTrace(trace, fmt.Sprintf("all constraints passed; decision: %s", rule.Decision))
 	return policy.EvaluationResult{
 		Decision: rule.Decision,
-		Reason:   fmt.Sprintf("tool %s matched explicit policy rule", call.Tool),
+		Reason:   e.reasonForMatch(call.Tool, matchedKey),
 	}
+}
+
+func (e *Engine) reasonForMatch(toolName, matchedKey string) string {
+	if matchedKey == toolName {
+		return fmt.Sprintf("tool %s matched explicit policy rule", toolName)
+	}
+	if _, ok := e.policy.Groups[matchedKey]; ok {
+		return fmt.Sprintf("tool %s matched group rule %q", toolName, matchedKey)
+	}
+	return fmt.Sprintf("tool %s matched wildcard rule %q", toolName, matchedKey)
 }
 
 // lookupRule finds the first applicable rule for toolName using this precedence:
@@ -144,42 +154,22 @@ func appendTrace(trace *[]string, msg string) {
 
 func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
 	paths := rule.Constraints.Paths
-	if len(paths.Allow) == 0 && len(paths.Deny) == 0 {
-		return false, ""
-	}
 	pathArg, ok := call.Arguments["path"].(string)
+	hasPathConstraints := len(paths.Allow) > 0 || len(paths.Deny) > 0
 	if !ok || pathArg == "" {
+		if !hasPathConstraints {
+			return false, ""
+		}
 		appendTrace(trace, "path constraint: missing path argument → deny")
 		return true, "missing required path argument for constrained tool"
 	}
 
-	// Normalize backslashes to forward slashes for consistent handling.
-	normalized := strings.ReplaceAll(pathArg, "\\", "/")
-
-	// Detect UNC paths (\\server\share → //server/share after normalization).
-	if isUNCPath(normalized) {
-		appendTrace(trace, fmt.Sprintf("path %q is UNC/absolute → deny", pathArg))
-		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
+	deny, reason, cleaned := evaluatePathSafety(pathArg, trace)
+	if deny {
+		return true, reason
 	}
-
-	// Detect Windows drive-letter absolute paths (C:/...).
-	if isWindowsAbsPath(normalized) {
-		appendTrace(trace, fmt.Sprintf("path %q is Windows absolute → deny", pathArg))
-		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
-	}
-
-	// Clean with filepath then convert back to forward slashes for glob matching.
-	cleaned := filepath.ToSlash(filepath.Clean(normalized))
-
-	// filepath.IsAbs covers Windows drive-letter and UNC paths; the additional
-	// HasPrefix check covers Unix-style absolute paths on Windows hosts.
-	if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "/") {
-		appendTrace(trace, fmt.Sprintf("path %q is absolute → deny", pathArg))
-		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg)
-	}
-	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		appendTrace(trace, fmt.Sprintf("path %q escapes project root → deny", pathArg))
-		return true, fmt.Sprintf("path %q escapes the project root", pathArg)
+	if !hasPathConstraints {
+		return false, ""
 	}
 
 	appendTrace(trace, fmt.Sprintf("checking path constraints for %q (normalized: %q)", pathArg, cleaned))
@@ -202,6 +192,39 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall, trace *[]st
 		return true, fmt.Sprintf("path %q not in allowed paths", pathArg)
 	}
 	return false, ""
+}
+
+func evaluatePathSafety(pathArg string, trace *[]string) (bool, string, string) {
+	// Normalize backslashes to forward slashes for consistent handling.
+	normalized := strings.ReplaceAll(pathArg, "\\", "/")
+
+	// Detect UNC paths (\\server\share → //server/share after normalization).
+	if isUNCPath(normalized) {
+		appendTrace(trace, fmt.Sprintf("path %q is UNC/absolute → deny", pathArg))
+		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg), ""
+	}
+
+	// Detect Windows drive-letter absolute paths (C:/...).
+	if isWindowsAbsPath(normalized) {
+		appendTrace(trace, fmt.Sprintf("path %q is Windows absolute → deny", pathArg))
+		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg), ""
+	}
+
+	// Clean with filepath then convert back to forward slashes for glob matching.
+	cleaned := filepath.ToSlash(filepath.Clean(normalized))
+
+	// filepath.IsAbs covers Windows drive-letter and UNC paths; the additional
+	// HasPrefix check covers Unix-style absolute paths on Windows hosts.
+	if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "/") {
+		appendTrace(trace, fmt.Sprintf("path %q is absolute → deny", pathArg))
+		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg), ""
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		appendTrace(trace, fmt.Sprintf("path %q escapes project root → deny", pathArg))
+		return true, fmt.Sprintf("path %q escapes the project root", pathArg), ""
+	}
+
+	return false, "", cleaned
 }
 
 // evaluateArgConstraints checks constraints.args: per-field allow/deny glob lists.

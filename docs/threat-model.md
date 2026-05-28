@@ -127,7 +127,8 @@ adversarial input rather than the operator's intent.
   through four operating modes (detection, prevention, audit-only, dry-run);
   see [`modes.md`](modes.md) for the canonical definitions.
 - Safe defaults through default-deny policy.
-- Path-based guardrails for filesystem tools.
+- Path-based guardrails for filesystem tools, including absolute, UNC, and
+  parent-directory escape checks whenever a string `path` argument is present.
 - Runtime enforcement at the MCP boundary: the stdio proxy intercepts
   `tools/call` requests, evaluates policy, and returns a JSON-RPC error
   for denied calls before the tool server sees them. See *MCP proxy
@@ -162,7 +163,8 @@ protection, an attacker with filesystem access can rewrite a `deny` to
 
 - When the writer is run with `--tamper-evident`, each event records its
   SHA-256 (`hash`) and a `prev_hash` field referencing the previous event's
-  hash. The first event records `prev_hash: ""`, which marks the chain start.
+  hash. The first event in a chain omits `prev_hash`, which marks the chain
+  start.
 - `agentfence audit verify --log <file>` walks the chain, re-computes each
   event's hash, and refuses to confirm the log if any event has been altered
   or removed. Modification of a single event causes verification to fail on

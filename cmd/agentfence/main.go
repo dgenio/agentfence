@@ -39,46 +39,7 @@ type DecisionSummary struct {
 }
 
 func main() {
-	// Handle --version / -version before the subcommand switch so it works
-	// regardless of argument position.
-	for _, arg := range os.Args[1:] {
-		if arg == "--version" || arg == "-version" {
-			runVersion()
-			return
-		}
-	}
-
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
-
-	var err error
-	switch os.Args[1] {
-	case "audit":
-		err = runAuditSubcmd(os.Args[2:])
-	case "check":
-		err = runCheck(os.Args[2:])
-	case "demo":
-		err = demo.Run(os.Stdout)
-	case "explain":
-		err = runExplain(os.Args[2:])
-	case "init":
-		err = runInit()
-	case "policy":
-		err = runPolicySubcmd(os.Args[2:])
-	case "proxy":
-		err = runProxy(os.Args[2:])
-	case "validate":
-		err = runValidate(os.Args[2:])
-	case "version":
-		runVersion()
-	default:
-		printUsage()
-		err = fmt.Errorf("unknown command: %s", os.Args[1])
-	}
-
-	if err != nil {
+	if err := runRoot(os.Args[1:]); err != nil {
 		// Subprocess exit propagation: the proxy returns *exec.ExitError when
 		// the downstream MCP server exits non-zero. We surface that exit code
 		// verbatim so wrappers can distinguish "policy proxy failed" from
@@ -92,6 +53,72 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func runRoot(args []string) error {
+	// Handle --version / -version before the subcommand switch so it works
+	// regardless of argument position.
+	for _, arg := range args {
+		if arg == "--version" || arg == "-version" {
+			runVersion()
+			return nil
+		}
+	}
+
+	if len(args) == 0 {
+		printUsage()
+		return nil
+	}
+	if isHelpArg(args[0]) {
+		printUsage()
+		return nil
+	}
+	if args[0] == "help" {
+		if len(args) == 1 {
+			printUsage()
+			return nil
+		}
+		return runRoot([]string{args[1], "--help"})
+	}
+
+	var err error
+	switch args[0] {
+	case "audit":
+		err = runAuditSubcmd(args[1:])
+	case "check":
+		err = runCheck(args[1:])
+	case "demo":
+		err = demo.Run(os.Stdout)
+	case "explain":
+		err = runExplain(args[1:])
+	case "init":
+		err = runInit()
+	case "policy":
+		err = runPolicySubcmd(args[1:])
+	case "proxy":
+		err = runProxy(args[1:])
+	case "validate":
+		err = runValidate(args[1:])
+	case "version":
+		runVersion()
+		return nil
+	default:
+		printUsage()
+		err = fmt.Errorf("unknown command: %s", args[0])
+	}
+
+	return err
+}
+
+func isHelpArg(arg string) bool {
+	return arg == "--help" || arg == "-h"
+}
+
+func handleFlagParseErr(err error) error {
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
 }
 
 func runVersion() {
@@ -110,7 +137,7 @@ func runCheck(args []string) error {
 	noInteractive := fs.Bool("no-interactive", false, "Do not prompt the operator on ask decisions; auto-deny instead")
 	approvalTimeout := fs.Duration("approval-timeout", 0, "Maximum time to wait for an ask response (e.g. 30s, 2m). 0 means wait forever; recommended for CI is 30s with --no-interactive")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return handleFlagParseErr(err)
 	}
 	if *policyPath == "" || *callPath == "" {
 		return errors.New("--policy and --call are required")
@@ -152,13 +179,15 @@ func runCheck(args []string) error {
 	// default to discarding (mixing audit JSONL into a JSON stream breaks parsers);
 	// for text mode preserve the existing behaviour of writing to stdout.
 	var auditOut io.Writer = io.Discard
+	closeAudit := func() {}
+	auditOptions := audit.Options{TamperEvident: *tamperEvident}
 	if *auditLogPath != "" {
-		f, err := os.Create(*auditLogPath)
+		var err error
+		auditOut, closeAudit, auditOptions, err = openAuditOutput(*auditLogPath, *tamperEvident)
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		auditOut = f
+		defer closeAudit()
 	} else if *outputMode == "text" {
 		auditOut = os.Stdout
 	}
@@ -167,7 +196,7 @@ func runCheck(args []string) error {
 		fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log produces a chain interleaved with other output; verification will not be reliable.")
 	}
 
-	aw := audit.NewWriterOptions(auditOut, audit.Options{TamperEvident: *tamperEvident})
+	aw := audit.NewWriterOptions(auditOut, auditOptions)
 
 	// Approver selection. In dry-run we never prompt; otherwise --no-interactive
 	// forces DenyAllApprover, and the default opens a real TTY.
@@ -205,7 +234,6 @@ func runCheck(args []string) error {
 			parseErrors++
 			callID := fmt.Sprintf("line-%d", lineNum)
 			reason := fmt.Sprintf("parse error: %s", err)
-			_ = aw.Write(audit.NewErrorEvent(lineNum, err.Error()))
 			summary := DecisionSummary{
 				ID:       callID,
 				Tool:     "",
@@ -223,6 +251,9 @@ func runCheck(args []string) error {
 				fmt.Printf("%s\n", b)
 			case "json":
 				summaries = append(summaries, summary)
+			}
+			if err := aw.Write(audit.NewErrorEvent(lineNum, err.Error())); err != nil {
+				return err
 			}
 			counts[policy.DecisionDeny]++
 			continue
@@ -360,7 +391,7 @@ func runValidate(args []string) error {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	policyPath := fs.String("policy", "", "Path to policy YAML")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return handleFlagParseErr(err)
 	}
 	if *policyPath == "" {
 		return errors.New("--policy is required")
@@ -415,7 +446,7 @@ func runExplain(args []string) error {
 	argsStr := fs.String("args", "{}", "JSON object of tool call arguments")
 	outputMode := fs.String("output", "text", "Output mode: text, json")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return handleFlagParseErr(err)
 	}
 	if *policyPath == "" {
 		return errors.New("--policy is required")
@@ -452,10 +483,12 @@ func runExplain(args []string) error {
 	switch *outputMode {
 	case "json":
 		out := struct {
+			Tool     string   `json:"tool"`
 			Decision string   `json:"decision"`
 			Reason   string   `json:"reason"`
 			Trace    []string `json:"trace"`
 		}{
+			Tool:     *toolName,
 			Decision: string(result.Decision),
 			Reason:   result.Reason,
 			Trace:    trace,
@@ -485,6 +518,11 @@ func runExplain(args []string) error {
 func runAuditSubcmd(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("audit requires a subcommand: verify, summarize")
+	}
+	if isHelpArg(args[0]) {
+		fmt.Println("Usage:")
+		fmt.Println("  agentfence audit   verify   --log <file>")
+		return nil
 	}
 	switch args[0] {
 	case "verify":
@@ -550,7 +588,7 @@ func runAuditVerify(args []string) error {
 	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
 	logPath := fs.String("log", "", "Path to audit JSONL log to verify")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return handleFlagParseErr(err)
 	}
 	if *logPath == "" {
 		return errors.New("--log is required")
@@ -571,6 +609,13 @@ func runAuditVerify(args []string) error {
 		fmt.Fprintf(os.Stderr, "AgentFence: warning: %s; cannot verify integrity\n", err)
 		fmt.Printf("PARSED: %d event(s); chain absent\n", n)
 		return nil
+	case errors.Is(err, audit.ErrPartialChain):
+		var pe *audit.PartialChainError
+		if errors.As(err, &pe) {
+			fmt.Printf("PARTIAL: %d event(s); chain starts at event %d; events 1..%d are not integrity-protected\n", pe.Total, pe.ChainStartEvent, pe.ChainStartEvent-1)
+			return fmt.Errorf("audit verify: %s", pe.Error())
+		}
+		return fmt.Errorf("audit verify: %w", err)
 	default:
 		var ve *audit.VerifyError
 		if errors.As(err, &ve) {
@@ -597,7 +642,7 @@ func runProxy(args []string) error {
 	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting (reserved for the TTY approver in issue #29)")
 	debug := fs.Bool("debug", false, "Log every forwarded message to stderr")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return handleFlagParseErr(err)
 	}
 	_ = noInteractive // The current default approver is deny-all; the TTY
 	// approver landing in #29 will branch on this flag.
@@ -624,12 +669,12 @@ func runProxy(args []string) error {
 		}
 	}
 
-	auditOut, closeAudit, err := openAuditOutput(*auditLogPath, *tamperEvident)
+	auditOut, closeAudit, auditOptions, err := openAuditOutput(*auditLogPath, *tamperEvident)
 	if err != nil {
 		return err
 	}
 	defer closeAudit()
-	aw := audit.NewWriterOptions(auditOut, audit.Options{TamperEvident: *tamperEvident})
+	aw := audit.NewWriterOptions(auditOut, auditOptions)
 
 	opts := proxy.Options{
 		Engine:      eng,
@@ -651,8 +696,8 @@ func runProxy(args []string) error {
 	return proxy.Run(ctx, cmdName, cmdArgs, opts)
 }
 
-// openAuditOutput returns the audit destination Writer + a close func. When
-// auditLogPath is empty, audit events are discarded (the proxy MUST NOT
+// openAuditOutput returns the audit destination Writer, close func, and writer
+// options. When auditLogPath is empty, audit events are discarded (the proxy MUST NOT
 // interleave audit JSONL with the agent's stdout, which is reserved for
 // JSON-RPC responses). The tamper-evident flag with no log file triggers a
 // stderr warning consistent with `check`.
@@ -662,24 +707,69 @@ func runProxy(args []string) error {
 // inherit a permissive umask. Pre-existing files are opened in append mode
 // without altering their permissions, on the assumption that the operator
 // chose those bits deliberately.
-func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func(), error) {
+func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func(), audit.Options, error) {
+	options := audit.Options{TamperEvident: tamperEvident}
 	if auditLogPath == "" {
 		if tamperEvident {
 			fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log discards audit events; nothing to verify.")
 		}
-		return io.Discard, func() {}, nil
+		return io.Discard, func() {}, options, nil
 	}
-	f, err := os.OpenFile(auditLogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	flags := os.O_WRONLY | os.O_CREATE | os.O_APPEND
+	if tamperEvident {
+		flags = os.O_RDWR | os.O_CREATE | os.O_APPEND
+	}
+	f, err := os.OpenFile(auditLogPath, flags, 0o600)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, audit.Options{}, err
 	}
-	return f, func() { _ = f.Close() }, nil
+	if tamperEvident {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			_ = f.Close()
+			return nil, nil, audit.Options{}, err
+		}
+		lastHash, eventCount, firstChained, err := audit.LastChainState(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, nil, audit.Options{}, fmt.Errorf("audit: existing log chain: %w", err)
+		}
+		// Refuse to append a chain unless the existing log is empty OR
+		// already fully chained from event 1. Two cases get rejected here:
+		//
+		//  1. fully unchained log (firstChained == 0): appending would
+		//     produce a mixed log whose prefix is not integrity-protected.
+		//  2. partial-chain log (firstChained > 1): a previous run already
+		//     produced the mixed state; continuing the chain perpetuates the
+		//     unprotected prefix instead of fixing it.
+		//
+		// In both cases `audit verify` would later surface the file as
+		// PARTIAL; failing early at write time is the symmetric defence.
+		if eventCount > 0 && firstChained != 1 {
+			_ = f.Close()
+			if firstChained == 0 {
+				return nil, nil, audit.Options{}, fmt.Errorf("audit: cannot enable --tamper-evident on existing unchained log %q (%d unchained event(s)); use a new file or convert the log first", auditLogPath, eventCount)
+			}
+			return nil, nil, audit.Options{}, fmt.Errorf("audit: cannot enable --tamper-evident on existing partial-chain log %q (chain starts at event %d of %d; events 1..%d are not integrity-protected); use a new file or convert the log first", auditLogPath, firstChained, eventCount, firstChained-1)
+		}
+		options.InitialPrevHash = lastHash
+		if _, err := f.Seek(0, io.SeekEnd); err != nil {
+			_ = f.Close()
+			return nil, nil, audit.Options{}, err
+		}
+	}
+	return f, func() { _ = f.Close() }, options, nil
 }
 
 // runPolicySubcmd dispatches policy sub-commands: test, validate.
 func runPolicySubcmd(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("policy requires a subcommand: test, validate")
+	}
+	if isHelpArg(args[0]) {
+		fmt.Println("Usage:")
+		fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
+		fmt.Println("  agentfence policy  validate --policy <file>")
+		return nil
 	}
 	switch args[0] {
 	case "test":
@@ -698,7 +788,7 @@ func runPolicyTest(args []string) error {
 	testsPath := fs.String("tests", "", "Path to test fixture YAML")
 	verbose := fs.Bool("verbose", false, "Print decision reason alongside each result")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return handleFlagParseErr(err)
 	}
 	if *policyPath == "" || *testsPath == "" {
 		return errors.New("--policy and --tests are required")

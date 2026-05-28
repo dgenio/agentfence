@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -373,8 +374,8 @@ func applyDefaults(p *Policy) {
 }
 
 func ParsePolicy(b []byte) (Policy, error) {
-	var p Policy
-	if err := yaml.Unmarshal(b, &p); err != nil {
+	p, err := decodePolicy(b)
+	if err != nil {
 		return Policy{}, err
 	}
 
@@ -395,6 +396,27 @@ func ParsePolicy(b []byte) (Policy, error) {
 		return Policy{}, fmt.Errorf("audit.format: %w", err)
 	}
 	return p, nil
+}
+
+func decodePolicy(b []byte) (Policy, error) {
+	var p Policy
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&p); err != nil {
+		if err == io.EOF {
+			return p, nil
+		}
+		return Policy{}, err
+	}
+
+	var extra Policy
+	if err := dec.Decode(&extra); err != nil {
+		if err == io.EOF {
+			return p, nil
+		}
+		return Policy{}, err
+	}
+	return Policy{}, fmt.Errorf("policy file must contain a single YAML document")
 }
 
 func ParseToolCall(line []byte) (ToolCall, error) {
@@ -502,10 +524,8 @@ func ValidateStrict(b []byte) []ValidationError {
 	var errs []ValidationError
 
 	// Structural pass: use KnownFields(true) to catch typos in field names.
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	dec.KnownFields(true)
-	var p Policy
-	if err := dec.Decode(&p); err != nil {
+	p, err := decodePolicy(b)
+	if err != nil {
 		errs = append(errs, ValidationError{Field: "", Message: err.Error()})
 		return errs // semantic checks are not meaningful if the schema is wrong
 	}
