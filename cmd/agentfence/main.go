@@ -733,14 +733,23 @@ func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func()
 			_ = f.Close()
 			return nil, nil, audit.Options{}, fmt.Errorf("audit: existing log chain: %w", err)
 		}
-		// Refuse to append a chain to a non-empty log that has no chain at
-		// all: doing so would produce a mixed log whose prefix is not
-		// integrity-protected. `audit verify` would then surface this as
-		// PARTIAL — better to fail early at write time than to ship a log
-		// that quietly lies about coverage.
-		if eventCount > 0 && firstChained == 0 {
+		// Refuse to append a chain unless the existing log is empty OR
+		// already fully chained from event 1. Two cases get rejected here:
+		//
+		//  1. fully unchained log (firstChained == 0): appending would
+		//     produce a mixed log whose prefix is not integrity-protected.
+		//  2. partial-chain log (firstChained > 1): a previous run already
+		//     produced the mixed state; continuing the chain perpetuates the
+		//     unprotected prefix instead of fixing it.
+		//
+		// In both cases `audit verify` would later surface the file as
+		// PARTIAL; failing early at write time is the symmetric defence.
+		if eventCount > 0 && firstChained != 1 {
 			_ = f.Close()
-			return nil, nil, audit.Options{}, fmt.Errorf("audit: cannot enable --tamper-evident on existing unchained log %q (%d unchained event(s)); use a new file or convert the log first", auditLogPath, eventCount)
+			if firstChained == 0 {
+				return nil, nil, audit.Options{}, fmt.Errorf("audit: cannot enable --tamper-evident on existing unchained log %q (%d unchained event(s)); use a new file or convert the log first", auditLogPath, eventCount)
+			}
+			return nil, nil, audit.Options{}, fmt.Errorf("audit: cannot enable --tamper-evident on existing partial-chain log %q (chain starts at event %d of %d; events 1..%d are not integrity-protected); use a new file or convert the log first", auditLogPath, firstChained, eventCount, firstChained-1)
 		}
 		options.InitialPrevHash = lastHash
 		if _, err := f.Seek(0, io.SeekEnd); err != nil {

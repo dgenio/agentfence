@@ -1316,6 +1316,79 @@ tools:
 	}
 }
 
+// TestCheckRefusesTamperEvidentOnExistingPartialChainLog confirms the writer
+// also refuses to extend an existing log whose chain does not cover every
+// event (the unchained-prefix + chained-suffix shape that audit verify would
+// otherwise flag as PARTIAL). Without this refusal the writer would
+// perpetuate the unprotected prefix on every subsequent run.
+func TestCheckRefusesTamperEvidentOnExistingPartialChainLog(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"))
+
+	// Seed a partial-chain log directly: 2 unchained events then 3 chained
+	// events written via the writer. This mirrors a file that pre-dates the
+	// write-side refusal (e.g., created by an earlier version of the tool).
+	buf := &bytes.Buffer{}
+	plain := audit.NewWriter(buf)
+	for i := 0; i < 2; i++ {
+		if err := plain.Write(audit.Event{CallID: "u", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+			t.Fatalf("plain Write: %v", err)
+		}
+	}
+	chained := audit.NewWriterOptions(buf, audit.Options{TamperEvident: true, SessionID: "mixed"})
+	for i := 0; i < 3; i++ {
+		if err := chained.Write(audit.Event{
+			Timestamp: "2026-01-01T00:00:00Z",
+			CallID:    "c", Tool: "t", Decision: policy.DecisionAllow,
+		}); err != nil {
+			t.Fatalf("chained Write: %v", err)
+		}
+	}
+	contents := buf.Bytes()
+	if err := os.WriteFile(auditFile, contents, 0o600); err != nil {
+		t.Fatalf("write partial audit file: %v", err)
+	}
+
+	// Try to append in tamper-evident mode — must fail loudly with a message
+	// that explains it is a partial chain (not just "unchained").
+	err := runCheck([]string{
+		"--policy", policyFile,
+		"--call", callFile,
+		"--audit-log", auditFile,
+		"--output", "json",
+		"--tamper-evident",
+	})
+	if err == nil {
+		t.Fatal("expected runCheck to refuse --tamper-evident on existing partial-chain log, got nil error")
+	}
+	if !strings.Contains(err.Error(), "partial-chain") {
+		t.Errorf("expected error to mention 'partial-chain', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "chain starts at event 3") {
+		t.Errorf("expected error to mention 'chain starts at event 3', got: %v", err)
+	}
+
+	// The audit file must not have been mutated by the rejected attempt.
+	contentsAfter, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatalf("re-read audit file: %v", err)
+	}
+	if !bytes.Equal(contents, contentsAfter) {
+		t.Errorf("audit file was modified by a rejected --tamper-evident attempt on partial-chain log:\nbefore: %q\nafter:  %q", contents, contentsAfter)
+	}
+}
+
 // TestAuditVerifyReportsPartialChain pins the CLI behavior for a mixed log:
 // `audit verify` must return a non-zero error AND print a PARTIAL summary
 // rather than misleadingly reporting OK.

@@ -241,9 +241,10 @@ verifiable chain.
 **`audit verify` reports `PARTIAL`** — the log mixes unchained and chained
 events; only the chained suffix is integrity-protected. This happens when a
 log written without `--tamper-evident` is later fed into a chain-aware writer
-out of band. `check`/`proxy` refuses `--tamper-evident` on existing unchained
-logs to prevent this; rotate the log (move or archive it) before enabling
-the flag.
+out of band. `check`/`proxy` refuses `--tamper-evident` on any existing log
+that is not already fully chained from event 1 (both fully-unchained logs
+and partial-chain logs are rejected) to prevent this; rotate the log (move
+or archive it) before enabling the flag.
 
 ## Limitations and known issues
 

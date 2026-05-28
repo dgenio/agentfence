@@ -109,8 +109,11 @@ Behavior:
 - Deny path matches always deny.
 - If allow list exists, path must match at least one allow pattern.
 - Absolute paths, UNC paths, and directory traversal (`../`) are always denied
-  whenever a string `path` argument is present, even if `constraints.paths` is
-  omitted.
+  whenever a tool matched a policy rule and the call carries a string `path`
+  argument, even if that rule omits `constraints.paths`. Tools that fall
+  through to `defaults.decision` (no matching rule) are not gated by this
+  pre-check — for a security-tool default, keep `defaults.decision: deny` so
+  unmatched calls cannot bypass it.
 
 ## Argument value constraints
 
@@ -410,11 +413,13 @@ model.
 
 `--audit-log` opens logs in append mode and creates new files with owner-only
 permissions on Unix (`0600`). When `--tamper-evident` appends to an existing
-chained log, the next event links to the previous event's hash so verification
-continues across runs. To preserve full-log integrity, `--tamper-evident` is
-**refused** on a non-empty log that has no chain at all — converting an
-unchained log mid-stream would produce exactly the mixed log the verifier
-flags as `PARTIAL`. Rotate the log (move or archive the current file) before
+fully-chained log, the next event links to the previous event's hash so
+verification continues across runs. To preserve full-log integrity,
+`--tamper-evident` is **refused** on any non-empty log that is not already
+fully chained from event 1 — both unchained logs and partial-chain logs
+(where an unchained prefix precedes a chained suffix) are rejected, since
+either case would produce exactly the mixed log the verifier flags as
+`PARTIAL`. Rotate the log (move or archive the current file) before
 enabling `--tamper-evident`.
 
 ## Complete example
