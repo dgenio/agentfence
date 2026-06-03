@@ -1,10 +1,23 @@
 # AgentFence
 
-## A policy firewall for AI agents and MCP tools
+[![CI](https://github.com/dgenio/agentfence/actions/workflows/ci.yml/badge.svg)](https://github.com/dgenio/agentfence/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/dgenio/agentfence?sort=semver)](https://github.com/dgenio/agentfence/releases)
+[![Go version](https://img.shields.io/github/go-mod/go-version/dgenio/agentfence)](go.mod)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-AI coding agents are getting access to your filesystem, GitHub, browser, databases, and internal APIs. AgentFence gives you a local policy layer before tool calls happen.
+## An open, local MCP policy firewall you fully control — no cloud, no telemetry, auditable by design
 
-AgentFence is local-first, vendor-neutral, MCP-friendly, and designed for safe defaults. It evaluates tool calls, supports allow/deny/ask decisions, redacts sensitive-looking values in logs, and writes auditable decision records.
+AI coding agents are getting access to your filesystem, GitHub, browser, databases, and internal APIs. AgentFence is the policy gate that sits in front of those tool calls and decides what is **allowed, denied, or sent for approval** — before anything executes.
+
+Unlike the wave of hosted agent-security gateways, AgentFence gives you a trust moat the funded players can't match:
+
+- **Open and local-first** — a single Go binary you run yourself. No SaaS, no account, nothing leaves your machine.
+- **Vendor-neutral** — an MCP stdio proxy in front of *any* MCP server, and a CLI gate for any tool-call pipeline.
+- **No telemetry** — it never phones home.
+- **Deny-by-default** — safe defaults; you opt calls in, not out.
+- **Tamper-evident audit you own** — hash-chained decision logs you can verify offline.
+
+**Who it's for:** security and platform operators who need to gate agents they didn't write, with a policy they fully control and an audit trail they own.
 
 ## Current status
 
@@ -257,11 +270,38 @@ AgentFence is not a sandbox. It enforces policy *before* a tool call executes;
 it does not contain a tool call that has already been forwarded. Pair it with
 OS-level isolation for defense in depth.
 
+## Part of the Weaver Stack
+
+AgentFence is the **external policy edge** of the Weaver Stack — a set of
+small, composable tools for building and operating safer AI agents. Each works
+standalone; together they cover an agent's lifecycle:
+
+```text
+   author & test          build & run            operate the edge          learn
+  ┌──────────────┐     ┌──────────────────┐    ┌────────────────────┐   ┌──────────────┐
+  │  vibeguard   │     │   agent-kernel   │    │     AgentFence     │   │ lessonweaver │
+  │  (dev-time)  │     │ (in-process      │    │  (external policy  │   │  (learning   │
+  │              │     │  firewall)       │    │   edge)            │   │   loop)      │
+  └──────────────┘     └──────────────────┘    └────────────────────┘   └──────────────┘
+
+        agent ──tool calls──▶  AgentFence  ──allow / deny / ask──▶  MCP servers / tools
+                               (+ tamper-evident audit) ──deny/ask traces──▶ lessonweaver
+```
+
+- **AgentFence** (this repo) — the external gate: an operator-controlled policy
+  boundary in front of any MCP server or tool-call pipeline.
+- **agent-kernel** — the in-process firewall compiled into an agent application.
+- **vibeguard** — dev-time guardrails for agent code.
+- **lessonweaver** — turns recurring deny/ask traces into reviewed policy lessons.
+
+All of these are optional. **AgentFence works standalone with any agent and has
+no hard dependency on any sibling.**
+
 ## Relationship to agent-kernel
 
 AgentFence is the **external gate** in a layered approach to agent safety:
 
-- **AgentFence** (this project): a standalone CLI and (planned) MCP proxy
+- **AgentFence** (this project): a standalone CLI and MCP stdio proxy
   that sits *outside* the agent process. It is configured by an operator and
   decides allow / deny / ask for each tool call before it reaches the tool
   server. Use AgentFence when you want a policy layer that does not require
@@ -278,7 +318,6 @@ an agent application and want safety guarantees compiled in.
 
 ## Roadmap
 
-- MCP stdio proxy mode
 - MCP streamable HTTP proxy mode
 - signed audit logs
 - GitHub Action mode for CI policy checks
@@ -301,6 +340,15 @@ make ci
 ```
 
 before opening a pull request. CI runs the same command.
+
+By participating you agree to abide by our
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Release history is tracked in
+[`CHANGELOG.md`](CHANGELOG.md).
+
+## Security
+
+To report a vulnerability, please follow the coordinated-disclosure process in
+[`SECURITY.md`](SECURITY.md) — do not open a public issue for security reports.
 
 ## License
 
