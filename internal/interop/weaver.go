@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -149,9 +150,22 @@ func FromAuditEvent(e audit.Event) (PolicyDecision, TraceEvent) {
 		Principal:    principal,
 		DecisionID:   decisionID,
 		Outcome:      outcome,
-		Metadata:     meta,
+		// A distinct copy so callers mutating one artifact's Metadata cannot
+		// affect the other (the two maps are otherwise identical).
+		Metadata: cloneMeta(meta),
 	}
 	return pd, te
+}
+
+// cloneMeta returns a shallow copy of m. The values are shared, but the map
+// itself is independent, so the two artifacts FromAuditEvent returns do not
+// alias each other's Metadata.
+func cloneMeta(m map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // mapDecision projects an AgentFence decision onto weaver-spec's
@@ -168,6 +182,26 @@ func mapDecision(d policy.Decision) (decision, eventType, outcome string) {
 		// Deny, and any unexpected value, fail closed to a denied capability.
 		return decisionDeny, eventCapabilityDenied, outcomeFailure
 	}
+}
+
+// validateSourceEvent rejects a decoded record that is not a well-formed
+// AgentFence audit event. It requires the fields the audit Writer always
+// populates and that weaver-spec needs to produce conformant, uniquely
+// identified artifacts: a decision, a timestamp (weaver-spec requires it), and
+// a non-zero sequence (the per-session counter that makes decision_id/event_id
+// unique). Exporting a partially-formed record would emit non-conformant output
+// (empty timestamp, colliding seq=0 IDs), so the exporter fails fast instead.
+func validateSourceEvent(e audit.Event) error {
+	if e.Decision == "" {
+		return errors.New("not an audit event (missing decision)")
+	}
+	if e.Timestamp == "" {
+		return errors.New("audit event missing timestamp (required by weaver-spec)")
+	}
+	if e.Sequence == 0 {
+		return errors.New("audit event missing seq (would produce non-unique trace IDs)")
+	}
+	return nil
 }
 
 // ExportTraces reads AgentFence native JSONL audit events from r and writes a
@@ -206,8 +240,8 @@ func ExportTraces(r io.Reader, w io.Writer) (int, error) {
 		if err := json.Unmarshal(raw, &e); err != nil {
 			return count, fmt.Errorf("interop: line %d: not valid JSON: %w", lineNum, err)
 		}
-		if e.Decision == "" && e.Tool == "" {
-			return count, fmt.Errorf("interop: line %d: not an audit event (no decision or tool)", lineNum)
+		if err := validateSourceEvent(e); err != nil {
+			return count, fmt.Errorf("interop: line %d: %w", lineNum, err)
 		}
 
 		pd, te := FromAuditEvent(e)

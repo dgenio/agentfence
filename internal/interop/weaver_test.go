@@ -182,7 +182,7 @@ func TestExportTracesPairsAndCounts(t *testing.T) {
 }
 
 func TestExportTracesMalformedLineErrors(t *testing.T) {
-	in := "{\"session_id\":\"x\",\"seq\":1,\"tool\":\"t\",\"decision\":\"allow\"}\nnot-json\n"
+	in := `{"session_id":"x","seq":1,"timestamp":"2026-05-01T10:00:00Z","tool":"t","decision":"allow"}` + "\nnot-json\n"
 	var out bytes.Buffer
 	_, err := ExportTraces(strings.NewReader(in), &out)
 	if err == nil {
@@ -193,8 +193,50 @@ func TestExportTracesMalformedLineErrors(t *testing.T) {
 	}
 }
 
+func TestExportTracesRejectsIncompleteEvent(t *testing.T) {
+	tests := []struct {
+		name    string
+		line    string
+		wantSub string
+	}{
+		{
+			name:    "missing timestamp",
+			line:    `{"session_id":"x","seq":1,"tool":"t","decision":"allow"}`,
+			wantSub: "timestamp",
+		},
+		{
+			name:    "missing seq",
+			line:    `{"session_id":"x","timestamp":"2026-05-01T10:00:00Z","tool":"t","decision":"allow"}`,
+			wantSub: "seq",
+		},
+		{
+			name:    "missing decision",
+			line:    `{"session_id":"x","seq":1,"timestamp":"2026-05-01T10:00:00Z","tool":"t"}`,
+			wantSub: "decision",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			n, err := ExportTraces(strings.NewReader(tt.line+"\n"), &out)
+			if err == nil {
+				t.Fatalf("expected an error for an incomplete event, got nil (out=%q)", out.String())
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error %q should mention %q", err.Error(), tt.wantSub)
+			}
+			if n != 0 {
+				t.Errorf("exported count = %d, want 0 (fail fast before emitting)", n)
+			}
+			if out.Len() != 0 {
+				t.Errorf("expected no output before failing, got %q", out.String())
+			}
+		})
+	}
+}
+
 func TestExportTracesSkipsBlankLines(t *testing.T) {
-	in := "\n{\"session_id\":\"x\",\"seq\":1,\"tool\":\"t\",\"decision\":\"allow\"}\n\n"
+	in := "\n" + `{"session_id":"x","seq":1,"timestamp":"2026-05-01T10:00:00Z","tool":"t","decision":"allow"}` + "\n\n"
 	var out bytes.Buffer
 	n, err := ExportTraces(strings.NewReader(in), &out)
 	if err != nil {
@@ -205,6 +247,21 @@ func TestExportTracesSkipsBlankLines(t *testing.T) {
 	}
 	if got := len(splitNonEmpty(out.String())); got != 2 {
 		t.Fatalf("output line count = %d, want 2", got)
+	}
+}
+
+func TestFromAuditEventMetadataNotAliased(t *testing.T) {
+	e := audit.Event{
+		SessionID: "s",
+		Sequence:  1,
+		Tool:      "t",
+		Decision:  policy.DecisionAllow,
+		Timestamp: "2026-05-01T10:00:00Z",
+	}
+	pd, te := FromAuditEvent(e)
+	pd.Metadata["mutated"] = true
+	if _, ok := te.Metadata["mutated"]; ok {
+		t.Error("TraceEvent.Metadata aliases PolicyDecision.Metadata: mutation leaked across artifacts")
 	}
 }
 
