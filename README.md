@@ -45,6 +45,7 @@ today from what is planned. Do not assume planned features are usable yet.
 | Policy enforcement on intercepted `tools/call`      | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md) |
 | Tamper-evident hash-chained audit logs              | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | Audit-log summarisation (`audit summarize`)         | Implemented    | `agentfence audit summarize --help` |
+| weaver-spec trace export (`audit export`)           | Implemented    | [`docs/interop.md`](docs/interop.md) |
 | Fuzz coverage for parser, glob, and redaction       | Implemented    | `make fuzz` |
 | MCP streamable-HTTP proxy                           | Planned        | [`docs/architecture.md`](docs/architecture.md) |
 
