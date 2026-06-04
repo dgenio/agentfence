@@ -21,6 +21,7 @@ import (
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/demo"
 	"github.com/dgenio/agentfence/internal/engine"
+	"github.com/dgenio/agentfence/internal/interop"
 	"github.com/dgenio/agentfence/internal/policy"
 	"github.com/dgenio/agentfence/internal/proxy"
 )
@@ -431,6 +432,7 @@ func printUsage() {
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence audit   verify    --log <file>")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
+	fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
 	fmt.Println("  agentfence version")
 	fmt.Println("  agentfence demo")
 	fmt.Println("  agentfence init")
@@ -514,14 +516,16 @@ func runExplain(args []string) error {
 	return nil
 }
 
-// runAuditSubcmd dispatches audit sub-commands: verify, summarize.
+// runAuditSubcmd dispatches audit sub-commands: verify, summarize, export.
 func runAuditSubcmd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("audit requires a subcommand: verify, summarize")
+		return fmt.Errorf("audit requires a subcommand: verify, summarize, export")
 	}
 	if isHelpArg(args[0]) {
 		fmt.Println("Usage:")
-		fmt.Println("  agentfence audit   verify   --log <file>")
+		fmt.Println("  agentfence audit   verify    --log <file>")
+		fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
+		fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
 		return nil
 	}
 	switch args[0] {
@@ -529,9 +533,40 @@ func runAuditSubcmd(args []string) error {
 		return runAuditVerify(args[1:])
 	case "summarize":
 		return runAuditSummarize(args[1:])
+	case "export":
+		return runAuditExport(args[1:])
 	default:
-		return fmt.Errorf("unknown audit subcommand %q; valid: verify, summarize", args[0])
+		return fmt.Errorf("unknown audit subcommand %q; valid: verify, summarize, export", args[0])
 	}
+}
+
+// runAuditExport reads an existing JSONL audit log and writes a weaver-spec-aligned
+// trace stream to stdout (a PolicyDecision and matching TraceEvent per event). The
+// native log is read-only, so its hash chain stays verifiable; see docs/interop.md.
+func runAuditExport(args []string) error {
+	fs := flag.NewFlagSet("audit export", flag.ContinueOnError)
+	logPath := fs.String("log", "", "Path to audit JSONL log to export")
+	format := fs.String("format", "weaver-trace", "Export format: weaver-trace")
+	if err := fs.Parse(args); err != nil {
+		return handleFlagParseErr(err)
+	}
+	if *logPath == "" {
+		return errors.New("--log is required")
+	}
+	if *format != "weaver-trace" {
+		return fmt.Errorf("unknown --format %q; valid values: weaver-trace", *format)
+	}
+
+	f, err := os.Open(*logPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, err := interop.ExportTraces(f, os.Stdout); err != nil {
+		return err
+	}
+	return nil
 }
 
 // runAuditSummarize aggregates an existing JSONL audit log and prints either a

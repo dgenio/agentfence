@@ -1876,3 +1876,70 @@ func TestAuditSubcmdRequiresName(t *testing.T) {
 		t.Errorf("error message %q must list verify and summarize", err.Error())
 	}
 }
+
+func TestAuditExportProducesWeaverTrace(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "audit.jsonl")
+	writeTestFile(t, logFile, []byte(strings.Join([]string{
+		`{"schema_version":"2","session_id":"s","seq":1,"timestamp":"2026-05-01T10:00:00Z","call_id":"c1","tool":"filesystem.read","decision":"allow","reason":"ok"}`,
+		`{"schema_version":"2","session_id":"s","seq":2,"timestamp":"2026-05-01T10:00:01Z","call_id":"c2","tool":"github.create_issue","decision":"ask","reason":"approval"}`,
+	}, "\n")+"\n"))
+
+	out, err := captureStdout(t, func() error {
+		return runAuditSubcmd([]string{"export", "--log", logFile})
+	})
+	if err != nil {
+		t.Fatalf("runAuditSubcmd(export) error = %v", err)
+	}
+
+	var lines []string
+	for _, ln := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(ln) != "" {
+			lines = append(lines, ln)
+		}
+	}
+	if len(lines) != 4 {
+		t.Fatalf("export output line count = %d, want 4 (2 per event)\n%s", len(lines), out)
+	}
+
+	// The ask event must project to a denied capability carrying the original
+	// decision and an escalation marker (weaver-spec has no "ask" verdict).
+	var askPD map[string]interface{}
+	if err := json.Unmarshal([]byte(lines[2]), &askPD); err != nil {
+		t.Fatalf("ask PolicyDecision not JSON: %v", err)
+	}
+	if askPD["decision"] != "deny" {
+		t.Errorf("ask decision projected to %v, want deny", askPD["decision"])
+	}
+	meta, _ := askPD["metadata"].(map[string]interface{})
+	if meta["agentfence_decision"] != "ask" {
+		t.Errorf("metadata.agentfence_decision = %v, want ask", meta["agentfence_decision"])
+	}
+	if meta["escalation"] != "ask" {
+		t.Errorf("metadata.escalation = %v, want ask", meta["escalation"])
+	}
+}
+
+func TestAuditExportRequiresLog(t *testing.T) {
+	err := runAuditSubcmd([]string{"export"})
+	if err == nil {
+		t.Fatal("expected error when --log is missing")
+	}
+	if !strings.Contains(err.Error(), "--log") {
+		t.Errorf("error %q must mention --log", err.Error())
+	}
+}
+
+func TestAuditExportRejectsUnknownFormat(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "audit.jsonl")
+	writeTestFile(t, logFile, []byte(`{"session_id":"s","seq":1,"tool":"t","decision":"allow"}`+"\n"))
+
+	err := runAuditSubcmd([]string{"export", "--log", logFile, "--format", "bogus"})
+	if err == nil {
+		t.Fatal("expected error for unknown --format")
+	}
+	if !strings.Contains(err.Error(), "weaver-trace") {
+		t.Errorf("error %q must name the valid format", err.Error())
+	}
+}
