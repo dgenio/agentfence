@@ -1885,11 +1885,16 @@ func TestAuditExportProducesWeaverTrace(t *testing.T) {
 		`{"schema_version":"2","session_id":"s","seq":2,"timestamp":"2026-05-01T10:00:01Z","call_id":"c2","tool":"github.create_issue","decision":"ask","reason":"approval"}`,
 	}, "\n")+"\n"))
 
-	out, err := captureStdout(t, func() error {
+	out, stderr, err := captureOutput(t, func() error {
 		return runAuditSubcmd([]string{"export", "--log", logFile})
 	})
 	if err != nil {
 		t.Fatalf("runAuditSubcmd(export) error = %v", err)
+	}
+
+	// The exported-event count is reported on stderr (stdout is the trace stream).
+	if !strings.Contains(stderr, "exported 2 event(s)") {
+		t.Errorf("stderr = %q, want it to report 'exported 2 event(s)'", stderr)
 	}
 
 	var lines []string

@@ -563,9 +563,13 @@ func runAuditExport(args []string) error {
 	}
 	defer f.Close()
 
-	if _, err := interop.ExportTraces(f, os.Stdout); err != nil {
+	// stdout carries the JSONL trace stream, so the count goes to stderr to
+	// avoid corrupting it — mirroring how `verify`/`summarize` report results.
+	n, err := interop.ExportTraces(f, os.Stdout)
+	if err != nil {
 		return err
 	}
+	fmt.Fprintf(os.Stderr, "exported %d event(s)\n", n)
 	return nil
 }
 
