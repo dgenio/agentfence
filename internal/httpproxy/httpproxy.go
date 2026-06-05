@@ -24,12 +24,14 @@
 package httpproxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -264,6 +266,10 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 	}
 	defer resp.Body.Close()
 
+	// Record the upstream content type before relaying so observation can pick
+	// the right parser (plain JSON vs. SSE framing) once the body is captured.
+	contentType := resp.Header.Get("Content-Type")
+
 	copyHeader(w.Header(), resp.Header)
 	removeHopByHopHeaders(w.Header())
 	w.WriteHeader(resp.StatusCode)
@@ -280,21 +286,81 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 	flushCopy(w, src)
 
 	if capture != nil {
-		h.observeResponse(observeTool, capture.Bytes())
+		h.observeResponse(observeTool, contentType, capture.Bytes())
 	}
 }
 
-// observeResponse parses an upstream JSON-RPC response body and feeds its
-// tools/call result text to the taint tracker. Non-JSON (e.g. SSE) bodies yield
-// no observation.
-func (h *Handler) observeResponse(tool string, body []byte) {
-	resp, err := mcp.ParseResponse(body)
+// observeResponse extracts a tools/call result from an upstream response body
+// and feeds its text to the taint tracker. A text/event-stream (SSE) body is
+// reassembled from its data: frames; any other body is parsed as a single
+// JSON-RPC response. Bodies that yield no parseable result are ignored.
+func (h *Handler) observeResponse(tool, contentType string, body []byte) {
+	if isEventStream(contentType) {
+		for _, payload := range sseDataPayloads(body) {
+			h.observeJSONResponse(tool, payload)
+		}
+		return
+	}
+	h.observeJSONResponse(tool, body)
+}
+
+// observeJSONResponse parses a single JSON-RPC response payload and feeds its
+// tools/call result text to the taint tracker.
+func (h *Handler) observeJSONResponse(tool string, payload []byte) {
+	resp, err := mcp.ParseResponse(payload)
 	if err != nil || len(resp.Result) == 0 {
 		return
 	}
 	if text := mcp.ResultText(resp.Result); text != "" {
 		h.sess.ObserveResult(tool, text)
 	}
+}
+
+// isEventStream reports whether a Content-Type names the SSE media type,
+// ignoring parameters such as a charset (e.g. "text/event-stream; charset=utf-8").
+func isEventStream(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	mt, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return mt == "text/event-stream"
+}
+
+// sseDataPayloads reassembles the data field of each SSE event in body. Per the
+// EventSource framing, an event is terminated by a blank line and its data is
+// the concatenation of its "data:" lines joined by newlines (a single optional
+// leading space after the colon is stripped). Comment lines and other fields
+// (event:, id:, retry:) are ignored. body is already capped at maxObserveBytes
+// by the caller.
+func sseDataPayloads(body []byte) [][]byte {
+	var payloads [][]byte
+	var cur []string
+	flush := func() {
+		if len(cur) > 0 {
+			payloads = append(payloads, []byte(strings.Join(cur, "\n")))
+			cur = nil
+		}
+	}
+
+	sc := bufio.NewScanner(bytes.NewReader(body))
+	// A single data line may approach the capture cap, so size the scanner's
+	// token buffer accordingly rather than relying on the 64 KiB default.
+	sc.Buffer(make([]byte, 0, 64*1024), maxObserveBytes+1)
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r")
+		if line == "" {
+			flush()
+			continue
+		}
+		if data, ok := strings.CutPrefix(line, "data:"); ok {
+			cur = append(cur, strings.TrimPrefix(data, " "))
+		}
+	}
+	flush()
+	return payloads
 }
 
 // targetURL composes the upstream URL: the upstream base joined with the
