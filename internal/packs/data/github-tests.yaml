@@ -1,0 +1,22 @@
+# Decision fixtures for the github pack. Run with:
+#   agentfence policy test --policy internal/packs/data/github.yaml \
+#     --tests internal/packs/data/github-tests.yaml
+tests:
+  - id: create-issue-asks
+    tool: github.create_issue
+    expect: ask
+  - id: create-pr-asks
+    tool: github.create_pull_request
+    expect: ask
+  - id: delete-repo-denied
+    tool: github.delete_repo
+    expect: deny
+  - id: delete-branch-denied
+    tool: github.delete_branch
+    expect: deny
+  - id: force-push-denied
+    tool: github.force_push
+    expect: deny
+  - id: unknown-github-tool-asks
+    tool: github.get_file
+    expect: ask

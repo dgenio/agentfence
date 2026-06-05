@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -21,7 +22,9 @@ import (
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/demo"
 	"github.com/dgenio/agentfence/internal/engine"
+	"github.com/dgenio/agentfence/internal/httpproxy"
 	"github.com/dgenio/agentfence/internal/interop"
+	"github.com/dgenio/agentfence/internal/packs"
 	"github.com/dgenio/agentfence/internal/policy"
 	"github.com/dgenio/agentfence/internal/proxy"
 )
@@ -93,16 +96,17 @@ func runRoot(args []string) error {
 	case "explain":
 		err = runExplain(args[1:])
 	case "init":
-		err = runInit()
+		err = runInit(args[1:])
 	case "policy":
 		err = runPolicySubcmd(args[1:])
 	case "proxy":
 		err = runProxy(args[1:])
+	case "proxy-http":
+		err = runProxyHTTP(args[1:])
 	case "validate":
 		err = runValidate(args[1:])
 	case "version":
-		runVersion()
-		return nil
+		err = runVersionCmd(args[1:])
 	default:
 		printUsage()
 		err = fmt.Errorf("unknown command: %s", args[0])
@@ -124,6 +128,26 @@ func handleFlagParseErr(err error) error {
 
 func runVersion() {
 	fmt.Printf("agentfence %s %s/%s\n", Version, runtime.GOOS, runtime.GOARCH)
+}
+
+// runVersionCmd is the `version` subcommand. It takes no flags or positional
+// arguments; unrecognised flags surface an error and --help prints brief help,
+// rather than the previous behaviour of silently ignoring whatever followed.
+func runVersionCmd(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: agentfence version")
+		fmt.Fprintln(fs.Output(), "")
+		fmt.Fprintln(fs.Output(), "Print the AgentFence version, OS, and architecture. Takes no arguments.")
+	}
+	if err := fs.Parse(args); err != nil {
+		return handleFlagParseErr(err)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("version takes no arguments; got %q", fs.Arg(0))
+	}
+	runVersion()
+	return nil
 }
 
 func runCheck(args []string) error {
@@ -410,7 +434,28 @@ func runValidate(args []string) error {
 	return nil
 }
 
-func runInit() error {
+func runInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	packList := fs.String("pack", "", "Comma-separated policy packs to scaffold from (e.g. filesystem,github,shell). Run with an unknown pack to list the available packs.")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: agentfence init [--pack <names>]")
+		fmt.Fprintln(fs.Output(), "")
+		fmt.Fprintln(fs.Output(), "Write a starter policy to agentfence.yaml in the current directory.")
+		fmt.Fprintln(fs.Output(), "With --pack, scaffold from one or more curated policy packs instead;")
+		fmt.Fprintf(fs.Output(), "available packs: %s.\n", strings.Join(packs.Names(), ", "))
+		fmt.Fprintln(fs.Output(), "Fails if any target file already exists.")
+	}
+	if err := fs.Parse(args); err != nil {
+		return handleFlagParseErr(err)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("init takes no positional arguments; got %q", fs.Arg(0))
+	}
+
+	if *packList != "" {
+		return runInitFromPacks(*packList)
+	}
+
 	const fileName = "agentfence.yaml"
 	if _, err := os.Stat(fileName); err == nil {
 		return fmt.Errorf("%s already exists", fileName)
@@ -422,6 +467,89 @@ func runInit() error {
 	return nil
 }
 
+// runInitFromPacks scaffolds an agentfence.yaml that imports one curated policy
+// pack file per selected pack. The pack files are written next to it so the
+// existing import-resolution machinery (and `agentfence validate`) works on the
+// result. Users layer their own rules in agentfence.yaml; a redeclared tool key
+// there overrides the inherited pack rule.
+func runInitFromPacks(packList string) error {
+	names, err := parsePackList(packList)
+	if err != nil {
+		return err
+	}
+
+	// Refuse to clobber: check every target file before writing any of them.
+	const rootFile = "agentfence.yaml"
+	targets := []string{rootFile}
+	packFiles := make([]string, len(names))
+	for i, name := range names {
+		packFiles[i] = fmt.Sprintf("agentfence.%s.yaml", name)
+		targets = append(targets, packFiles[i])
+	}
+	for _, t := range targets {
+		if _, err := os.Stat(t); err == nil {
+			return fmt.Errorf("%s already exists", t)
+		}
+	}
+
+	for i, name := range names {
+		body, _ := packs.Policy(name) // existence already checked by parsePackList
+		if err := os.WriteFile(packFiles[i], body, 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("Created %s\n", packFiles[i])
+	}
+
+	if err := os.WriteFile(rootFile, []byte(scaffoldRootPolicy(names, packFiles)), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("Created %s\n", rootFile)
+	return nil
+}
+
+// parsePackList splits a comma-separated pack list, validating each name and
+// rejecting duplicates. An unknown name returns an error that lists the
+// available packs so the message doubles as discovery.
+func parsePackList(packList string) ([]string, error) {
+	seen := map[string]bool{}
+	var names []string
+	for _, raw := range strings.Split(packList, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if !packs.Exists(name) {
+			return nil, fmt.Errorf("unknown policy pack %q; available packs: %s", name, strings.Join(packs.Names(), ", "))
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("policy pack %q listed more than once", name)
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("--pack: no pack names given; available packs: %s", strings.Join(packs.Names(), ", "))
+	}
+	return names, nil
+}
+
+// scaffoldRootPolicy renders the importing agentfence.yaml that ties the
+// selected pack files together.
+func scaffoldRootPolicy(names, packFiles []string) string {
+	var b strings.Builder
+	b.WriteString("version: \"0.1\"\n\n")
+	fmt.Fprintf(&b, "# Scaffolded from policy packs: %s.\n", strings.Join(names, ", "))
+	b.WriteString("# Pack rules are inherited via the imports below. To override one, redeclare\n")
+	b.WriteString("# the tool key under `tools:` here — the importing policy always wins.\n")
+	b.WriteString("imports:\n")
+	for _, pf := range packFiles {
+		fmt.Fprintf(&b, "  - %s\n", pf)
+	}
+	b.WriteString("\ndefaults:\n  decision: deny\n\n")
+	b.WriteString("# Add your own tool rules here.\ntools: {}\n")
+	return b.String()
+}
+
 func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
@@ -429,13 +557,14 @@ func printUsage() {
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
 	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--passthrough] [--no-interactive] [--debug] -- <command> [args...]")
+	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--audit-log <file>] [--tamper-evident] [--passthrough] [--no-interactive] [--debug]")
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence audit   verify    --log <file>")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
 	fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
 	fmt.Println("  agentfence version")
 	fmt.Println("  agentfence demo")
-	fmt.Println("  agentfence init")
+	fmt.Println("  agentfence init    [--pack filesystem,github,shell]")
 	fmt.Println("")
 	fmt.Println("See docs/modes.md for detection / prevention / audit-only / dry-run mode definitions.")
 }
@@ -733,6 +862,81 @@ func runProxy(args []string) error {
 	// os.Exit inside runProxy) lets the deferred closeAudit() flush and
 	// close the audit log before the process exits.
 	return proxy.Run(ctx, cmdName, cmdArgs, opts)
+}
+
+// runProxyHTTP launches the MCP streamable-HTTP proxy in front of a remote MCP
+// server. Unlike the stdio proxy it takes no downstream command; it listens on
+// --listen and forwards gated tools/call requests to --upstream:
+//
+//	agentfence proxy-http --policy policy.yaml --upstream https://mcp.example.com/mcp
+//
+// See docs/integration-guide.md and docs/threat-model.md for the HTTP surface.
+func runProxyHTTP(args []string) error {
+	fs := flag.NewFlagSet("proxy-http", flag.ContinueOnError)
+	policyPath := fs.String("policy", "", "Path to policy YAML (required unless --passthrough)")
+	upstream := fs.String("upstream", "", "Upstream MCP server base URL (required), e.g. https://mcp.example.com/mcp")
+	listen := fs.String("listen", "127.0.0.1:8787", "Local address to listen on")
+	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
+	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
+	passthrough := fs.Bool("passthrough", false, "Forward every request without policy evaluation (useful for validating the relay)")
+	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting")
+	debug := fs.Bool("debug", false, "Log every proxied request to stderr")
+	if err := fs.Parse(args); err != nil {
+		return handleFlagParseErr(err)
+	}
+
+	if *upstream == "" {
+		return errors.New("--upstream is required")
+	}
+	upstreamURL, err := url.Parse(*upstream)
+	if err != nil {
+		return fmt.Errorf("--upstream: %w", err)
+	}
+	if upstreamURL.Scheme == "" || upstreamURL.Host == "" {
+		return fmt.Errorf("--upstream %q must be an absolute URL with scheme and host", *upstream)
+	}
+
+	var eng *engine.Engine
+	if !*passthrough {
+		if *policyPath == "" {
+			return errors.New("--policy is required (or pass --passthrough to run the relay without enforcement)")
+		}
+		p, err := policy.LoadFile(*policyPath)
+		if err != nil {
+			return err
+		}
+		eng, err = engine.New(p)
+		if err != nil {
+			return err
+		}
+	}
+
+	auditOut, closeAudit, auditOptions, err := openAuditOutput(*auditLogPath, *tamperEvident)
+	if err != nil {
+		return err
+	}
+	defer closeAudit()
+	aw := audit.NewWriterOptions(auditOut, auditOptions)
+
+	var approver httpproxy.Approver = httpproxy.DenyAllApprover{}
+	_ = noInteractive // The HTTP proxy's only approver today is deny-all; the
+	// flag is accepted for parity with `proxy` and to reserve the interactive
+	// path. A TTY approver would be wired here.
+
+	opts := httpproxy.Options{
+		Engine:      eng,
+		AuditWriter: aw,
+		Approver:    approver,
+		Upstream:    upstreamURL,
+		Passthrough: *passthrough,
+		Debug:       *debug,
+		Logger:      os.Stderr,
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	return httpproxy.Serve(ctx, *listen, opts)
 }
 
 // openAuditOutput returns the audit destination Writer, close func, and writer

@@ -47,7 +47,10 @@ today from what is planned. Do not assume planned features are usable yet.
 | Audit-log summarisation (`audit summarize`)         | Implemented    | `agentfence audit summarize --help` |
 | weaver-spec trace export (`audit export`)           | Implemented    | [`docs/interop.md`](docs/interop.md) |
 | Fuzz coverage for parser, glob, and redaction       | Implemented    | `make fuzz` |
-| MCP streamable-HTTP proxy                           | Planned        | [`docs/architecture.md`](docs/architecture.md) |
+| MCP streamable-HTTP proxy (`agentfence proxy-http`) | Implemented    | [`docs/architecture.md`](docs/architecture.md), [`docs/integration-guide.md`](docs/integration-guide.md) |
+| Confused-deputy / taint escalation                  | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#confused-deputy--taint-tracking), [`docs/policy-language.md`](docs/policy-language.md) |
+| Reusable policy packs (`init --pack`)               | Implemented    | [`docs/policy-language.md`](docs/policy-language.md#policy-packs) |
+| GitHub Action for CI policy checks                  | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md#github-action) |
 
 ## Why this exists
 
@@ -176,8 +179,32 @@ Run AgentFence as an MCP stdio proxy in front of any MCP server:
   npx -y @modelcontextprotocol/server-filesystem /path/to/workspace
 ```
 
-See [`docs/integration-guide.md`](docs/integration-guide.md) for Claude Code
-and VS Code configuration, audit-log inspection, and troubleshooting.
+Or gate a remote MCP server reached over streamable HTTP / SSE:
+
+```bash
+./agentfence proxy-http \
+  --policy examples/policy.yaml \
+  --upstream https://mcp.example.com/mcp \
+  --listen 127.0.0.1:8787 \
+  --audit-log audit.jsonl
+```
+
+Point your MCP client at `http://127.0.0.1:8787`; AgentFence evaluates each
+`tools/call` with the same decision, redaction, approval, and audit semantics
+as the stdio proxy, and relays everything else (including SSE streams)
+transparently. See [`docs/integration-guide.md`](docs/integration-guide.md)
+for Claude Code and VS Code configuration, audit-log inspection, and
+troubleshooting.
+
+Scaffold a policy from curated **policy packs** instead of starting from a
+blank file:
+
+```bash
+./agentfence init --pack filesystem,github,shell
+```
+
+This writes one pack file per surface plus an `agentfence.yaml` that imports
+them; redeclare any tool key in `agentfence.yaml` to override a pack rule.
 
 Summarise an existing audit log to see which tools are most active and which
 rules dominate the deny pile:
@@ -319,10 +346,8 @@ an agent application and want safety guarantees compiled in.
 
 ## Roadmap
 
-- MCP streamable HTTP proxy mode
 - signed audit logs
-- GitHub Action mode for CI policy checks
-- reusable policy packs for filesystem, GitHub, browser, database, and shell tools
+- additional policy packs (browser, database)
 - VS Code / Claude Code / Copilot CLI integration examples
 
 ## Non-goals

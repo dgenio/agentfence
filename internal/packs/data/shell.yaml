@@ -1,0 +1,30 @@
+# shell policy pack
+#
+# Safe defaults for shell/terminal tools: ask before running anything, and
+# hard-deny the most dangerous command shapes (recursive delete, pipe-to-shell,
+# privilege escalation, world-writable chmod).
+#
+# WARNING: command matching is a best-effort guardrail, not a sandbox. Shell
+# metacharacters (|, ;, &&, $()) can be used to defeat pattern matching. Pair
+# this pack with real OS-level isolation; do not rely on it alone.
+#
+# Override any rule by redeclaring the tool key in the importing policy.
+version: "0.1"
+
+tools:
+  shell.exec:
+    decision: ask
+    constraints:
+      command:
+        deny_patterns:
+          - "**rm -rf**"
+          - "**sudo **"
+          - "**| sh**"
+          - "**| bash**"
+          - "**|sh**"
+          - "**|bash**"
+          - "**chmod 777**"
+
+  # Catch-all for any other shell.* tool a server might expose.
+  shell.*:
+    decision: ask

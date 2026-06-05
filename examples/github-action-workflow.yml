@@ -1,0 +1,27 @@
+# Example workflow: gate recorded agent/tool calls against an AgentFence policy
+# in CI. Copy this into .github/workflows/ in your own repository.
+#
+# It assumes you have a policy file and a JSONL file of the tool calls you want
+# to vet (for example, a recorded session or a fixture of proposed calls).
+name: agent-policy-check
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  agentfence:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: AgentFence policy check
+        uses: dgenio/agentfence@v0.5.0
+        with:
+          policy: examples/policy.yaml
+          calls: examples/tool-calls.jsonl
+          # Fail the job on denied calls (asks are auto-denied in CI and counted
+          # under deny). Use "deny,ask" to be explicit, or "ask" to gate only on
+          # calls that would require human approval.
+          fail-on: deny

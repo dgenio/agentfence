@@ -72,6 +72,33 @@ guarantee depends on that layer.
   detected by AgentFence and renders policy advisory.
 - AgentFence has no signed-capability story; a future revision may add one.
 
+### Streamable-HTTP proxy surface
+
+`agentfence proxy-http` reverse-proxies a remote MCP server over HTTP/SSE.
+It applies the **same** decision, redaction, approval, and hash-chained
+audit semantics as the stdio proxy, but the HTTP transport adds surface the
+stdio path does not have:
+
+- **Authentication and TLS are the operator's responsibility.** The proxy
+  forwards incoming request headers to the upstream (so a bearer token the
+  client sends still reaches the server) but does not itself authenticate
+  clients or originate TLS. Bind `--listen` to loopback, and terminate or
+  originate TLS at a trusted layer; never expose the listener to untrusted
+  networks. The network-isolation invariant above applies between the
+  proxy and the upstream just as it does for stdio.
+- **Sessions and multi-client use.** A single running proxy holds one
+  evaluation session, so taint tracking (when enabled) is shared across all
+  clients that connect to it. For per-client isolation, run one proxy per
+  client. Audit events from concurrent clients interleave in the single
+  log; the per-event `session_id` identifies the proxy run, not the client.
+- **Batching limitation.** Only single JSON-RPC request bodies are parsed
+  for a `tools/call`. A JSON-RPC *batch* (array) body is forwarded
+  transparently and is **not** gated; do not rely on AgentFence to enforce
+  policy on batched requests.
+- **Denials are HTTP 200.** Per JSON-RPC convention, a policy denial is
+  returned as an HTTP 200 response carrying a JSON-RPC error envelope, not
+  an HTTP error status.
+
 ### Confused deputy via MCP proxy
 
 The agent holds legitimate credentials (tokens, filesystem access) that
@@ -106,17 +133,44 @@ adversarial input rather than the operator's intent.
   surfaces adversarial-instruction patterns to a human.
 - `--fail-on deny,ask` in audit-only / CI evaluation catches the
   injection signature before it reaches a runtime.
+- **Session-scoped taint tracking** (opt-in via the `taint:` policy
+  block) gives the proxy the previously-missing in-band signal. When the
+  proxy relays a tool result, the result's text is remembered as
+  untrusted; a later call whose argument is a verbatim slice of — or
+  embeds a token from — that output is flagged and escalated
+  (`allow`→`ask`) or denied, with the source tool named in the audit
+  reason (`tainted_argument: …`). See *Confused-deputy / taint tracking*
+  below for scope and limits.
+
+<a id="confused-deputy--taint-tracking"></a>
+#### Confused-deputy / taint tracking (scope and limits)
+
+Taint tracking is a deliberately simple, explainable heuristic — string
+provenance, not a full information-flow analysis. It is honest about what
+it does **not** catch:
+
+- **It only sees the proxy's session.** Taint is tracked per running
+  proxy across the calls it relays. The stateless `check`/`explain` paths
+  have no tool outputs to observe and therefore never escalate.
+- **String-derivation only.** It flags arguments that reuse observed
+  output text (≥ `min_length` runes). An attacker who instructs the agent
+  to *transform* the value (encode, paraphrase, recompute a path) before
+  reusing it can evade the match. It reduces, not eliminates, the risk.
+- **HTTP/SSE results are observed only when the body is JSON.** Over the
+  streamable-HTTP proxy, taint is observed from a tool's JSON-RPC response
+  body; a result streamed as `text/event-stream` (SSE) is relayed to the
+  client but **not** parsed for observation, so it does not taint later
+  calls. The stdio proxy observes every relayed `tools/call` result. Prefer
+  stdio — or a JSON-returning HTTP endpoint — where taint coverage matters.
+- **False positives are possible** when legitimate arguments coincide with
+  earlier output; `min_length` and `on_tainted_argument: escalate`
+  (rather than `deny`) keep that failure mode safe (a human is asked).
 
 #### Residual risk
 
-- **In-band marker for tool-response-driven calls is not currently
-  available.** AgentFence cannot distinguish a call the agent decided on
-  its own from one whose decision was synthesized from a previous tool
-  response. Two future mitigations belong in this threat model:
-  *policy-on-output* (redact or tag tool responses before they re-enter
-  the agent context) and a *single-turn deny* rule (no tool call may
-  cause another tool call to fire in the same turn). Both are non-trivial
-  to specify and out of scope for the current MVP.
+- Taint tracking is a heuristic, not a guarantee (see limits above); a
+  `deny`-by-default policy on destructive tools remains the primary
+  defense.
 - A `deny`-by-default policy still requires the operator to enumerate
   destructive tools; AgentFence does not infer destructiveness
   automatically.

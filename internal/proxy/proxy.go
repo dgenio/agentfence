@@ -136,7 +136,11 @@ func Run(ctx context.Context, command string, args []string, opts Options) error
 		return fmt.Errorf("proxy: start %s: %w", command, err)
 	}
 
-	r := newRelay(opts)
+	var sess *engine.Session
+	if !opts.Passthrough {
+		sess = opts.Engine.NewSession()
+	}
+	r := newRelay(opts, sess)
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -199,15 +203,64 @@ func (lw *lockedWriter) Write(p []byte) (int, error) {
 	return lw.w.Write(p)
 }
 
-// relay holds per-Run mutable state (the call counter). It is intentionally
-// not exported: callers should drive the proxy via Run.
+// relay holds per-Run mutable state (the call counter, the evaluation session,
+// and — when taint tracking is on — the in-flight request→tool map used to
+// attribute a tool result back to the call that produced it). It is
+// intentionally not exported: callers should drive the proxy via Run.
 type relay struct {
 	opts        Options
+	sess        *engine.Session
 	callCounter uint64
+
+	// pending maps a forwarded tools/call request ID (normalised JSON bytes)
+	// to the tool name, so a later response with the same ID can attribute the
+	// result to its tool for taint observation. Only used when taint is on.
+	pendingMu sync.Mutex
+	pending   map[string]string
 }
 
-func newRelay(opts Options) *relay {
-	return &relay{opts: opts}
+func newRelay(opts Options, sess *engine.Session) *relay {
+	r := &relay{opts: opts, sess: sess}
+	if sess != nil && sess.TaintEnabled() {
+		r.pending = map[string]string{}
+	}
+	return r
+}
+
+// taintEnabled reports whether this relay should track tool-output taint.
+func (r *relay) taintEnabled() bool {
+	return r.pending != nil
+}
+
+// rememberPending records that a forwarded tools/call with the given request ID
+// is for tool. A no-op when taint tracking is off or the request is a
+// notification (no ID to correlate a response against).
+func (r *relay) rememberPending(id json.RawMessage, tool string) {
+	if !r.taintEnabled() || isNotificationID(id) {
+		return
+	}
+	r.pendingMu.Lock()
+	r.pending[normalizeID(id)] = tool
+	r.pendingMu.Unlock()
+}
+
+// takePending returns and clears the tool name recorded for a response ID.
+func (r *relay) takePending(id json.RawMessage) (string, bool) {
+	if !r.taintEnabled() || isNotificationID(id) {
+		return "", false
+	}
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	key := normalizeID(id)
+	tool, ok := r.pending[key]
+	if ok {
+		delete(r.pending, key)
+	}
+	return tool, ok
+}
+
+func normalizeID(id json.RawMessage) string {
+	return string(bytes.TrimSpace(id))
 }
 
 func (r *relay) relayAgentToSub(ctx context.Context, in io.Reader, subStdin, agentStdout io.Writer) {
@@ -232,6 +285,12 @@ func (r *relay) relaySubToAgent(subStdout io.Reader, agentStdout io.Writer) {
 		line := scanner.Bytes()
 		if r.opts.Debug {
 			fmt.Fprintf(r.opts.Logger, "proxy: subproc->agent: %s\n", line)
+		}
+		// Before forwarding, attribute tool results to their originating tool
+		// and feed them to the taint tracker. This is the confused-deputy
+		// observation point: untrusted output seen here can taint a later call.
+		if r.taintEnabled() {
+			r.observeResult(line)
 		}
 		if _, err := writeLine(agentStdout, line); err != nil {
 			fmt.Fprintln(r.opts.Logger, "proxy: subproc->agent:", err)
@@ -291,7 +350,7 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 	fallback := fmt.Sprintf("call-%d", atomic.AddUint64(&r.callCounter, 1))
 	callID := mcp.CallIDFromRequestID(req.ID, fallback)
 	call := params.ToToolCall(callID)
-	result, event := r.opts.Engine.Evaluate(call)
+	result, event := r.sess.Evaluate(call)
 
 	// Audit first so the decision is durable even if the forwarding step
 	// fails (e.g. subprocess pipe closed mid-relay).
@@ -301,6 +360,7 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 
 	switch result.Decision {
 	case policy.DecisionAllow:
+		r.rememberPending(req.ID, call.Tool)
 		_, err := writeLine(subStdin, line)
 		return err
 	case policy.DecisionDeny:
@@ -320,6 +380,7 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 				mcp.BlockedByPolicyError(req.ID, "approval error: "+aerr.Error()))
 		}
 		if approved {
+			r.rememberPending(req.ID, call.Tool)
 			_, err := writeLine(subStdin, line)
 			return err
 		}
@@ -338,6 +399,26 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 			mcp.BlockedByPolicyError(req.ID,
 				"unknown decision: "+string(result.Decision)))
 	}
+}
+
+// observeResult parses a subprocess→agent line as a JSON-RPC response and, when
+// it answers a tools/call this relay forwarded, feeds the result's text content
+// to the taint tracker attributed to the originating tool. Lines that are not
+// responses, carry no result, or have no matching pending request are ignored.
+func (r *relay) observeResult(line []byte) {
+	resp, err := mcp.ParseResponse(line)
+	if err != nil || len(resp.Result) == 0 {
+		return
+	}
+	tool, ok := r.takePending(resp.ID)
+	if !ok {
+		return
+	}
+	text := mcp.ResultText(resp.Result)
+	if text == "" {
+		return
+	}
+	r.sess.ObserveResult(tool, text)
 }
 
 // isNotificationID reports whether a JSON-RPC request ID indicates a

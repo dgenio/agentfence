@@ -163,7 +163,7 @@ func TestRunInitCreatesFile(t *testing.T) {
 	defer os.Chdir(orig)
 	os.Chdir(dir)
 
-	err := runInit()
+	err := runInit(nil)
 	if err != nil {
 		t.Fatalf("runInit() error = %v", err)
 	}
@@ -181,9 +181,131 @@ func TestRunInitFailsIfFileExists(t *testing.T) {
 
 	writeTestFile(t, "agentfence.yaml", []byte("existing"))
 
-	err := runInit()
+	err := runInit(nil)
 	if err == nil {
 		t.Fatal("expected error when file already exists")
+	}
+}
+
+// TestInitHelpDoesNotCreateFile guards issue #63: `init --help` must print help
+// and exit 0 without silently writing agentfence.yaml.
+func TestInitHelpDoesNotCreateFile(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer os.Chdir(orig)
+	os.Chdir(dir)
+
+	_, _, err := captureOutput(t, func() error { return runInit([]string{"--help"}) })
+	if err != nil {
+		t.Fatalf("init --help should exit 0, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "agentfence.yaml")); !os.IsNotExist(statErr) {
+		t.Fatal("init --help must not create agentfence.yaml")
+	}
+}
+
+// TestInitRejectsUnknownFlag guards issue #63: an unrecognised flag must error
+// rather than being dropped.
+func TestInitRejectsUnknownFlag(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer os.Chdir(orig)
+	os.Chdir(dir)
+
+	_, _, err := captureOutput(t, func() error { return runInit([]string{"--force"}) })
+	if err == nil {
+		t.Fatal("init --force should error on unknown flag")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "agentfence.yaml")); !os.IsNotExist(statErr) {
+		t.Fatal("init must not create agentfence.yaml when flag parsing fails")
+	}
+}
+
+// TestInitRejectsPositionalArgs guards issue #63.
+func TestInitRejectsPositionalArgs(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer os.Chdir(orig)
+	os.Chdir(dir)
+
+	_, _, err := captureOutput(t, func() error { return runInit([]string{"garbage"}) })
+	if err == nil {
+		t.Fatal("init garbage should error on positional args")
+	}
+}
+
+// TestVersionRejectsExtraArgs guards issue #63: `version garbage` must exit
+// non-zero instead of cheerfully printing the version.
+func TestVersionRejectsExtraArgs(t *testing.T) {
+	_, _, err := captureOutput(t, func() error { return runVersionCmd([]string{"garbage", "--foo"}) })
+	if err == nil {
+		t.Fatal("version garbage should error")
+	}
+}
+
+// TestVersionHelpExitsZero guards issue #63.
+func TestVersionHelpExitsZero(t *testing.T) {
+	_, _, err := captureOutput(t, func() error { return runVersionCmd([]string{"--help"}) })
+	if err != nil {
+		t.Fatalf("version --help should exit 0, got %v", err)
+	}
+}
+
+// TestInitFromPacksScaffolds covers issue #68: `init --pack` writes the pack
+// files plus an importing agentfence.yaml that validates.
+func TestInitFromPacksScaffolds(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer os.Chdir(orig)
+	os.Chdir(dir)
+
+	_, _, err := captureOutput(t, func() error { return runInit([]string{"--pack", "filesystem,github"}) })
+	if err != nil {
+		t.Fatalf("init --pack error: %v", err)
+	}
+	for _, f := range []string{"agentfence.yaml", "agentfence.filesystem.yaml", "agentfence.github.yaml"} {
+		if _, statErr := os.Stat(filepath.Join(dir, f)); statErr != nil {
+			t.Fatalf("expected %s to be created: %v", f, statErr)
+		}
+	}
+	// The scaffolded policy (with its imports) must pass strict validation.
+	if errs := policy.ValidateFileStrict(filepath.Join(dir, "agentfence.yaml")); len(errs) > 0 {
+		t.Fatalf("scaffolded policy failed validation: %v", errs)
+	}
+}
+
+// TestInitFromPacksUnknownPack covers issue #68: an unknown pack errors and
+// lists the available packs.
+func TestInitFromPacksUnknownPack(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer os.Chdir(orig)
+	os.Chdir(dir)
+
+	_, _, err := captureOutput(t, func() error { return runInit([]string{"--pack", "nope"}) })
+	if err == nil {
+		t.Fatal("unknown pack should error")
+	}
+	if !strings.Contains(err.Error(), "filesystem") {
+		t.Errorf("error should list available packs, got %v", err)
+	}
+}
+
+// TestInitFromPacksRefusesToClobber covers issue #68: existing files are never
+// overwritten, and no partial scaffold is left behind.
+func TestInitFromPacksRefusesToClobber(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer os.Chdir(orig)
+	os.Chdir(dir)
+
+	writeTestFile(t, "agentfence.filesystem.yaml", []byte("existing"))
+	_, _, err := captureOutput(t, func() error { return runInit([]string{"--pack", "filesystem"}) })
+	if err == nil {
+		t.Fatal("init --pack should refuse to clobber an existing file")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "agentfence.yaml")); !os.IsNotExist(statErr) {
+		t.Fatal("no file should be written when a target already exists")
 	}
 }
 

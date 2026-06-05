@@ -265,6 +265,78 @@ See [`examples/base-policy.yaml`](../examples/base-policy.yaml) and
 [`examples/project-policy.yaml`](../examples/project-policy.yaml) for a
 worked example.
 
+<a id="policy-packs"></a>
+## Policy packs
+
+Policy packs are curated, versioned starting points for common tool
+surfaces, so you do not have to author policy from a blank file. Scaffold
+from one or more with `init --pack`:
+
+```bash
+agentfence init --pack filesystem,github,shell
+# Created agentfence.filesystem.yaml
+# Created agentfence.github.yaml
+# Created agentfence.shell.yaml
+# Created agentfence.yaml
+```
+
+This writes one pack file per surface plus an `agentfence.yaml` that
+imports them. Packs compose through the ordinary import mechanism above, so
+you layer your own rules in `agentfence.yaml` and override any pack rule by
+redeclaring its tool key. The scaffolded result passes `agentfence
+validate` as-is.
+
+Shipped packs (run `agentfence init --pack '?'`, or any unknown name, to
+see the current list):
+
+- **filesystem** — allow reads, gate writes behind `ask`, deny deletes, and
+  deny secret-bearing / VCS-internal paths (`.env`, `**/secrets/**`,
+  `.git/**`) for both reads and writes.
+- **github** — `ask` before state-changing operations, hard-`deny`
+  irreversible ones (`delete_repo`, `delete_branch`, force-push), and a
+  `github.*` catch-all that asks on anything not named explicitly.
+- **shell** — `ask` before any command, hard-`deny` the most dangerous
+  shapes (`rm -rf`, pipe-to-shell, `sudo`, world-writable `chmod`). This is
+  a best-effort guardrail, not a sandbox.
+
+Each pack ships with a decision fixture (`internal/packs/data/<pack>-tests.yaml`)
+that proves its allow/deny/ask behavior; the fixtures run in CI.
+
+<a id="taint-tracking"></a>
+## Confused-deputy / taint tracking
+
+The `taint:` block opts in to session-scoped data-flow tracking that
+detects the **confused-deputy** pattern: an untrusted tool result carries
+injected instructions that drive a *later* tool call whose arguments are
+individually allowed by the static rules above.
+
+```yaml
+taint:
+  enabled: true
+  on_tainted_argument: escalate   # escalate (default) | deny
+  min_length: 12                  # ignore tainted fragments shorter than this
+```
+
+When enabled, the MCP proxy remembers the text of tool results it relays.
+If a later call's string argument is a verbatim slice of — or embeds a
+token from — that remembered output, the decision is adjusted:
+
+- `escalate` (default): an `allow` becomes `ask`; `ask`/`deny` are left
+  alone.
+- `deny`: an `allow` or `ask` becomes `deny`.
+
+Either way the audit reason names the source tool and offending field
+(`tainted_argument: argument "path" derived from untrusted output of
+"web.fetch" …`). `min_length` (default 12) ignores short fragments to limit
+false positives.
+
+This is a session feature: it only has an effect where tool outputs are
+observed (the `proxy` / `proxy-http` commands), not in the stateless
+`check` / `explain` paths. It is a string-provenance heuristic, not a full
+information-flow analysis — see
+[`docs/threat-model.md`](threat-model.md#confused-deputy--taint-tracking)
+for its scope and limits.
+
 ## Redaction patterns
 
 Regex patterns can redact sensitive-looking values before audit logging:
