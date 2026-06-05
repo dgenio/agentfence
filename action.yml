@@ -1,0 +1,128 @@
+name: AgentFence policy check
+description: >-
+  Gate recorded MCP / tool calls against an AgentFence policy in CI. Fails the
+  job when any call matches a denied (or asked) decision.
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  policy:
+    description: Path to the policy YAML file.
+    required: true
+  calls:
+    description: Path to the JSONL tool-call input (or a recorded audit log of calls).
+    required: true
+  fail-on:
+    description: >-
+      Comma-separated decisions that fail the job: deny, ask, or deny,ask.
+      With the non-interactive default, ask decisions are auto-denied and thus
+      counted under deny.
+    required: false
+    default: deny
+  audit-log:
+    description: Optional path to write the audit JSONL log to.
+    required: false
+    default: ""
+  tamper-evident:
+    description: Write a hash-chained, tamper-evident audit log (requires audit-log).
+    required: false
+    default: "false"
+  approval-timeout:
+    description: Maximum time to wait on an ask decision (e.g. 30s). 0 waits forever.
+    required: false
+    default: "30s"
+  go-version:
+    description: Go toolchain version used to build the agentfence binary.
+    required: false
+    default: "1.22"
+
+outputs:
+  total:
+    description: Total number of calls evaluated.
+    value: ${{ steps.check.outputs.total }}
+  allow:
+    description: Number of allow decisions.
+    value: ${{ steps.check.outputs.allow }}
+  deny:
+    description: Number of deny decisions.
+    value: ${{ steps.check.outputs.deny }}
+  ask:
+    description: Number of ask decisions.
+    value: ${{ steps.check.outputs.ask }}
+  decisions-file:
+    description: Path to the JSON file containing the full decision summary.
+    value: ${{ steps.check.outputs.decisions-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: true
+        cache-dependency-path: ${{ github.action_path }}/go.sum
+
+    - name: Build agentfence
+      shell: bash
+      run: go build -o "${{ github.action_path }}/agentfence" ./cmd/agentfence
+      working-directory: ${{ github.action_path }}
+
+    - name: Run agentfence check
+      id: check
+      shell: bash
+      env:
+        AF_BIN: ${{ github.action_path }}/agentfence
+        AF_POLICY: ${{ inputs.policy }}
+        AF_CALLS: ${{ inputs.calls }}
+        AF_FAIL_ON: ${{ inputs.fail-on }}
+        AF_AUDIT_LOG: ${{ inputs.audit-log }}
+        AF_TAMPER: ${{ inputs.tamper-evident }}
+        AF_TIMEOUT: ${{ inputs.approval-timeout }}
+      run: |
+        set -uo pipefail
+
+        decisions="${RUNNER_TEMP:-/tmp}/agentfence-decisions.json"
+        args=(check --policy "$AF_POLICY" --call "$AF_CALLS" --output json --no-interactive)
+        [ -n "$AF_TIMEOUT" ] && args+=(--approval-timeout "$AF_TIMEOUT")
+        [ -n "$AF_AUDIT_LOG" ] && args+=(--audit-log "$AF_AUDIT_LOG")
+        [ "$AF_TAMPER" = "true" ] && args+=(--tamper-evident)
+        [ -n "$AF_FAIL_ON" ] && args+=(--fail-on "$AF_FAIL_ON")
+
+        # Capture the JSON decision summary (stdout) while letting --fail-on set
+        # the exit code (the CI gate). stderr carries the gate message.
+        "$AF_BIN" "${args[@]}" >"$decisions"
+        rc=$?
+
+        total=$(jq 'length' "$decisions")
+        allow=$(jq '[.[] | select(.decision=="allow")] | length' "$decisions")
+        deny=$(jq '[.[] | select(.decision=="deny")] | length' "$decisions")
+        ask=$(jq '[.[] | select(.decision=="ask")] | length' "$decisions")
+
+        {
+          echo "## AgentFence policy check"
+          echo ""
+          echo "Policy: \`$AF_POLICY\` · Calls: \`$AF_CALLS\` · Fail-on: \`${AF_FAIL_ON:-none}\`"
+          echo ""
+          echo "| Result | Count |"
+          echo "| --- | --- |"
+          echo "| ✅ allow | $allow |"
+          echo "| ⛔ deny | $deny |"
+          echo "| ⚠️ ask | $ask |"
+          echo "| Total | $total |"
+          echo ""
+          echo "| Call | Tool | Decision | Reason |"
+          echo "| --- | --- | --- | --- |"
+          jq -r '.[] | "| \(.id) | \(.tool) | \(.decision) | \(.reason) |"' "$decisions"
+        } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+        {
+          echo "total=$total"
+          echo "allow=$allow"
+          echo "deny=$deny"
+          echo "ask=$ask"
+          echo "decisions-file=$decisions"
+        } >>"${GITHUB_OUTPUT:-/dev/null}"
+
+        exit "$rc"
