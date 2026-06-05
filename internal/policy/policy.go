@@ -42,6 +42,7 @@ type Policy struct {
 	Tools     map[string]Rule     `yaml:"tools"`
 	Redaction RedactionConfig     `yaml:"redaction"`
 	Audit     AuditConfig         `yaml:"audit"`
+	Taint     TaintConfig         `yaml:"taint"`
 }
 
 type Defaults struct {
@@ -133,6 +134,33 @@ type AuditConfig struct {
 	Format                   string `yaml:"format"`
 	IncludeRedactedArguments bool   `yaml:"include_redacted_arguments"`
 }
+
+// TaintConfig configures session-scoped data-flow (taint) tracking. It is a
+// session feature: it only has an effect where tool outputs are observed (the
+// MCP proxy), not in the stateless `check`/`explain` paths.
+//
+// OnTaintedArgument selects what happens when a later call's argument is
+// derived from untrusted tool output:
+//
+//	"escalate" (default) — an allow becomes ask; ask and deny are unchanged.
+//	"deny"               — an allow or ask becomes deny.
+//
+// MinLength ignores tainted fragments shorter than this many runes, to limit
+// false positives from short common tokens. Zero selects a built-in default.
+type TaintConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	OnTaintedArgument string `yaml:"on_tainted_argument"`
+	MinLength         int    `yaml:"min_length"`
+}
+
+// Taint escalation modes.
+const (
+	TaintEscalate = "escalate"
+	TaintDeny     = "deny"
+)
+
+// DefaultTaintMinLength is used when TaintConfig.MinLength is unset (<= 0).
+const DefaultTaintMinLength = 12
 
 type EvaluationResult struct {
 	Decision Decision `json:"decision"`
@@ -352,6 +380,20 @@ func mergePolicy(base, overlay Policy) Policy {
 		out.Audit.IncludeRedactedArguments = true
 	}
 
+	// Taint: Enabled uses OR semantics (once any layer turns it on it stays
+	// on — the safer direction for a security tool); the mode and threshold
+	// follow importing-policy-wins, so an overlay that sets them takes
+	// precedence over the base.
+	if overlay.Taint.Enabled {
+		out.Taint.Enabled = true
+	}
+	if overlay.Taint.OnTaintedArgument != "" {
+		out.Taint.OnTaintedArgument = overlay.Taint.OnTaintedArgument
+	}
+	if overlay.Taint.MinLength > 0 {
+		out.Taint.MinLength = overlay.Taint.MinLength
+	}
+
 	return out
 }
 
@@ -370,6 +412,14 @@ func applyDefaults(p *Policy) {
 	}
 	if p.Audit.Format == "" {
 		p.Audit.Format = "jsonl"
+	}
+	if p.Taint.Enabled {
+		if p.Taint.OnTaintedArgument == "" {
+			p.Taint.OnTaintedArgument = TaintEscalate
+		}
+		if p.Taint.MinLength <= 0 {
+			p.Taint.MinLength = DefaultTaintMinLength
+		}
 	}
 }
 
@@ -395,7 +445,29 @@ func ParsePolicy(b []byte) (Policy, error) {
 	if err := validateAuditFormat(p.Audit.Format); err != nil {
 		return Policy{}, fmt.Errorf("audit.format: %w", err)
 	}
+	if err := validateTaint(p.Taint); err != nil {
+		return Policy{}, fmt.Errorf("taint: %w", err)
+	}
 	return p, nil
+}
+
+func validateTaintMode(m string) error {
+	switch m {
+	case "", TaintEscalate, TaintDeny:
+		return nil
+	default:
+		return fmt.Errorf("must be one of %s, %s", TaintEscalate, TaintDeny)
+	}
+}
+
+func validateTaint(t TaintConfig) error {
+	if err := validateTaintMode(t.OnTaintedArgument); err != nil {
+		return fmt.Errorf("on_tainted_argument: %w", err)
+	}
+	if t.MinLength < 0 {
+		return fmt.Errorf("min_length: must be >= 0 (got %d)", t.MinLength)
+	}
+	return nil
 }
 
 func decodePolicy(b []byte) (Policy, error) {
@@ -595,6 +667,21 @@ func ValidateStrict(b []byte) []ValidationError {
 				Message: "unsupported format; supported: jsonl",
 			})
 		}
+	}
+
+	if err := validateTaintMode(p.Taint.OnTaintedArgument); err != nil {
+		errs = append(errs, ValidationError{
+			Field:   "taint.on_tainted_argument",
+			Value:   p.Taint.OnTaintedArgument,
+			Message: fmt.Sprintf("must be one of %s, %s", TaintEscalate, TaintDeny),
+		})
+	}
+	if p.Taint.MinLength < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "taint.min_length",
+			Value:   fmt.Sprintf("%d", p.Taint.MinLength),
+			Message: "must be >= 0",
+		})
 	}
 
 	return errs

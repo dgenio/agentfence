@@ -13,6 +13,7 @@ import (
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/policy"
 	"github.com/dgenio/agentfence/internal/redact"
+	"github.com/dgenio/agentfence/internal/taint"
 )
 
 type Engine struct {
@@ -38,6 +39,81 @@ func (e *Engine) Evaluate(call policy.ToolCall) (policy.EvaluationResult, audit.
 		}
 	}
 	return result, event
+}
+
+// Session is a stateful evaluator that layers session-scoped taint tracking on
+// top of the engine's stateless evaluation. It is created with Engine.NewSession
+// and is the evaluation entry point for the MCP proxy, where tool outputs are
+// observable. A Session is safe for concurrent use: the proxy observes results
+// on one goroutine while evaluating calls on another.
+//
+// When taint tracking is disabled in policy, a Session behaves exactly like the
+// stateless Engine.
+type Session struct {
+	eng     *Engine
+	tracker *taint.Tracker
+	mode    string
+	enabled bool
+}
+
+// NewSession returns a Session bound to this engine. Taint tracking is enabled
+// only when the policy's taint.enabled is true.
+func (e *Engine) NewSession() *Session {
+	tc := e.policy.Taint
+	s := &Session{eng: e, enabled: tc.Enabled, mode: tc.OnTaintedArgument}
+	if tc.Enabled {
+		s.tracker = taint.NewTracker(tc.MinLength)
+	}
+	return s
+}
+
+// TaintEnabled reports whether this session tracks taint. Callers (the proxy)
+// use it to skip parsing tool results when there is nothing to track.
+func (s *Session) TaintEnabled() bool { return s.enabled }
+
+// Evaluate evaluates call against the policy and then, if taint tracking is on,
+// escalates the decision when an argument is derived from previously observed
+// untrusted tool output. The returned audit event reflects the final decision.
+func (s *Session) Evaluate(call policy.ToolCall) (policy.EvaluationResult, audit.Event) {
+	res, event := s.eng.Evaluate(call)
+	if s.tracker == nil {
+		return res, event
+	}
+	if hit, ok := s.tracker.Check(call.Arguments); ok {
+		res, event = applyTaintEscalation(res, event, hit, s.mode)
+	}
+	return res, event
+}
+
+// ObserveResult records text returned by sourceTool as untrusted, so a later
+// call argument derived from it can be flagged. A no-op when taint is disabled.
+func (s *Session) ObserveResult(sourceTool, text string) {
+	if s.tracker != nil {
+		s.tracker.Observe(sourceTool, text)
+	}
+}
+
+// applyTaintEscalation adjusts a decision when an argument is tainted. The taint
+// source (the upstream tool and the offending field) is recorded in the reason
+// so it surfaces in the audit record. "deny" mode forces a deny; the default
+// "escalate" mode lifts an allow to ask and leaves ask/deny untouched.
+func applyTaintEscalation(res policy.EvaluationResult, event audit.Event, hit taint.Hit, mode string) (policy.EvaluationResult, audit.Event) {
+	detail := fmt.Sprintf("argument %q derived from untrusted output of %q (matched %q)", hit.Field, hit.SourceTool, hit.Fragment)
+	switch mode {
+	case policy.TaintDeny:
+		if res.Decision != policy.DecisionDeny {
+			res.Decision = policy.DecisionDeny
+			res.Reason = "tainted_argument: " + detail + "; denied by taint policy"
+		}
+	default: // escalate
+		if res.Decision == policy.DecisionAllow {
+			res.Decision = policy.DecisionAsk
+			res.Reason = "tainted_argument: " + detail + "; escalated allow→ask"
+		}
+	}
+	event.Decision = res.Decision
+	event.Reason = res.Reason
+	return res, event
 }
 
 // TraceEvaluate evaluates a tool call and returns a human-readable trace of each

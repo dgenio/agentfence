@@ -743,3 +743,75 @@ func TestMemoryScopeAndSensitivityRanks(t *testing.T) {
 		t.Errorf("empty sensitivity should rank -1")
 	}
 }
+
+// TestTaintConfigDefaults verifies that enabling taint fills in the escalate
+// mode and a default min-length, while leaving it disabled keeps it inert.
+func TestTaintConfigDefaults(t *testing.T) {
+	p, err := ParsePolicy([]byte(`version: "0.1"
+defaults:
+  decision: deny
+taint:
+  enabled: true
+`))
+	if err != nil {
+		t.Fatalf("ParsePolicy: %v", err)
+	}
+	if p.Taint.OnTaintedArgument != TaintEscalate {
+		t.Errorf("on_tainted_argument = %q, want %q", p.Taint.OnTaintedArgument, TaintEscalate)
+	}
+	if p.Taint.MinLength != DefaultTaintMinLength {
+		t.Errorf("min_length = %d, want %d", p.Taint.MinLength, DefaultTaintMinLength)
+	}
+}
+
+// TestTaintConfigRejectsBadMode covers both ParsePolicy and ValidateStrict.
+func TestTaintConfigRejectsBadMode(t *testing.T) {
+	src := []byte(`version: "0.1"
+defaults:
+  decision: deny
+taint:
+  enabled: true
+  on_tainted_argument: shrug
+`)
+	if _, err := ParsePolicy(src); err == nil {
+		t.Fatal("ParsePolicy should reject an unknown taint mode")
+	}
+	errs := ValidateStrict(src)
+	found := false
+	for _, e := range errs {
+		if e.Field == "taint.on_tainted_argument" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ValidateStrict should flag taint.on_tainted_argument; got %v", errs)
+	}
+}
+
+// TestTaintConfigRejectsNegativeMinLength covers the numeric bound.
+func TestTaintConfigRejectsNegativeMinLength(t *testing.T) {
+	if _, err := ParsePolicy([]byte(`version: "0.1"
+taint:
+  on_tainted_argument: deny
+  min_length: -1
+`)); err == nil {
+		t.Fatal("ParsePolicy should reject a negative min_length")
+	}
+}
+
+// TestTaintMergeOrSemantics verifies enabled is OR-merged while mode follows
+// importing-policy-wins.
+func TestTaintMergeOrSemantics(t *testing.T) {
+	base := Policy{Taint: TaintConfig{Enabled: true, OnTaintedArgument: TaintEscalate, MinLength: 10}}
+	overlay := Policy{Taint: TaintConfig{OnTaintedArgument: TaintDeny}}
+	out := mergePolicy(base, overlay)
+	if !out.Taint.Enabled {
+		t.Error("enabled should stay true after merge (OR semantics)")
+	}
+	if out.Taint.OnTaintedArgument != TaintDeny {
+		t.Errorf("overlay mode should win: got %q", out.Taint.OnTaintedArgument)
+	}
+	if out.Taint.MinLength != 10 {
+		t.Errorf("base min_length should survive when overlay leaves it 0: got %d", out.Taint.MinLength)
+	}
+}

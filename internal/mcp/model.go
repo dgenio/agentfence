@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/dgenio/agentfence/internal/policy"
 )
@@ -97,6 +98,37 @@ func ParseRequest(b []byte) (JSONRPCRequest, error) {
 		return JSONRPCRequest{}, fmt.Errorf("mcp: parse request: %w", err)
 	}
 	return req, nil
+}
+
+// ParseResponse parses a single newline-delimited JSON-RPC response payload.
+func ParseResponse(b []byte) (JSONRPCResponse, error) {
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return JSONRPCResponse{}, fmt.Errorf("mcp: parse response: %w", err)
+	}
+	return resp, nil
+}
+
+// ResultText extracts and concatenates the text content of a tools/call result.
+// It returns an empty string when result is not a ToolCallResult or carries no
+// text content. Used by the proxy to feed untrusted tool output into taint
+// tracking; non-text content (images, structured blobs) is ignored.
+func ResultText(result json.RawMessage) string {
+	var r ToolCallResult
+	if err := json.Unmarshal(result, &r); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, item := range r.Content {
+		if item.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(item.Text)
+	}
+	return b.String()
 }
 
 // ParseToolCallParams unmarshals the params field of a tools/call request.

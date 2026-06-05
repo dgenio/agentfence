@@ -103,7 +103,7 @@ func newTestRelay(t *testing.T, approver Approver, passthrough bool) (*relay, *b
 		Passthrough: passthrough,
 	}
 	opts = applyDefaults(opts)
-	return newRelay(opts), agentBuf, subBuf, auditBuf
+	return newRelay(opts, eng.NewSession()), agentBuf, subBuf, auditBuf
 }
 
 // helperRequest builds a minimal JSON-RPC tools/call line. id may be any JSON
@@ -529,7 +529,11 @@ func runWithEnv(ctx context.Context, command string, args, extraEnv []string, op
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	r := newRelay(opts)
+	var sess *engine.Session
+	if !opts.Passthrough {
+		sess = opts.Engine.NewSession()
+	}
+	r := newRelay(opts, sess)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
