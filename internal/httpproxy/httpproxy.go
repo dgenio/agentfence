@@ -145,7 +145,7 @@ func Serve(ctx context.Context, listenAddr string, opts Options) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 
-	fmt.Fprintf(opts.Logger, "httpproxy: listening on %s, forwarding to %s\n", listenAddr, opts.Upstream)
+	fmt.Fprintf(h.opts.Logger, "httpproxy: listening on %s, forwarding to %s\n", listenAddr, opts.Upstream)
 
 	select {
 	case <-ctx.Done():
@@ -247,7 +247,12 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 		return
 	}
 	copyHeader(outReq.Header, r.Header)
+	removeHopByHopHeaders(outReq.Header)
 	outReq.Header.Del("Host")
+	// Drop the client's Accept-Encoding so Go's transport sets and transparently
+	// decompresses its own encoding; otherwise observeResponse() would see
+	// compressed bytes it cannot parse as JSON for taint observation.
+	outReq.Header.Del("Accept-Encoding")
 	if body != nil {
 		outReq.ContentLength = int64(len(body))
 	}
@@ -260,6 +265,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 	defer resp.Body.Close()
 
 	copyHeader(w.Header(), resp.Header)
+	removeHopByHopHeaders(w.Header())
 	w.WriteHeader(resp.StatusCode)
 
 	// Capture (capped) the body of an allowed tool's response for taint
@@ -343,6 +349,37 @@ func copyHeader(dst, src http.Header) {
 		for _, v := range vs {
 			dst.Add(k, v)
 		}
+	}
+}
+
+// hopByHopHeaders are connection-specific headers a proxy must not forward
+// (RFC 7230 §6.1). Transfer-Encoding and Content-Length are managed by Go's
+// HTTP stack itself.
+var hopByHopHeaders = []string{
+	"Connection",
+	"Proxy-Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+// removeHopByHopHeaders strips connection-specific headers (RFC 7230 §6.1) from
+// h, including any named in the Connection header, so they are not forwarded
+// across the proxy boundary.
+func removeHopByHopHeaders(h http.Header) {
+	for _, f := range h["Connection"] {
+		for _, sf := range strings.Split(f, ",") {
+			if name := strings.TrimSpace(sf); name != "" {
+				h.Del(name)
+			}
+		}
+	}
+	for _, k := range hopByHopHeaders {
+		h.Del(k)
 	}
 }
 

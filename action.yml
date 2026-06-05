@@ -81,7 +81,7 @@ runs:
         AF_TAMPER: ${{ inputs.tamper-evident }}
         AF_TIMEOUT: ${{ inputs.approval-timeout }}
       run: |
-        set -uo pipefail
+        set -euo pipefail
 
         decisions="${RUNNER_TEMP:-/tmp}/agentfence-decisions.json"
         args=(check --policy "$AF_POLICY" --call "$AF_CALLS" --output json --no-interactive)
@@ -91,9 +91,14 @@ runs:
         [ -n "$AF_FAIL_ON" ] && args+=(--fail-on "$AF_FAIL_ON")
 
         # Capture the JSON decision summary (stdout) while letting --fail-on set
-        # the exit code (the CI gate). stderr carries the gate message.
+        # the exit code (the CI gate). stderr carries the gate message. Disable
+        # -e only around the call so a gate-firing non-zero is captured, not
+        # aborted; the jq parsing below stays under -e so malformed/empty output
+        # fails the step instead of masking a broken gate.
+        set +e
         "$AF_BIN" "${args[@]}" >"$decisions"
         rc=$?
+        set -e
 
         total=$(jq 'length' "$decisions")
         allow=$(jq '[.[] | select(.decision=="allow")] | length' "$decisions")

@@ -43,6 +43,17 @@ type Hit struct {
 // Hit, so audit reasons stay compact and do not echo an entire tool output.
 const fragmentDisplayLimit = 48
 
+// Bounds on what a single Observe call retains, so a large or token-dense tool
+// output cannot force unbounded allocation or map growth — a DoS vector, since
+// stdio frames can be up to 16 MiB. maxObserveRunes caps the retained text,
+// maxObserveTokens caps tokens per observation, and maxTrackedFragments caps the
+// session-wide fragment map (which also bounds Check()'s per-call cost).
+const (
+	maxObserveRunes     = 64 * 1024
+	maxObserveTokens    = 4096
+	maxTrackedFragments = 1 << 16
+)
+
 // NewTracker returns a Tracker that ignores fragments shorter than minLength
 // runes (after trimming). A minLength <= 0 falls back to 1, which tracks every
 // non-empty fragment.
@@ -61,10 +72,18 @@ func (t *Tracker) Observe(sourceTool, text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
+	// Bound the retained text before storing/tokenizing it so a large output
+	// cannot force unbounded allocation (see maxObserveRunes).
+	if r := []rune(text); len(r) > maxObserveRunes {
+		text = string(r[:maxObserveRunes])
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.add(sourceTool, text)
-	for _, tok := range strings.Fields(text) {
+	for i, tok := range strings.Fields(text) {
+		if i >= maxObserveTokens {
+			break
+		}
 		t.add(sourceTool, tok)
 	}
 }
@@ -72,6 +91,11 @@ func (t *Tracker) Observe(sourceTool, text string) {
 func (t *Tracker) add(source, frag string) {
 	frag = strings.TrimSpace(frag)
 	if len([]rune(frag)) < t.minLength {
+		return
+	}
+	// Cap the session-wide fragment map so a tool that streams many distinct
+	// fragments cannot grow it (and Check()'s scan cost) without bound.
+	if len(t.sources) >= maxTrackedFragments {
 		return
 	}
 	if _, ok := t.sources[frag]; !ok {
