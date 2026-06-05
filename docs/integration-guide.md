@@ -71,6 +71,61 @@ Useful flags:
 | `--no-interactive`    | Reserved. Today every `ask` decision is denied (see [Approval today](#approval-today)). |
 | `--debug`             | Log every forwarded JSON-RPC message to stderr. Off by default because MCP messages routinely contain user content. |
 
+## Wrapping a remote MCP server over HTTP
+
+For MCP servers reached over streamable HTTP / SSE (remote or hosted tools),
+use `proxy-http` instead. It listens locally and reverse-proxies to the
+upstream, gating `tools/call` with the same policy, redaction, approval, and
+audit behavior as the stdio proxy:
+
+```bash
+agentfence proxy-http \
+  --policy /path/to/policy.yaml \
+  --upstream https://mcp.example.com/mcp \
+  --listen 127.0.0.1:8787 \
+  --audit-log /path/to/audit.jsonl
+```
+
+Then point your MCP client at `http://127.0.0.1:8787`. Requests that are not
+a single `tools/call` (initialize, ping, notifications, the SSE GET channel)
+are forwarded transparently, and streamed `text/event-stream` responses are
+relayed incrementally.
+
+Useful flags mirror `proxy`, plus:
+
+| Flag               | What it does |
+|--------------------|--------------|
+| `--upstream <url>` | Required. Absolute base URL of the MCP server to forward to. |
+| `--listen <addr>`  | Local address to bind (default `127.0.0.1:8787`). Keep it on loopback. |
+
+Operational caveats specific to the HTTP transport — authentication/TLS being
+the operator's responsibility, one shared session per running proxy, and
+JSON-RPC *batch* bodies being forwarded ungated — are documented in
+[`threat-model.md`](threat-model.md#streamable-http-proxy-surface).
+
+<a id="github-action"></a>
+## GitHub Action
+
+Gate recorded tool calls in CI with the bundled composite action. It builds
+`agentfence`, runs `agentfence check`, fails the job per `fail-on`, and writes
+a decision table to the job summary.
+
+```yaml
+- name: AgentFence policy check
+  uses: dgenio/agentfence@v0.5.0
+  with:
+    policy: examples/policy.yaml
+    calls: examples/tool-calls.jsonl
+    fail-on: deny           # deny | ask | deny,ask
+```
+
+Inputs: `policy` (required), `calls` (required), `fail-on` (default `deny`),
+`audit-log`, `tamper-evident`, `approval-timeout`, `go-version`. Outputs:
+`total`, `allow`, `deny`, `ask`, `decisions-file`. Because CI runs
+non-interactively, `ask` decisions are auto-denied and counted under `deny`.
+A copy-paste workflow is in
+[`examples/github-action-workflow.yml`](../examples/github-action-workflow.yml).
+
 ## Approval today
 
 The current proxy ships with a default-deny approver: every `ask` decision is

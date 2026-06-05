@@ -50,7 +50,28 @@ configuration examples.
 - Every evaluated request produces one audit event using the same
   `audit.Writer` as `check`, so `--tamper-evident` and `agentfence audit
   verify` work identically against proxy logs.
-- HTTP / streamable transport remains future work.
+
+### Streamable-HTTP proxy
+
+`agentfence proxy-http --upstream <url>` (package `internal/httpproxy`) is
+the HTTP/SSE counterpart: an `http.Handler` that reverse-proxies to a remote
+MCP server. It parses each POST body, evaluates a single `tools/call` exactly
+as the stdio path does, and relays the upstream response — including streamed
+`text/event-stream` bodies, copied with a flush per chunk. Non-`tools/call`
+requests, GETs (the SSE channel), and anything that is not a JSON-RPC request
+are forwarded transparently. JSON-RPC *batch* bodies are forwarded ungated.
+See [`threat-model.md`](threat-model.md#streamable-http-proxy-surface) for the
+HTTP-specific surface.
+
+### Session-scoped taint tracking
+
+Both proxies evaluate through an `engine.Session` rather than the stateless
+`Engine`. When a policy enables `taint:`, the session remembers the text of
+tool *results* it relays (`internal/taint`) and escalates a later call whose
+argument is derived from that untrusted output — the confused-deputy
+detection described in [`threat-model.md`](threat-model.md#confused-deputy--taint-tracking).
+The stateless `check`/`explain` paths use `Engine` directly and are
+unaffected.
 
 ## Policy evaluation flow
 
