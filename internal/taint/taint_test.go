@@ -1,6 +1,9 @@
 package taint
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestTrackerFlagsVerbatimArgument(t *testing.T) {
 	tr := NewTracker(12)
@@ -29,6 +32,26 @@ func TestTrackerFlagsArgumentContainingToken(t *testing.T) {
 	}
 	if hit.SourceTool != "github.read_issue" {
 		t.Errorf("hit.SourceTool = %q, want github.read_issue", hit.SourceTool)
+	}
+}
+
+// TestObserveBoundsLargeOutput verifies Observe bounds the text it retains so a
+// large tool output cannot force unbounded work: a fragment positioned beyond
+// maxObserveRunes is truncated away and never tracked, while one within the
+// retained prefix is still tracked.
+func TestObserveBoundsLargeOutput(t *testing.T) {
+	const marker = "BEYONDCAPMARKER12345"
+
+	beyond := NewTracker(12)
+	beyond.Observe("web.fetch", strings.Repeat("a", maxObserveRunes)+" "+marker)
+	if _, ok := beyond.Check(map[string]interface{}{"x": marker}); ok {
+		t.Fatal("fragment beyond maxObserveRunes must not be tracked")
+	}
+
+	within := NewTracker(12)
+	within.Observe("web.fetch", marker+" "+strings.Repeat("a", maxObserveRunes))
+	if _, ok := within.Check(map[string]interface{}{"x": marker}); !ok {
+		t.Fatal("fragment within maxObserveRunes must be tracked")
 	}
 }
 

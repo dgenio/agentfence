@@ -156,6 +156,12 @@ it does **not** catch:
   output text (≥ `min_length` runes). An attacker who instructs the agent
   to *transform* the value (encode, paraphrase, recompute a path) before
   reusing it can evade the match. It reduces, not eliminates, the risk.
+- **HTTP/SSE results are observed only when the body is JSON.** Over the
+  streamable-HTTP proxy, taint is observed from a tool's JSON-RPC response
+  body; a result streamed as `text/event-stream` (SSE) is relayed to the
+  client but **not** parsed for observation, so it does not taint later
+  calls. The stdio proxy observes every relayed `tools/call` result. Prefer
+  stdio — or a JSON-returning HTTP endpoint — where taint coverage matters.
 - **False positives are possible** when legitimate arguments coincide with
   earlier output; `min_length` and `on_tainted_argument: escalate`
   (rather than `deny`) keep that failure mode safe (a human is asked).

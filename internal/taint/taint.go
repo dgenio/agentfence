@@ -131,6 +131,11 @@ func (t *Tracker) Check(args map[string]interface{}) (Hit, bool) {
 			continue
 		}
 		for _, frag := range frags {
+			// Three intentional match directions: the argument equals a
+			// remembered fragment, contains one (arg embeds an injected token),
+			// or is contained by one (arg is a verbatim slice of a larger
+			// untrusted output — e.g. a path lifted from a sentence, which the
+			// per-token fragments alone would miss for multi-token slices).
 			if v == frag || strings.Contains(v, frag) || strings.Contains(frag, v) {
 				return Hit{Field: field, SourceTool: t.sources[frag], Fragment: excerpt(frag)}, true
 			}

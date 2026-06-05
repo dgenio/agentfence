@@ -105,6 +105,55 @@ func TestHTTPAllowForwardsToUpstream(t *testing.T) {
 	}
 }
 
+// TestForwardStripsHopByHopHeaders verifies the proxy does not forward
+// connection-specific headers (RFC 7230 §6.1) — including any named in the
+// Connection header — to the upstream or back to the client, and that it drops
+// the client's Accept-Encoding so Go's transport sets its own (transparent
+// decompression, which keeps tool results parseable for taint observation).
+func TestForwardStripsHopByHopHeaders(t *testing.T) {
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Upgrade", "h2c")
+		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`)
+	}))
+	defer upstream.Close()
+
+	h, _ := newHandler(t, testPolicy(t), upstream, DenyAllApprover{})
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(toolsCallBody("1", "filesystem.read", `{"path":"README.md"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("X-Hop", "secret")
+	req.Header.Set("Connection", "X-Hop, Upgrade")
+	req.Header.Set("X-Keep", "kept")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	resp := rec.Result()
+	defer resp.Body.Close()
+
+	for _, k := range []string{"Connection", "Upgrade", "X-Hop"} {
+		if v := got.Get(k); v != "" {
+			t.Errorf("hop-by-hop header %q forwarded to upstream: %q", k, v)
+		}
+	}
+	if got.Get("Accept-Encoding") == "identity" {
+		t.Error("client Accept-Encoding must be dropped so Go manages encoding")
+	}
+	if got.Get("X-Keep") != "kept" {
+		t.Errorf("end-to-end header X-Keep not forwarded; got %q", got.Get("X-Keep"))
+	}
+	for _, k := range []string{"Connection", "Upgrade"} {
+		if v := resp.Header.Get(k); v != "" {
+			t.Errorf("hop-by-hop response header %q relayed to client: %q", k, v)
+		}
+	}
+}
+
 func TestHTTPDenyDoesNotReachUpstream(t *testing.T) {
 	spy := &upstreamSpy{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
