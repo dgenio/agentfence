@@ -1,0 +1,29 @@
+# github policy pack
+#
+# Safe defaults for GitHub tools: ask before anything that creates or mutates
+# state, and hard-deny irreversible/destructive operations. Tool names vary by
+# MCP server; the github.* catch-all asks on anything not named explicitly so a
+# new tool is never silently allowed.
+#
+# Override any rule by redeclaring the tool key in the importing policy.
+version: "0.1"
+
+tools:
+  github.create_issue:
+    decision: ask
+
+  github.create_pull_request:
+    decision: ask
+
+  github.delete_repo:
+    decision: deny
+
+  github.delete_branch:
+    decision: deny
+
+  github.force_push:
+    decision: deny
+
+  # Catch-all: anything else on the GitHub surface defaults to ask.
+  github.*:
+    decision: ask

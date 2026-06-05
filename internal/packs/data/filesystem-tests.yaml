@@ -1,0 +1,44 @@
+# Decision fixtures for the filesystem pack. Run with:
+#   agentfence policy test --policy internal/packs/data/filesystem.yaml \
+#     --tests internal/packs/data/filesystem-tests.yaml
+tests:
+  - id: read-readme-allowed
+    tool: filesystem.read
+    arguments: { path: "README.md" }
+    expect: allow
+  - id: read-dotenv-denied
+    tool: filesystem.read
+    arguments: { path: ".env" }
+    expect: deny
+  - id: read-nested-secret-denied
+    tool: filesystem.read
+    arguments: { path: "config/secrets/key.pem" }
+    expect: deny
+  - id: read-git-internal-denied
+    tool: filesystem.read
+    arguments: { path: ".git/config" }
+    expect: deny
+  - id: read-escape-denied
+    tool: filesystem.read
+    arguments: { path: "../outside.txt" }
+    expect: deny
+  - id: write-src-asks
+    tool: filesystem.write
+    arguments: { path: "src/app.go", content: "package main" }
+    expect: ask
+  - id: write-workflow-denied
+    tool: filesystem.write
+    arguments: { path: ".github/workflows/ci.yml", content: "x" }
+    expect: deny
+  - id: write-dotenv-denied
+    tool: filesystem.write
+    arguments: { path: ".env", content: "x" }
+    expect: deny
+  - id: delete-denied
+    tool: filesystem.delete
+    arguments: { path: "build/out" }
+    expect: deny
+  - id: unknown-fs-tool-denied
+    tool: filesystem.chmod
+    arguments: { path: "build/out" }
+    expect: deny

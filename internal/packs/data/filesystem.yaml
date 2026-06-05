@@ -1,0 +1,42 @@
+# filesystem policy pack
+#
+# Safe defaults for filesystem tools: allow reads, gate writes behind an ask,
+# and refuse deletes. Secret-bearing and VCS-internal paths are denied for both
+# reads and writes, and the engine already denies absolute paths and any path
+# that escapes the workspace root.
+#
+# Override any rule by redeclaring the tool key in the importing policy.
+version: "0.1"
+
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        deny:
+          - ".env"
+          - "**/.env"
+          - "**/secrets/**"
+          - "secrets/**"
+          - ".git/**"
+          - "**/.git/**"
+
+  filesystem.write:
+    decision: ask
+    constraints:
+      paths:
+        deny:
+          - ".env"
+          - "**/.env"
+          - "**/secrets/**"
+          - "secrets/**"
+          - ".git/**"
+          - "**/.git/**"
+          - ".github/workflows/**"
+
+  filesystem.delete:
+    decision: deny
+
+  # Catch-all for any other filesystem.* tool a server might expose.
+  filesystem.*:
+    decision: deny
