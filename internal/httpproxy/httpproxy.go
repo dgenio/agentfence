@@ -363,6 +363,13 @@ func sseDataPayloads(body []byte) [][]byte {
 			cur = append(cur, strings.TrimPrefix(data, " "))
 		}
 	}
+	if sc.Err() != nil {
+		// A scan error (e.g. a single frame exceeding the buffer) leaves cur
+		// holding a truncated, unterminated frame. Drop it rather than observe a
+		// partial payload: already-flushed frames remain valid, but the in-flight
+		// one must not be fed to the taint tracker as if it were complete.
+		return payloads
+	}
 	flush()
 	return payloads
 }

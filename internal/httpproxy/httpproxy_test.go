@@ -411,6 +411,28 @@ func TestNewHandlerRejectsBadUpstream(t *testing.T) {
 	}
 }
 
+// TestSSEDataPayloadsDropsOversizedFrame verifies that when a single SSE frame
+// exceeds the scanner buffer, the resulting scan error drops the truncated
+// in-flight frame instead of observing a partial payload, while any earlier
+// complete frame is still returned.
+func TestSSEDataPayloadsDropsOversizedFrame(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("data: {\"first\":true}\n\n")
+	// One data line larger than the scanner's max token buffer (maxObserveBytes+1).
+	b.WriteString("data: ")
+	b.WriteString(strings.Repeat("x", maxObserveBytes+2))
+	b.WriteString("\n\n")
+
+	got := sseDataPayloads([]byte(b.String()))
+	want := []string{"{\"first\":true}"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d payloads, want %d (%q)", len(got), len(want), got)
+	}
+	if string(got[0]) != want[0] {
+		t.Errorf("payload 0 = %q, want %q", got[0], want[0])
+	}
+}
+
 func TestIsEventStream(t *testing.T) {
 	cases := []struct {
 		name        string
