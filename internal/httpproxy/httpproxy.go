@@ -322,11 +322,15 @@ func isEventStream(contentType string) bool {
 	if contentType == "" {
 		return false
 	}
-	mt, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return false
+	if mt, _, err := mime.ParseMediaType(contentType); err == nil {
+		return mt == "text/event-stream"
 	}
-	return mt == "text/event-stream"
+	// Best-effort fallback: a malformed but still recognizable Content-Type
+	// (e.g. an invalid parameter after the media type) must not silently
+	// disable SSE observation and reintroduce the taint-tracking gap this
+	// guards against. Compare the bare type token before any ';'.
+	base, _, _ := strings.Cut(contentType, ";")
+	return strings.EqualFold(strings.TrimSpace(base), "text/event-stream")
 }
 
 // sseDataPayloads reassembles the data field of each SSE event in body. Per the

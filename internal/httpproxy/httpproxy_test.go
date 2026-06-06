@@ -411,6 +411,29 @@ func TestNewHandlerRejectsBadUpstream(t *testing.T) {
 	}
 }
 
+func TestIsEventStream(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{"plain", "text/event-stream", true},
+		{"with charset", "text/event-stream; charset=utf-8", true},
+		{"uppercase", "TEXT/EVENT-STREAM", true},
+		{"malformed param recognizable", "text/event-stream; charset=", true},
+		{"json", "application/json", false},
+		{"empty", "", false},
+		{"unrelated malformed", "application/json; charset=", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isEventStream(tc.contentType); got != tc.want {
+				t.Errorf("isEventStream(%q) = %v, want %v", tc.contentType, got, tc.want)
+			}
+		})
+	}
+}
+
 // mcpUnmarshal is a tiny helper so the test does not import encoding/json
 // directly twice; it mirrors json.Unmarshal.
 func mcpUnmarshal(b []byte, v *mcp.JSONRPCResponse) error {
