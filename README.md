@@ -135,6 +135,14 @@ truncation, then check the log against it:
 ./agentfence audit verify --log audit.jsonl --anchor audit.anchor.json
 ```
 
+Sign the anchor so a verifier can confirm it was not itself swapped for one
+naming an earlier event:
+
+```bash
+./agentfence audit anchor --log audit.jsonl --out audit.anchor.json --sign-key audit.key
+./agentfence audit verify --log audit.jsonl --anchor audit.anchor.json --anchor-pubkey audit.pub
+```
+
 Get machine-readable output for CI pipelines:
 
 ```bash

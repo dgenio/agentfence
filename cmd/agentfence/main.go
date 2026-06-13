@@ -567,7 +567,7 @@ func printUsage() {
 	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--debug] -- <command> [args...]")
 	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--debug]")
 	fmt.Println("  agentfence validate --policy <file>")
-	fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>]")
+	fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
 	fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
 	fmt.Println("  agentfence audit   keygen    --private <file> --public <file>")
@@ -663,7 +663,7 @@ func runAuditSubcmd(args []string) error {
 	}
 	if isHelpArg(args[0]) {
 		fmt.Println("Usage:")
-		fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>]")
+		fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
 		fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
 		fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
 		fmt.Println("  agentfence audit   keygen    --private <file> --public <file>")
@@ -856,6 +856,7 @@ func runAuditVerify(args []string) error {
 	logPath := fs.String("log", "", "Path to audit JSONL log to verify")
 	pubKeyPath := fs.String("pubkey", "", "Optional Ed25519 public key (PEM) to verify event signatures")
 	anchorPath := fs.String("anchor", "", "Optional anchor JSON (from 'audit anchor') to confirm the log has not been truncated")
+	anchorPubKeyPath := fs.String("anchor-pubkey", "", "Optional Ed25519 public key (PEM) to authenticate a signed anchor (from 'audit anchor --sign-key')")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
 	}
@@ -872,7 +873,7 @@ func runAuditVerify(args []string) error {
 		}
 	}
 	if *anchorPath != "" {
-		if err := verifyAnchorReport(*logPath, *anchorPath); err != nil {
+		if err := verifyAnchorReport(*logPath, *anchorPath, *anchorPubKeyPath); err != nil {
 			return err
 		}
 	}
@@ -941,8 +942,13 @@ func verifySignaturesReport(logPath, pubKeyPath string) error {
 	return nil
 }
 
-// verifyAnchorReport confirms the log still contains the anchored event.
-func verifyAnchorReport(logPath, anchorPath string) error {
+// verifyAnchorReport confirms the log still contains the anchored event and,
+// when an anchor public key is supplied, that the anchor itself is
+// authentically signed — truncation detection is only trustworthy if the
+// anchor we compare against was not itself swapped for one naming an earlier
+// event. The anchor key is separate from the event-signing key (--pubkey): a
+// log may sign its events, its anchor, both, or neither, with distinct keys.
+func verifyAnchorReport(logPath, anchorPath, anchorPubKeyPath string) error {
 	ab, err := os.ReadFile(anchorPath)
 	if err != nil {
 		return err
@@ -951,6 +957,24 @@ func verifyAnchorReport(logPath, anchorPath string) error {
 	if err := json.Unmarshal(ab, &anchor); err != nil {
 		return fmt.Errorf("audit verify: parse anchor %q: %w", anchorPath, err)
 	}
+
+	if anchorPubKeyPath != "" {
+		pub, err := audit.LoadPublicKey(anchorPubKeyPath)
+		if err != nil {
+			return err
+		}
+		switch err := audit.VerifyAnchorSignature(anchor, pub); {
+		case err == nil:
+			fmt.Println("ANCHOR SIGNATURE: verified")
+		case errors.Is(err, audit.ErrNoSignature):
+			fmt.Fprintln(os.Stderr, "AgentFence: warning: anchor is unsigned; its origin cannot be authenticated")
+		default:
+			return fmt.Errorf("audit verify: anchor signature: %w", err)
+		}
+	} else if anchor.Signature != "" {
+		fmt.Fprintln(os.Stderr, "AgentFence: warning: anchor is signed but no --anchor-pubkey was given; its signature was not verified")
+	}
+
 	f, err := os.Open(logPath)
 	if err != nil {
 		return err
@@ -1226,6 +1250,13 @@ func openAuditOutput(cfg auditConfig) (io.Writer, func(), audit.Options, error) 
 	}
 
 	rotationRequested := cfg.maxSizeBytes > 0 || cfg.maxAge > 0
+
+	// --audit-keep only prunes rotated segments, so it does nothing unless a
+	// size or age threshold actually triggers rotation. Warn rather than fail,
+	// so a keep value paired with a not-yet-set threshold is not a hard error.
+	if cfg.keep > 0 && !rotationRequested {
+		fmt.Fprintln(os.Stderr, "AgentFence: warning: --audit-keep has no effect without --audit-max-size or --audit-max-age")
+	}
 
 	if cfg.path == "" {
 		if rotationRequested {

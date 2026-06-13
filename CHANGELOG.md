@@ -60,7 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hash chaining alone cannot. (#95)
 - **Audit anchors** — `agentfence audit anchor` emits a compact, publishable
   commitment to a tamper-evident log's final event; `agentfence audit verify
-  --anchor` detects silent whole-log deletion or truncation against it. (#99)
+  --anchor` detects silent whole-log deletion or truncation against it.
+  `audit anchor --sign-key` signs the anchor and `audit verify --anchor-pubkey`
+  authenticates it, so a published anchor cannot be swapped for one naming an
+  earlier event. (#99)
 - **Audit-log rotation and retention** — `--audit-max-size`, `--audit-max-age`,
   and `--audit-keep` rotate a long-running log into segments, each of which
   starts a fresh chain root and stays independently verifiable. (#117)

@@ -149,6 +149,47 @@ func TestAnchorRoundTripAndTruncationDetection(t *testing.T) {
 	}
 }
 
+func TestVerifySignedAnchorWithPubkey(t *testing.T) {
+	auditFile := writeTamperEvidentLog(t) // 3 chained events
+	dir := filepath.Dir(auditFile)
+	anchorFile := filepath.Join(dir, "anchor.json")
+	priv := filepath.Join(dir, "audit.key")
+	pub := filepath.Join(dir, "audit.pub")
+	otherPub := filepath.Join(dir, "other.pub")
+	if err := runAuditKeygen([]string{"--private", priv, "--public", pub}); err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	if err := runAuditKeygen([]string{"--private", filepath.Join(dir, "other.key"), "--public", otherPub}); err != nil {
+		t.Fatalf("keygen other: %v", err)
+	}
+
+	// Produce a signed anchor.
+	if _, _, err := captureOutput(t, func() error {
+		return runAuditAnchor([]string{"--log", auditFile, "--out", anchorFile, "--sign-key", priv})
+	}); err != nil {
+		t.Fatalf("runAuditAnchor --sign-key: %v", err)
+	}
+
+	// The matching public key authenticates the anchor.
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--anchor", anchorFile, "--anchor-pubkey", pub})
+	})
+	if err != nil {
+		t.Fatalf("verify signed anchor with correct anchor-pubkey: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(stdout, "ANCHOR SIGNATURE: verified") {
+		t.Fatalf("expected anchor signature to verify, got: %q", stdout)
+	}
+
+	// A different key must make anchor-signature verification fail.
+	_, _, err = captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--anchor", anchorFile, "--anchor-pubkey", otherPub})
+	})
+	if err == nil {
+		t.Fatal("expected anchor signature verification to fail against the wrong anchor public key")
+	}
+}
+
 func TestAnchorRejectsUnchainedLog(t *testing.T) {
 	policyFile, callFile, auditFile, _ := writeSigningFixtures(t)
 	// Write a plain (unchained) log.

@@ -266,9 +266,12 @@ protection, an attacker with filesystem access can rewrite a `deny` to
   Transparency — and later run `agentfence audit verify --log <file> --anchor
   anchor.json`: if the log no longer reaches the anchored event, verification
   fails. The residual risk then shrinks from "operator can delete without
-  trace" to "deletion is detectable against the published anchor." AgentFence
-  produces and checks anchors; *publishing* them to a durable external location
-  remains the operator's responsibility.
+  trace" to "deletion is detectable against the published anchor." Sign the
+  anchor (`audit anchor --sign-key`) and authenticate it on verify
+  (`audit verify --anchor-pubkey`) so an attacker cannot swap the published
+  anchor for one naming an earlier event. AgentFence produces and checks
+  anchors; *publishing* them to a durable external location remains the
+  operator's responsibility.
 - **Adding entirely new chained events** (with correctly recomputed hashes) is
   detectable only if the verifier has an externally trusted starting point.
   Signing (`--sign-key`) closes this for an attacker without the private key;
