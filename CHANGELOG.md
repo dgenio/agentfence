@@ -52,4 +52,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Ed25519-signed audit events** — `--sign-key <pem>` on `check`, `proxy`, and
+  `proxy-http` adds a base64 signature over each event's canonical digest;
+  `agentfence audit keygen` generates a key pair and `agentfence audit verify
+  --pubkey` checks signatures offline. Signing authenticates the writer, which
+  hash chaining alone cannot. (#95)
+- **Audit anchors** — `agentfence audit anchor` emits a compact, publishable
+  commitment to a tamper-evident log's final event; `agentfence audit verify
+  --anchor` detects silent whole-log deletion or truncation against it.
+  `audit anchor --sign-key` signs the anchor and `audit verify --anchor-pubkey`
+  authenticates it, so a published anchor cannot be swapped for one naming an
+  earlier event. (#99)
+- **Audit-log rotation and retention** — `--audit-max-size`, `--audit-max-age`,
+  and `--audit-keep` rotate a long-running log into segments, each of which
+  starts a fresh chain root and stays independently verifiable. (#117)
+- **External audit sinks** — `--audit-sink` streams events to an
+  operator-controlled destination (`syslog://`, `syslog+tcp://`, or
+  `http(s)://` webhook) with best-effort, non-blocking, bounded buffering. (#118)
+- **Audit event JSON Schema** — `schema/agentfence-audit-event.schema.json` plus
+  a reference page (`docs/audit-event-schema.md`) and a drift-guard test keeping
+  the schema in sync with the Go struct. (#124)
+
+### Changed
+- Audit event `schema_version` bumped to `"3"` for the optional `signature`
+  field.
+- `docs/threat-model.md` audit-integrity section updated to document signing,
+  anchors, rotation, and sinks as implemented mitigations.
+
 [Unreleased]: https://github.com/dgenio/agentfence/compare/v0.6.0...HEAD

@@ -1723,8 +1723,8 @@ func TestCheckDryRunPreservesAskAndMarksMode(t *testing.T) {
 	if events[0]["mode"] != "dry_run" {
 		t.Errorf("mode = %v, want dry_run", events[0]["mode"])
 	}
-	if events[0]["schema_version"] != "2" {
-		t.Errorf("schema_version = %v, want 2", events[0]["schema_version"])
+	if events[0]["schema_version"] != audit.CurrentSchemaVersion {
+		t.Errorf("schema_version = %v, want %s", events[0]["schema_version"], audit.CurrentSchemaVersion)
 	}
 }
 

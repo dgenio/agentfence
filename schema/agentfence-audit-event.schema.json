@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dgenio/agentfence/schema/agentfence-audit-event.schema.json",
+  "title": "AgentFence audit event",
+  "description": "A single newline-delimited JSON record written to an AgentFence audit log. Produced by `agentfence check`, `agentfence proxy`, and `agentfence proxy-http`. See docs/audit-event-schema.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "seq",
+    "timestamp",
+    "call_id",
+    "tool",
+    "decision",
+    "reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Audit event schema version. Current writers emit \"3\".",
+      "examples": ["1", "2", "3"]
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Per-run session identifier (UUIDv4 unless overridden)."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic 1-based sequence number within the session."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Event time in RFC 3339 / RFC 3339 Nano (UTC)."
+    },
+    "call_id": {
+      "type": "string",
+      "description": "Identifier of the evaluated tool call. Synthetic 'line-N' for parse-error events."
+    },
+    "tool": {
+      "type": "string",
+      "description": "Tool name that was evaluated. Empty for parse-error events."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["allow", "deny", "ask"],
+      "description": "Policy decision for the call."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Human-readable explanation for the decision."
+    },
+    "arguments": {
+      "type": "object",
+      "description": "Redacted tool-call arguments. Present only when argument logging is enabled.",
+      "additionalProperties": true
+    },
+    "memory_write": {
+      "$ref": "#/$defs/memoryWriteSummary"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["dry_run"],
+      "description": "Evaluation mode marker. Present only for simulated (dry-run) events."
+    },
+    "prev_hash": {
+      "type": "string",
+      "description": "Hex SHA-256 of the previous event in a tamper-evident chain. Empty/absent on the first event of a chain (chain root)."
+    },
+    "hash": {
+      "type": "string",
+      "description": "Hex SHA-256 of this event's canonical encoding (with hash and signature cleared). Present only in tamper-evident mode."
+    },
+    "signature": {
+      "type": "string",
+      "description": "Base64 Ed25519 signature over the event's canonical digest. Present only when signing is enabled. Authenticates the writer.",
+      "contentEncoding": "base64"
+    }
+  },
+  "$defs": {
+    "memoryWriteSummary": {
+      "type": "object",
+      "description": "Safe-to-log summary of a durable memory-write tool call. Never includes the raw payload.",
+      "additionalProperties": false,
+      "required": ["size_bytes"],
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": ["session", "project", "global"],
+          "description": "Effective durable-write scope."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": ["low", "medium", "high"],
+          "description": "Resolved sensitivity used during evaluation."
+        },
+        "field": {
+          "type": "string",
+          "description": "Argument key that held the durable payload."
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte length of the payload as evaluated."
+        },
+        "content_fingerprint": {
+          "type": "string",
+          "description": "Short SHA-256 prefix of the payload for de-duplication; never reveals contents."
+        },
+        "patterns_matched": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Redaction-pattern names that matched the payload."
+        }
+      }
+    }
+  }
+}

@@ -228,43 +228,65 @@ protection, an attacker with filesystem access can rewrite a `deny` to
 - The hash is computed over the canonical JSON encoding of the event with
   its own `hash` field cleared. `encoding/json` emits struct fields in
   declaration order and sorts map keys, so the encoding is deterministic for
-  a given logical event.
+  a given logical event. See [`audit-event-schema.md`](audit-event-schema.md)
+  for the full event contract.
+- **Writer authentication via signing.** Run any writer with
+  `--sign-key <ed25519.pem>` to add a base64 Ed25519 `signature` over each
+  event's canonical digest (the same bytes the hash covers, so signing and
+  chaining compose). Generate a key pair with `agentfence audit keygen
+  --private audit.key --public audit.pub`, then verify with
+  `agentfence audit verify --log <file> --pubkey audit.pub`. Unlike the hash
+  chain — which only proves internal consistency — a signature proves the log
+  was produced by a holder of the private key, so an attacker with write
+  access cannot forge a consistent chain from a modified event without it.
+- **Append-only sinks.** `--audit-sink syslog://host:port`,
+  `--audit-sink syslog+tcp://host:port`, and `--audit-sink https://…`
+  stream every event to an operator-controlled destination as it is written.
+  Delivery is best-effort and non-blocking (bounded buffer; events are dropped
+  and counted rather than stalling enforcement). Once events leave the host to
+  an append-only store, on-host deletion no longer hides activity.
+- **Rotation preserves verifiability.** `--audit-max-size`, `--audit-max-age`,
+  and `--audit-keep` rotate a long-running log into segments. Each segment
+  starts a fresh chain root, so every rotated file remains independently
+  verifiable with `audit verify`.
 
 ### Residual risk
 
 - **Whole-log deletion is not detectable from the log alone.** If an attacker
   deletes the entire file, there is nothing left to verify. Mitigate by
-  shipping audit events to an append-only sink (out of scope for this MVP)
-  or by *anchor publication* (see below).
-- **Anchor publication is the only third-party-verifiable defense against
-  silent deletion or truncation.** Periodically publishing the latest event
-  hash to an external transparency artifact — a public Git repository, a
-  signed commit, a transparency log such as those used by Sigstore or
-  Certificate Transparency — lets any third party with the anchor detect a
-  log that ends before the anchored event. The residual risk then shrinks
-  from "operator can delete without trace" to "deletion is detectable
-  against the published anchor." AgentFence does not publish anchors
-  itself; operators who need this guarantee should script periodic
-  publication of the last `hash` field.
-- **Adding entirely new chained events** (with correctly recomputed hashes)
-  is detectable only if the verifier has an externally trusted starting hash
-  or counter. AgentFence does not currently support a "chain root" anchor.
+  *shipping audit events to an append-only sink* (`--audit-sink`, which makes
+  deletion *recoverable*) or by *anchor publication* (which makes deletion
+  *detectable* — see below).
+- **Anchor publication is the third-party-verifiable defense against silent
+  deletion or truncation.** `agentfence audit anchor --log <file>` emits a
+  compact record (last `hash`, event count, last `seq`, timestamp, optional
+  signature) naming a specific event that must still be present. Commit it
+  somewhere the operator does not control — a separate Git repository, a signed
+  message, a transparency log such as those used by Sigstore or Certificate
+  Transparency — and later run `agentfence audit verify --log <file> --anchor
+  anchor.json`: if the log no longer reaches the anchored event, verification
+  fails. The residual risk then shrinks from "operator can delete without
+  trace" to "deletion is detectable against the published anchor." Sign the
+  anchor (`audit anchor --sign-key`) and authenticate it on verify
+  (`audit verify --anchor-pubkey`) so an attacker cannot swap the published
+  anchor for one naming an earlier event. AgentFence produces and checks
+  anchors; *publishing* them to a durable external location remains the
+  operator's responsibility.
+- **Adding entirely new chained events** (with correctly recomputed hashes) is
+  detectable only if the verifier has an externally trusted starting point.
+  Signing (`--sign-key`) closes this for an attacker without the private key;
+  an anchor closes it for truncation past the anchored event.
 - **The chain is unverifiable when interleaved with other output.** Running
   `--tamper-evident` without `--audit-log` mixes audit lines with stdout text;
   `audit verify` may then fail or be unable to find the chain. The CLI warns
   when this combination is requested.
-- Tamper evidence is **not** the same as cryptographic signing. An attacker
-  with write access to the log can still produce a fully consistent chain
-  starting from any modified event. Detecting that requires a signed event
-  (out of scope for this MVP).
+- **Signing protects authenticity, not availability.** An attacker who deletes
+  signed events still removes them; use anchors and/or sinks for deletion
+  detection and recovery. Signing also assumes the private key itself is kept
+  off the audited host.
 
 ## What MVP does not yet mitigate
 
-- MCP streamable-HTTP transport is not yet proxied; only stdio is.
-- Cryptographic signing of audit events is not implemented yet
-  (tamper-evident chaining detects modification, but does not authenticate
-  the writer; whole-log deletion is only detectable when an external
-  anchor is published — see *Audit log integrity → Residual risk*).
 - Per-call capability tokens for downstream tool servers are not minted by
   the proxy; the *network isolation* invariant in *MCP proxy threat
   surface* is the sole defense against proxy-bypass attacks today.

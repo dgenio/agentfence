@@ -44,6 +44,11 @@ today from what is planned. Do not assume planned features are usable yet.
 | MCP stdio proxy (`agentfence proxy`)                | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md), [`docs/architecture.md`](docs/architecture.md) |
 | Policy enforcement on intercepted `tools/call`      | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md) |
 | Tamper-evident hash-chained audit logs              | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
+| Ed25519-signed audit events (`--sign-key`)          | Implemented    | [`docs/audit-event-schema.md`](docs/audit-event-schema.md), [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
+| Audit anchors (`audit anchor` / `verify --anchor`)  | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
+| Audit-log rotation and retention (`--audit-max-*`)  | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
+| External audit sinks (`--audit-sink` syslog/HTTP)   | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
+| Audit event JSON Schema                             | Implemented    | [`docs/audit-event-schema.md`](docs/audit-event-schema.md) |
 | Audit-log summarisation (`audit summarize`)         | Implemented    | `agentfence audit summarize --help` |
 | weaver-spec trace export (`audit export`)           | Implemented    | [`docs/interop.md`](docs/interop.md) |
 | Fuzz coverage for parser, glob, and redaction       | Implemented    | `make fuzz` |
@@ -109,6 +114,33 @@ Write audit events to an append-only, owner-readable log:
 
 ```bash
 ./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl --audit-log audit.jsonl
+```
+
+Sign each event (writer authentication), rotate the log, and ship a copy to an
+external sink — then verify the chain *and* the signatures offline:
+
+```bash
+./agentfence audit keygen --private audit.key --public audit.pub
+./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl \
+  --audit-log audit.jsonl --tamper-evident --sign-key audit.key \
+  --audit-max-size 10485760 --audit-keep 5 --audit-sink syslog://127.0.0.1:514
+./agentfence audit verify --log audit.jsonl --pubkey audit.pub
+```
+
+Publish an anchor so a third party can later detect silent deletion or
+truncation, then check the log against it:
+
+```bash
+./agentfence audit anchor --log audit.jsonl --out audit.anchor.json   # commit this somewhere you don't control
+./agentfence audit verify --log audit.jsonl --anchor audit.anchor.json
+```
+
+Sign the anchor so a verifier can confirm it was not itself swapped for one
+naming an earlier event:
+
+```bash
+./agentfence audit anchor --log audit.jsonl --out audit.anchor.json --sign-key audit.key
+./agentfence audit verify --log audit.jsonl --anchor audit.anchor.json --anchor-pubkey audit.pub
 ```
 
 Get machine-readable output for CI pipelines:
