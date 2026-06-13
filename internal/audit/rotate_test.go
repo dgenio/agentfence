@@ -108,6 +108,32 @@ func TestRotatorRetentionPrunesOldSegments(t *testing.T) {
 	}
 }
 
+func TestRotatorPruneLeavesUnrelatedFilesAlone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	// A neighbour that shares the log's prefix but is not a rotated segment.
+	neighbour := path + ".backup"
+	if err := os.WriteFile(neighbour, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rot, err := NewRotator(RotationConfig{Path: path, MaxSizeBytes: 1, Keep: 1})
+	if err != nil {
+		t.Fatalf("NewRotator: %v", err)
+	}
+	defer rot.Close()
+	w := NewWriterOptions(rot, Options{Rotator: rot})
+	for i := 0; i < 6; i++ {
+		if err := w.Write(Event{CallID: "c", Tool: "t", Decision: policy.DecisionAllow}); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+
+	if _, err := os.Stat(neighbour); err != nil {
+		t.Fatalf("prune deleted an unrelated file %q: %v", neighbour, err)
+	}
+}
+
 func TestRotatorEmptySegmentNotRotated(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")

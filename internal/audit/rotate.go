@@ -5,10 +5,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
+
+// segmentSuffixRe matches the suffix rotatedName appends to the active path:
+// a zero-padded UTC timestamp, with an optional ".N" collision counter. prune
+// uses it so it only ever deletes files this Rotator created — never unrelated
+// neighbours like "audit.jsonl.backup" or an anchor written beside the log.
+var segmentSuffixRe = regexp.MustCompile(`^\d{8}T\d{6}\.\d{9}Z(\.\d+)?$`)
 
 // RotationConfig configures size- and age-based rotation of a file-backed audit
 // log. A zero MaxSizeBytes disables size rotation; a zero MaxAge disables age
@@ -178,20 +186,30 @@ func (r *Rotator) rotatedName(t time.Time) string {
 }
 
 // prune deletes rotated segments beyond cfg.Keep, oldest first. Keep <= 0
-// retains everything.
+// retains everything. Only files matching this Rotator's own segment naming
+// (segmentSuffixRe) are eligible for deletion, so unrelated files sharing the
+// log's prefix are never touched.
 func (r *Rotator) prune() {
 	if r.cfg.Keep <= 0 {
 		return
 	}
-	matches, err := filepath.Glob(r.cfg.Path + ".*")
+	candidates, err := filepath.Glob(r.cfg.Path + ".*")
 	if err != nil {
 		return
 	}
-	if len(matches) <= r.cfg.Keep {
+	prefix := r.cfg.Path + "."
+	segments := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		suffix := strings.TrimPrefix(c, prefix)
+		if suffix != c && segmentSuffixRe.MatchString(suffix) {
+			segments = append(segments, c)
+		}
+	}
+	if len(segments) <= r.cfg.Keep {
 		return
 	}
-	sort.Strings(matches) // chronological, thanks to the zero-padded suffix
-	for _, old := range matches[:len(matches)-r.cfg.Keep] {
+	sort.Strings(segments) // chronological, thanks to the zero-padded suffix
+	for _, old := range segments[:len(segments)-r.cfg.Keep] {
 		_ = os.Remove(old)
 	}
 }

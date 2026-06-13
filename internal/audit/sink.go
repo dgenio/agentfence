@@ -235,6 +235,9 @@ func newSyslogSink(proto, host string, logger io.Writer) (Sink, error) {
 	// PRI 134 = facility local0 (16)*8 + severity informational (6).
 	const pri = 134
 	deliver := func(batch [][]byte) error {
+		// Bound every write so a stalled TCP peer (or a back-pressured UDP
+		// path) cannot block the run goroutine forever — Close waits on it.
+		_ = conn.SetWriteDeadline(time.Now().Add(sinkDialTimeout))
 		for _, ev := range batch {
 			ts := time.Now().UTC().Format(time.RFC3339Nano)
 			msg := fmt.Sprintf("<%d>1 %s %s agentfence %d - - %s\n", pri, ts, hostname, pid, ev)

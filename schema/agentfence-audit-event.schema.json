@@ -27,11 +27,12 @@
     },
     "seq": {
       "type": "integer",
-      "minimum": 0,
+      "minimum": 1,
       "description": "Monotonic 1-based sequence number within the session."
     },
     "timestamp": {
       "type": "string",
+      "format": "date-time",
       "description": "Event time in RFC 3339 / RFC 3339 Nano (UTC)."
     },
     "call_id": {
