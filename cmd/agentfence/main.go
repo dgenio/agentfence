@@ -161,6 +161,12 @@ func runCheck(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "Evaluate and audit without enforcing: ask decisions are not prompted, and --fail-on does not change the exit code")
 	noInteractive := fs.Bool("no-interactive", false, "Do not prompt the operator on ask decisions; auto-deny instead")
 	approvalTimeout := fs.Duration("approval-timeout", 0, "Maximum time to wait for an ask response (e.g. 30s, 2m). 0 means wait forever; recommended for CI is 30s with --no-interactive")
+	signKey := fs.String("sign-key", "", "Path to an Ed25519 private key (PEM) to sign each audit event; verify with 'agentfence audit verify --pubkey'")
+	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
+	auditMaxAge := fs.Duration("audit-max-age", 0, "Rotate the audit log once it has been open this long, e.g. 24h (0 = no age rotation; requires --audit-log)")
+	auditKeep := fs.Int("audit-keep", 0, "Number of rotated audit segments to retain (0 = keep all)")
+	var auditSinks stringSliceFlag
+	fs.Var(&auditSinks, "audit-sink", "Ship audit events to an external sink; repeatable. Schemes: http(s)://…, syslog://host:port, syslog+tcp://host:port")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
 	}
@@ -202,24 +208,26 @@ func runCheck(args []string) error {
 
 	// Audit output: use the explicit file when given; for structured output modes
 	// default to discarding (mixing audit JSONL into a JSON stream breaks parsers);
-	// for text mode preserve the existing behaviour of writing to stdout.
-	var auditOut io.Writer = io.Discard
-	closeAudit := func() {}
-	auditOptions := audit.Options{TamperEvident: *tamperEvident}
-	if *auditLogPath != "" {
-		var err error
-		auditOut, closeAudit, auditOptions, err = openAuditOutput(*auditLogPath, *tamperEvident)
-		if err != nil {
-			return err
-		}
-		defer closeAudit()
-	} else if *outputMode == "text" {
-		auditOut = os.Stdout
+	// for text mode preserve the existing behaviour of writing to stdout. Signing
+	// and external sinks apply regardless of the local destination.
+	var noFileWriter io.Writer = io.Discard
+	if *outputMode == "text" {
+		noFileWriter = os.Stdout
 	}
-
-	if *tamperEvident && *auditLogPath == "" {
-		fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log produces a chain interleaved with other output; verification will not be reliable.")
+	auditOut, closeAudit, auditOptions, err := openAuditOutput(auditConfig{
+		path:          *auditLogPath,
+		tamperEvident: *tamperEvident,
+		signKeyPath:   *signKey,
+		maxSizeBytes:  *auditMaxSize,
+		maxAge:        *auditMaxAge,
+		keep:          *auditKeep,
+		sinkSpecs:     auditSinks,
+		noFileWriter:  noFileWriter,
+	})
+	if err != nil {
+		return err
 	}
+	defer closeAudit()
 
 	aw := audit.NewWriterOptions(auditOut, auditOptions)
 
@@ -552,16 +560,18 @@ func scaffoldRootPolicy(names, packFiles []string) string {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
+	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
-	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--passthrough] [--no-interactive] [--debug] -- <command> [args...]")
-	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--audit-log <file>] [--tamper-evident] [--passthrough] [--no-interactive] [--debug]")
+	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--debug] -- <command> [args...]")
+	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--debug]")
 	fmt.Println("  agentfence validate --policy <file>")
-	fmt.Println("  agentfence audit   verify    --log <file>")
+	fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>]")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
 	fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
+	fmt.Println("  agentfence audit   keygen    --private <file> --public <file>")
+	fmt.Println("  agentfence audit   anchor    --log <file> [--out <file>] [--sign-key <file>]")
 	fmt.Println("  agentfence version")
 	fmt.Println("  agentfence demo")
 	fmt.Println("  agentfence init    [--pack filesystem,github,shell]")
@@ -645,16 +655,19 @@ func runExplain(args []string) error {
 	return nil
 }
 
-// runAuditSubcmd dispatches audit sub-commands: verify, summarize, export.
+// runAuditSubcmd dispatches audit sub-commands: verify, summarize, export,
+// keygen, anchor.
 func runAuditSubcmd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("audit requires a subcommand: verify, summarize, export")
+		return fmt.Errorf("audit requires a subcommand: verify, summarize, export, keygen, anchor")
 	}
 	if isHelpArg(args[0]) {
 		fmt.Println("Usage:")
-		fmt.Println("  agentfence audit   verify    --log <file>")
+		fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>]")
 		fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
 		fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
+		fmt.Println("  agentfence audit   keygen    --private <file> --public <file>")
+		fmt.Println("  agentfence audit   anchor    --log <file> [--out <file>] [--sign-key <file>]")
 		return nil
 	}
 	switch args[0] {
@@ -664,9 +677,93 @@ func runAuditSubcmd(args []string) error {
 		return runAuditSummarize(args[1:])
 	case "export":
 		return runAuditExport(args[1:])
+	case "keygen":
+		return runAuditKeygen(args[1:])
+	case "anchor":
+		return runAuditAnchor(args[1:])
 	default:
-		return fmt.Errorf("unknown audit subcommand %q; valid: verify, summarize, export", args[0])
+		return fmt.Errorf("unknown audit subcommand %q; valid: verify, summarize, export, keygen, anchor", args[0])
 	}
+}
+
+// runAuditKeygen generates an Ed25519 key pair for audit-event signing.
+func runAuditKeygen(args []string) error {
+	fs := flag.NewFlagSet("audit keygen", flag.ContinueOnError)
+	privPath := fs.String("private", "", "Output path for the Ed25519 private key (PEM); required")
+	pubPath := fs.String("public", "", "Output path for the Ed25519 public key (PEM); required")
+	if err := fs.Parse(args); err != nil {
+		return handleFlagParseErr(err)
+	}
+	if *privPath == "" || *pubPath == "" {
+		return errors.New("--private and --public are required")
+	}
+	pub, priv, err := audit.GenerateKeyPair()
+	if err != nil {
+		return fmt.Errorf("audit keygen: %w", err)
+	}
+	if err := audit.WriteKeyPairFiles(*privPath, *pubPath, pub, priv); err != nil {
+		return err
+	}
+	fmt.Printf("wrote private key %s (0600) and public key %s\n", *privPath, *pubPath)
+	fmt.Println("sign with: agentfence check ... --sign-key " + *privPath)
+	fmt.Println("verify with: agentfence audit verify --log <file> --pubkey " + *pubPath)
+	return nil
+}
+
+// runAuditAnchor computes a publishable anchor over a tamper-evident log so a
+// third party can later detect silent whole-log deletion or truncation.
+func runAuditAnchor(args []string) error {
+	fs := flag.NewFlagSet("audit anchor", flag.ContinueOnError)
+	logPath := fs.String("log", "", "Path to the tamper-evident audit log to anchor; required")
+	out := fs.String("out", "", "Write the anchor JSON to this file (default: stdout)")
+	signKey := fs.String("sign-key", "", "Optional Ed25519 private key (PEM) to sign the anchor")
+	if err := fs.Parse(args); err != nil {
+		return handleFlagParseErr(err)
+	}
+	if *logPath == "" {
+		return errors.New("--log is required")
+	}
+
+	var signer *audit.Signer
+	if *signKey != "" {
+		priv, err := audit.LoadPrivateKey(*signKey)
+		if err != nil {
+			return err
+		}
+		signer, err = audit.NewSigner(priv)
+		if err != nil {
+			return err
+		}
+	}
+
+	f, err := os.Open(*logPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	anchor, err := audit.ComputeAnchor(f, signer)
+	switch {
+	case errors.Is(err, audit.ErrNoChain):
+		return fmt.Errorf("audit anchor: %q is not tamper-evident; re-run with --tamper-evident to chain it before anchoring", *logPath)
+	case err != nil:
+		return fmt.Errorf("audit anchor: %w", err)
+	}
+
+	b, err := json.MarshalIndent(anchor, "", "  ")
+	if err != nil {
+		return fmt.Errorf("audit anchor: json marshal: %w", err)
+	}
+	if *out == "" {
+		fmt.Printf("%s\n", b)
+		fmt.Fprintf(os.Stderr, "anchored %d event(s); commit this anchor somewhere you do not control to detect later deletion\n", anchor.EventCount)
+		return nil
+	}
+	if err := os.WriteFile(*out, append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "wrote anchor for %d event(s) to %s\n", anchor.EventCount, *out)
+	return nil
 }
 
 // runAuditExport reads an existing JSONL audit log and writes a weaver-spec-aligned
@@ -751,10 +848,14 @@ func runAuditSummarize(args []string) error {
 	return nil
 }
 
-// runAuditVerify checks the tamper-evident hash chain of a JSONL audit log.
+// runAuditVerify checks the tamper-evident hash chain of a JSONL audit log and,
+// optionally, the Ed25519 signatures (--pubkey) and presence of a previously
+// published anchor (--anchor).
 func runAuditVerify(args []string) error {
 	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
 	logPath := fs.String("log", "", "Path to audit JSONL log to verify")
+	pubKeyPath := fs.String("pubkey", "", "Optional Ed25519 public key (PEM) to verify event signatures")
+	anchorPath := fs.String("anchor", "", "Optional anchor JSON (from 'audit anchor') to confirm the log has not been truncated")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
 	}
@@ -762,7 +863,25 @@ func runAuditVerify(args []string) error {
 		return errors.New("--log is required")
 	}
 
-	f, err := os.Open(*logPath)
+	if err := verifyChainReport(*logPath); err != nil {
+		return err
+	}
+	if *pubKeyPath != "" {
+		if err := verifySignaturesReport(*logPath, *pubKeyPath); err != nil {
+			return err
+		}
+	}
+	if *anchorPath != "" {
+		if err := verifyAnchorReport(*logPath, *anchorPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyChainReport runs the hash-chain check and prints a status line.
+func verifyChainReport(logPath string) error {
+	f, err := os.Open(logPath)
 	if err != nil {
 		return err
 	}
@@ -793,6 +912,67 @@ func runAuditVerify(args []string) error {
 	}
 }
 
+// verifySignaturesReport verifies Ed25519 signatures and prints a status line.
+// A non-empty log with no verifiable signatures is reported as a failure, since
+// the operator explicitly asked for signature verification.
+func verifySignaturesReport(logPath, pubKeyPath string) error {
+	pub, err := audit.LoadPublicKey(pubKeyPath)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	verified, unsigned, err := audit.VerifySignatures(f, pub)
+	if err != nil {
+		var ve *audit.VerifyError
+		if errors.As(err, &ve) {
+			return fmt.Errorf("audit verify: signature: %s", ve.Error())
+		}
+		return fmt.Errorf("audit verify: signature: %w", err)
+	}
+	fmt.Printf("SIGNATURES: %d verified, %d unsigned\n", verified, unsigned)
+	if verified == 0 && unsigned > 0 {
+		return fmt.Errorf("audit verify: no events were signed by the given key")
+	}
+	return nil
+}
+
+// verifyAnchorReport confirms the log still contains the anchored event.
+func verifyAnchorReport(logPath, anchorPath string) error {
+	ab, err := os.ReadFile(anchorPath)
+	if err != nil {
+		return err
+	}
+	var anchor audit.Anchor
+	if err := json.Unmarshal(ab, &anchor); err != nil {
+		return fmt.Errorf("audit verify: parse anchor %q: %w", anchorPath, err)
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	switch err := audit.VerifyAgainstAnchor(f, anchor); {
+	case err == nil:
+		fmt.Printf("ANCHOR: log still contains anchored event seq=%d\n", anchor.LastSeq)
+		return nil
+	case errors.Is(err, audit.ErrAnchorTruncated):
+		fmt.Printf("ANCHOR: FAILED — anchored event seq=%d is missing\n", anchor.LastSeq)
+		return fmt.Errorf("audit verify: %w", err)
+	default:
+		var ve *audit.VerifyError
+		if errors.As(err, &ve) {
+			return fmt.Errorf("audit verify: anchor: %s", ve.Error())
+		}
+		return fmt.Errorf("audit verify: anchor: %w", err)
+	}
+}
+
 // runProxy launches the MCP stdio proxy. The downstream MCP server command
 // is supplied as positional arguments after `--`:
 //
@@ -809,6 +989,12 @@ func runProxy(args []string) error {
 	passthrough := fs.Bool("passthrough", false, "Forward every message without policy evaluation (skeleton mode; useful for validating the relay)")
 	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting (reserved for the TTY approver in issue #29)")
 	debug := fs.Bool("debug", false, "Log every forwarded message to stderr")
+	signKey := fs.String("sign-key", "", "Path to an Ed25519 private key (PEM) to sign each audit event; verify with 'agentfence audit verify --pubkey'")
+	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
+	auditMaxAge := fs.Duration("audit-max-age", 0, "Rotate the audit log once it has been open this long, e.g. 24h (0 = no age rotation; requires --audit-log)")
+	auditKeep := fs.Int("audit-keep", 0, "Number of rotated audit segments to retain (0 = keep all)")
+	var auditSinks stringSliceFlag
+	fs.Var(&auditSinks, "audit-sink", "Ship audit events to an external sink; repeatable. Schemes: http(s)://…, syslog://host:port, syslog+tcp://host:port")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
 	}
@@ -837,7 +1023,16 @@ func runProxy(args []string) error {
 		}
 	}
 
-	auditOut, closeAudit, auditOptions, err := openAuditOutput(*auditLogPath, *tamperEvident)
+	auditOut, closeAudit, auditOptions, err := openAuditOutput(auditConfig{
+		path:          *auditLogPath,
+		tamperEvident: *tamperEvident,
+		signKeyPath:   *signKey,
+		maxSizeBytes:  *auditMaxSize,
+		maxAge:        *auditMaxAge,
+		keep:          *auditKeep,
+		sinkSpecs:     auditSinks,
+		noFileWriter:  io.Discard,
+	})
 	if err != nil {
 		return err
 	}
@@ -881,6 +1076,12 @@ func runProxyHTTP(args []string) error {
 	passthrough := fs.Bool("passthrough", false, "Forward every request without policy evaluation (useful for validating the relay)")
 	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting")
 	debug := fs.Bool("debug", false, "Log every proxied request to stderr")
+	signKey := fs.String("sign-key", "", "Path to an Ed25519 private key (PEM) to sign each audit event; verify with 'agentfence audit verify --pubkey'")
+	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
+	auditMaxAge := fs.Duration("audit-max-age", 0, "Rotate the audit log once it has been open this long, e.g. 24h (0 = no age rotation; requires --audit-log)")
+	auditKeep := fs.Int("audit-keep", 0, "Number of rotated audit segments to retain (0 = keep all)")
+	var auditSinks stringSliceFlag
+	fs.Var(&auditSinks, "audit-sink", "Ship audit events to an external sink; repeatable. Schemes: http(s)://…, syslog://host:port, syslog+tcp://host:port")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
 	}
@@ -911,7 +1112,16 @@ func runProxyHTTP(args []string) error {
 		}
 	}
 
-	auditOut, closeAudit, auditOptions, err := openAuditOutput(*auditLogPath, *tamperEvident)
+	auditOut, closeAudit, auditOptions, err := openAuditOutput(auditConfig{
+		path:          *auditLogPath,
+		tamperEvident: *tamperEvident,
+		signKeyPath:   *signKey,
+		maxSizeBytes:  *auditMaxSize,
+		maxAge:        *auditMaxAge,
+		keep:          *auditKeep,
+		sinkSpecs:     auditSinks,
+		noFileWriter:  io.Discard,
+	})
 	if err != nil {
 		return err
 	}
@@ -939,68 +1149,174 @@ func runProxyHTTP(args []string) error {
 	return httpproxy.Serve(ctx, *listen, opts)
 }
 
-// openAuditOutput returns the audit destination Writer, close func, and writer
-// options. When auditLogPath is empty, audit events are discarded (the proxy MUST NOT
-// interleave audit JSONL with the agent's stdout, which is reserved for
-// JSON-RPC responses). The tamper-evident flag with no log file triggers a
-// stderr warning consistent with `check`.
+// stringSliceFlag is a repeatable string flag (e.g. --audit-sink a --audit-sink b).
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
+
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// auditConfig collects the audit-output flags shared by check, proxy, and
+// proxy-http. noFileWriter is the destination used when path is empty: os.Stdout
+// for check's text mode, io.Discard otherwise (the proxies MUST NOT interleave
+// audit JSONL with the agent's JSON-RPC stdout).
+type auditConfig struct {
+	path          string
+	tamperEvident bool
+	signKeyPath   string
+	maxSizeBytes  int64
+	maxAge        time.Duration
+	keep          int
+	sinkSpecs     []string
+	noFileWriter  io.Writer
+}
+
+// openAuditOutput returns the audit destination Writer, a close func, and the
+// writer options assembled from cfg (tamper-evident chaining, Ed25519 signing,
+// rotation, and external sinks).
 //
 // New files are created with 0o600 (owner-read/write) so audit events —
 // which can contain redacted-but-still-sensitive tool arguments — do not
 // inherit a permissive umask. Pre-existing files are opened in append mode
 // without altering their permissions, on the assumption that the operator
 // chose those bits deliberately.
-func openAuditOutput(auditLogPath string, tamperEvident bool) (io.Writer, func(), audit.Options, error) {
-	options := audit.Options{TamperEvident: tamperEvident}
-	if auditLogPath == "" {
-		if tamperEvident {
-			fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log discards audit events; nothing to verify.")
+//
+// The returned close func tears everything down in the right order — flush and
+// close the file/rotator first, then drain and close any external sink — so a
+// sink never loses buffered events written just before shutdown.
+func openAuditOutput(cfg auditConfig) (io.Writer, func(), audit.Options, error) {
+	options := audit.Options{TamperEvident: cfg.tamperEvident}
+
+	var closers []func()
+	closeAll := func() {
+		for i := len(closers) - 1; i >= 0; i-- {
+			closers[i]()
 		}
-		return io.Discard, func() {}, options, nil
 	}
-	flags := os.O_WRONLY | os.O_CREATE | os.O_APPEND
-	if tamperEvident {
-		flags = os.O_RDWR | os.O_CREATE | os.O_APPEND
-	}
-	f, err := os.OpenFile(auditLogPath, flags, 0o600)
-	if err != nil {
+	fail := func(err error) (io.Writer, func(), audit.Options, error) {
+		closeAll()
 		return nil, nil, audit.Options{}, err
 	}
-	if tamperEvident {
+
+	// Signing is independent of the destination.
+	if cfg.signKeyPath != "" {
+		priv, err := audit.LoadPrivateKey(cfg.signKeyPath)
+		if err != nil {
+			return fail(err)
+		}
+		signer, err := audit.NewSigner(priv)
+		if err != nil {
+			return fail(err)
+		}
+		options.Signer = signer
+	}
+
+	// External sinks are also independent of the destination, so events can be
+	// shipped even when no local file is written.
+	sink, err := audit.ParseSinks(cfg.sinkSpecs, os.Stderr)
+	if err != nil {
+		return fail(err)
+	}
+	if sink != nil {
+		options.Sink = sink
+		closers = append(closers, func() { _ = sink.Close() })
+	}
+
+	rotationRequested := cfg.maxSizeBytes > 0 || cfg.maxAge > 0
+
+	if cfg.path == "" {
+		if rotationRequested {
+			return fail(errors.New("audit: --audit-max-size/--audit-max-age require --audit-log"))
+		}
+		if cfg.tamperEvident {
+			if cfg.noFileWriter == nil || cfg.noFileWriter == io.Discard {
+				fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log discards audit events; nothing to verify.")
+			} else {
+				fmt.Fprintln(os.Stderr, "AgentFence: warning: --tamper-evident without --audit-log produces a chain interleaved with other output; verification will not be reliable.")
+			}
+		}
+		dest := cfg.noFileWriter
+		if dest == nil {
+			dest = io.Discard
+		}
+		return dest, closeAll, options, nil
+	}
+
+	if rotationRequested {
+		rot, err := audit.NewRotator(audit.RotationConfig{
+			Path:         cfg.path,
+			MaxSizeBytes: cfg.maxSizeBytes,
+			MaxAge:       cfg.maxAge,
+			Keep:         cfg.keep,
+		})
+		if err != nil {
+			return fail(err)
+		}
+		closers = append(closers, func() { _ = rot.Close() })
+		if cfg.tamperEvident {
+			lastHash, eventCount, firstChained, err := rot.ResumeState()
+			if err != nil {
+				return fail(fmt.Errorf("audit: existing log chain: %w", err))
+			}
+			if refuseErr := refuseMixedChain(cfg.path, eventCount, firstChained); refuseErr != nil {
+				return fail(refuseErr)
+			}
+			options.InitialPrevHash = lastHash
+		}
+		options.Rotator = rot
+		return rot, closeAll, options, nil
+	}
+
+	flags := os.O_WRONLY | os.O_CREATE | os.O_APPEND
+	if cfg.tamperEvident {
+		flags = os.O_RDWR | os.O_CREATE | os.O_APPEND
+	}
+	f, err := os.OpenFile(cfg.path, flags, 0o600)
+	if err != nil {
+		return fail(err)
+	}
+	closers = append(closers, func() { _ = f.Close() })
+	if cfg.tamperEvident {
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			_ = f.Close()
-			return nil, nil, audit.Options{}, err
+			return fail(err)
 		}
 		lastHash, eventCount, firstChained, err := audit.LastChainState(f)
 		if err != nil {
-			_ = f.Close()
-			return nil, nil, audit.Options{}, fmt.Errorf("audit: existing log chain: %w", err)
+			return fail(fmt.Errorf("audit: existing log chain: %w", err))
 		}
-		// Refuse to append a chain unless the existing log is empty OR
-		// already fully chained from event 1. Two cases get rejected here:
-		//
-		//  1. fully unchained log (firstChained == 0): appending would
-		//     produce a mixed log whose prefix is not integrity-protected.
-		//  2. partial-chain log (firstChained > 1): a previous run already
-		//     produced the mixed state; continuing the chain perpetuates the
-		//     unprotected prefix instead of fixing it.
-		//
-		// In both cases `audit verify` would later surface the file as
-		// PARTIAL; failing early at write time is the symmetric defence.
-		if eventCount > 0 && firstChained != 1 {
-			_ = f.Close()
-			if firstChained == 0 {
-				return nil, nil, audit.Options{}, fmt.Errorf("audit: cannot enable --tamper-evident on existing unchained log %q (%d unchained event(s)); use a new file or convert the log first", auditLogPath, eventCount)
-			}
-			return nil, nil, audit.Options{}, fmt.Errorf("audit: cannot enable --tamper-evident on existing partial-chain log %q (chain starts at event %d of %d; events 1..%d are not integrity-protected); use a new file or convert the log first", auditLogPath, firstChained, eventCount, firstChained-1)
+		if refuseErr := refuseMixedChain(cfg.path, eventCount, firstChained); refuseErr != nil {
+			return fail(refuseErr)
 		}
 		options.InitialPrevHash = lastHash
 		if _, err := f.Seek(0, io.SeekEnd); err != nil {
-			_ = f.Close()
-			return nil, nil, audit.Options{}, err
+			return fail(err)
 		}
 	}
-	return f, func() { _ = f.Close() }, options, nil
+	return f, closeAll, options, nil
+}
+
+// refuseMixedChain rejects enabling --tamper-evident on an existing log that is
+// not already fully chained from event 1, which would otherwise produce a mixed
+// log whose prefix is not integrity-protected. Two cases are rejected:
+//
+//  1. fully unchained log (firstChained == 0): appending would produce a mixed
+//     log whose prefix is not integrity-protected.
+//  2. partial-chain log (firstChained > 1): a previous run already produced the
+//     mixed state; continuing the chain perpetuates the unprotected prefix.
+//
+// In both cases `audit verify` would later surface the file as PARTIAL; failing
+// early at write time is the symmetric defence.
+func refuseMixedChain(path string, eventCount, firstChained int) error {
+	if eventCount == 0 || firstChained == 1 {
+		return nil
+	}
+	if firstChained == 0 {
+		return fmt.Errorf("audit: cannot enable --tamper-evident on existing unchained log %q (%d unchained event(s)); use a new file or convert the log first", path, eventCount)
+	}
+	return fmt.Errorf("audit: cannot enable --tamper-evident on existing partial-chain log %q (chain starts at event %d of %d; events 1..%d are not integrity-protected); use a new file or convert the log first", path, firstChained, eventCount, firstChained-1)
 }
 
 // runPolicySubcmd dispatches policy sub-commands: test, validate.
