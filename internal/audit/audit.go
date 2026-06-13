@@ -23,7 +23,9 @@ import (
 //	"1" — initial schema with session_id, seq, optional hash chain.
 //	"2" — added optional "mode" field ("dry_run" for simulated enforcement)
 //	      and optional "memory_write" summary for durable-memory-write events.
-const CurrentSchemaVersion = "2"
+//	"3" — added optional "signature" field (base64 Ed25519 signature over the
+//	      event's canonical digest) for writer authentication.
+const CurrentSchemaVersion = "3"
 
 // ModeDryRun marks an audit event produced under dry-run evaluation. Events
 // without an explicit Mode are treated as enforced.
@@ -75,6 +77,14 @@ type Event struct {
 	Mode          string                 `json:"mode,omitempty"`
 	PrevHash      string                 `json:"prev_hash,omitempty"`
 	Hash          string                 `json:"hash,omitempty"`
+
+	// Signature is a base64-encoded Ed25519 signature over the event's
+	// canonical digest (the SHA-256 of the JSON encoding with Hash and
+	// Signature cleared). It is populated only when the Writer is configured
+	// with a Signer. Unlike the hash chain, the signature authenticates the
+	// writer: an attacker who rewrites an event cannot re-sign it without the
+	// private key. Verify with VerifySignature / `audit verify --pubkey`.
+	Signature string `json:"signature,omitempty"`
 }
 
 // Options configures a Writer's per-session and chain behaviour.
@@ -89,6 +99,23 @@ type Options struct {
 	// InitialPrevHash seeds the hash chain when appending to an existing
 	// tamper-evident log. Leave empty for a new chain.
 	InitialPrevHash string
+
+	// Signer, when non-nil, signs every event with Ed25519. The signature is
+	// recorded in the event's "signature" field. Signing is independent of
+	// TamperEvident: it authenticates the writer, while chaining detects
+	// reordering/deletion.
+	Signer *Signer
+
+	// Rotator, when non-nil, is the segment manager the Writer also writes
+	// through (callers pass the same *Rotator as the io.Writer). On rotation
+	// the Writer starts a fresh chain so each segment is independently
+	// verifiable.
+	Rotator *Rotator
+
+	// Sink, when non-nil, receives a copy of every successfully written event
+	// for delivery to an external destination (syslog, HTTP webhook). Delivery
+	// is best-effort and never blocks the Write path.
+	Sink Sink
 }
 
 // Writer serialises Events as newline-delimited JSON. It owns the per-session
@@ -101,6 +128,9 @@ type Writer struct {
 	seq           uint64
 	tamperEvident bool
 	prevHash      string
+	signer        *Signer
+	rotator       *Rotator
+	sink          Sink
 }
 
 // NewWriter returns a Writer that does not chain events.
@@ -122,6 +152,9 @@ func NewWriterOptions(w io.Writer, opts Options) *Writer {
 		sessionID:     sid,
 		tamperEvident: opts.TamperEvident,
 		prevHash:      opts.InitialPrevHash,
+		signer:        opts.Signer,
+		rotator:       opts.Rotator,
+		sink:          opts.Sink,
 	}
 }
 
@@ -160,6 +193,21 @@ func (w *Writer) Write(event Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Rotation is decided before chain fields are composed: a fresh segment
+	// starts a new chain (empty prev_hash) so each segment verifies on its own.
+	// The size check uses the segment's current byte count, so the rollover
+	// happens just before the first event that would overflow it — a standard
+	// "rotate when full, write into the new file" policy.
+	if w.rotator != nil {
+		rotated, err := w.rotator.maybeRotate()
+		if err != nil {
+			return fmt.Errorf("audit: rotate: %w", err)
+		}
+		if rotated {
+			w.prevHash = ""
+		}
+	}
+
 	nextSeq := w.seq + 1
 	event.SchemaVersion = CurrentSchemaVersion
 	event.SessionID = w.sessionID
@@ -175,6 +223,14 @@ func (w *Writer) Write(event Event) error {
 		event.Hash = h
 	}
 
+	if w.signer != nil {
+		sig, err := w.signer.signEvent(event)
+		if err != nil {
+			return fmt.Errorf("audit: sign event: %w", err)
+		}
+		event.Signature = sig
+	}
+
 	b, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("audit: marshal event: %w", err)
@@ -187,6 +243,12 @@ func (w *Writer) Write(event Event) error {
 	w.seq = nextSeq
 	if w.tamperEvident {
 		w.prevHash = event.Hash
+	}
+
+	// Fan out to the external sink last and best-effort: a slow or failing
+	// sink must never block enforcement or roll back the committed log line.
+	if w.sink != nil {
+		w.sink.Emit(b)
 	}
 	return nil
 }
@@ -213,10 +275,29 @@ func hashEvent(e Event) (string, error) {
 	if e.Hash != "" {
 		return "", fmt.Errorf("audit: hashEvent called with non-empty Hash field")
 	}
+	// The signature is layered on top of the hash and must never feed back
+	// into it, otherwise verification (which clears Hash before recomputing)
+	// could not reproduce the writer's digest.
+	e.Signature = ""
 	b, err := json.Marshal(e)
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// signingDigest returns the SHA-256 digest signed by a Signer and checked by
+// VerifySignature: the canonical JSON encoding of e with its Hash and Signature
+// fields cleared. It is the raw-byte form of hashEvent, so a signature and the
+// chain hash attest the same canonical bytes. Unlike hashEvent it tolerates a
+// pre-set Hash (verification reads stored events that still carry one).
+func signingDigest(e Event) ([sha256.Size]byte, error) {
+	e.Hash = ""
+	e.Signature = ""
+	b, err := json.Marshal(e)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(b), nil
 }
