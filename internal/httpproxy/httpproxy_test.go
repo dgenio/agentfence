@@ -589,3 +589,270 @@ func mcpUnmarshal(b []byte, v *mcp.JSONRPCResponse) error {
 	*v = r
 	return nil
 }
+
+// newHandlerOpts builds a Handler against upstream with the default policy,
+// letting a test mutate the Options (e.g. set OnBatch or AuthToken).
+func newHandlerOpts(t *testing.T, upstream *httptest.Server, mutate func(*Options)) (*Handler, *bytes.Buffer) {
+	t.Helper()
+	eng, err := engine.New(testPolicy(t))
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditBuf := &bytes.Buffer{}
+	opts := Options{
+		Engine:      eng,
+		AuditWriter: audit.NewWriterOptions(auditBuf, audit.Options{SessionID: "http-session"}),
+		Upstream:    u,
+	}
+	if mutate != nil {
+		mutate(&opts)
+	}
+	h, err := NewHandler(opts)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h, auditBuf
+}
+
+func postRaw(t *testing.T, h http.Handler, body string, headers map[string]string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Result()
+}
+
+// TestHTTPBatchRejectedByDefault verifies a JSON-RPC batch body is refused
+// (fail-closed) and never reaches the upstream under the default OnBatch.
+func TestHTTPBatchRejectedByDefault(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+	}))
+	defer upstream.Close()
+
+	h, _ := newHandler(t, testPolicy(t), upstream, DenyAllApprover{})
+	batch := "[" + toolsCallBody("1", "filesystem.read", `{"path":"README.md"}`) + "," +
+		toolsCallBody("2", "github.delete_repo", `{}`) + "]"
+	resp := postJSONRPC(t, h, batch)
+	defer resp.Body.Close()
+
+	if spy.hit {
+		t.Fatal("a rejected batch must not reach upstream")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var jr mcp.JSONRPCResponse
+	if err := mcpUnmarshal(body, &jr); err != nil {
+		t.Fatalf("batch rejection not JSON-RPC: %v (%q)", err, body)
+	}
+	if jr.Error == nil || jr.Error.Code != mcp.ErrorCodeBatchNotGated {
+		t.Errorf("expected batch-not-gated error, got %+v", jr.Error)
+	}
+}
+
+// TestHTTPBatchEvaluateAllAllowedForwards verifies an all-allowed batch is
+// forwarded intact when OnBatch=evaluate.
+func TestHTTPBatchEvaluateAllAllowedForwards(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+		spy.body, _ = io.ReadAll(r.Body)
+		io.WriteString(w, `[{"jsonrpc":"2.0","id":1,"result":{}}]`)
+	}))
+	defer upstream.Close()
+
+	h, auditBuf := newHandlerOpts(t, upstream, func(o *Options) { o.OnBatch = BatchEvaluate })
+	batch := "[" + toolsCallBody("1", "filesystem.read", `{"path":"a"}`) + "," +
+		toolsCallBody("2", "filesystem.read", `{"path":"b"}`) + "]"
+	resp := postJSONRPC(t, h, batch)
+	defer resp.Body.Close()
+
+	if !spy.hit {
+		t.Fatal("all-allowed batch must be forwarded to upstream")
+	}
+	if strings.Count(auditBuf.String(), `"decision":"allow"`) != 2 {
+		t.Errorf("both members should be audited as allow; got %q", auditBuf.String())
+	}
+}
+
+// TestHTTPBatchEvaluateOneDeniedRejectsAll verifies an evaluate-mode batch with
+// any denied member is rejected wholesale and never forwarded.
+func TestHTTPBatchEvaluateOneDeniedRejectsAll(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+	}))
+	defer upstream.Close()
+
+	h, _ := newHandlerOpts(t, upstream, func(o *Options) { o.OnBatch = BatchEvaluate })
+	batch := "[" + toolsCallBody("1", "filesystem.read", `{"path":"a"}`) + "," +
+		toolsCallBody("2", "github.delete_repo", `{}`) + "]"
+	resp := postJSONRPC(t, h, batch)
+	defer resp.Body.Close()
+
+	if spy.hit {
+		t.Fatal("a batch with a denied member must not be forwarded")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var jr mcp.JSONRPCResponse
+	if err := mcpUnmarshal(body, &jr); err != nil {
+		t.Fatalf("batch rejection not JSON-RPC: %v (%q)", err, body)
+	}
+	if jr.Error == nil || jr.Error.Code != mcp.ErrorCodeBlockedByPolicy {
+		t.Errorf("expected blocked-by-policy error, got %+v", jr.Error)
+	}
+}
+
+// TestHTTPUnparsedForwardedByDefault verifies a non-JSON-RPC body is still
+// forwarded transparently under the default OnUnparsed.
+func TestHTTPUnparsedForwardedByDefault(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+		io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	h, _ := newHandler(t, testPolicy(t), upstream, DenyAllApprover{})
+	resp := postRaw(t, h, "this is not json-rpc", nil)
+	defer resp.Body.Close()
+
+	if !spy.hit {
+		t.Fatal("default OnUnparsed=forward must forward an unparseable body")
+	}
+}
+
+// TestHTTPUnparsedRejected verifies OnUnparsed=reject refuses a non-JSON-RPC
+// body instead of forwarding it uninspected.
+func TestHTTPUnparsedRejected(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+	}))
+	defer upstream.Close()
+
+	h, _ := newHandlerOpts(t, upstream, func(o *Options) { o.OnUnparsed = UnparsedReject })
+
+	// Non-JSON body → plain HTTP 400.
+	resp := postRaw(t, h, "garbage", nil)
+	defer resp.Body.Close()
+	if spy.hit {
+		t.Fatal("OnUnparsed=reject must not forward")
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("non-JSON body should be HTTP 400, got %d", resp.StatusCode)
+	}
+
+	// JSON-shaped but not valid JSON-RPC request → JSON-RPC error envelope.
+	resp2 := postRaw(t, h, `{"not":"a request"`, nil)
+	defer resp2.Body.Close()
+	body, _ := io.ReadAll(resp2.Body)
+	var jr mcp.JSONRPCResponse
+	if err := mcpUnmarshal(body, &jr); err != nil {
+		t.Fatalf("rejection of JSON-shaped body not JSON-RPC: %v (%q)", err, body)
+	}
+	if jr.Error == nil || jr.Error.Code != mcp.ErrorCodeRequestRejected {
+		t.Errorf("expected request-rejected error, got %+v", jr.Error)
+	}
+}
+
+// TestHTTPAuthRequired verifies that a configured bearer token is enforced.
+func TestHTTPAuthRequired(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("proxy must not relay the gate token upstream; got %q", got)
+		}
+		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`)
+	}))
+	defer upstream.Close()
+
+	h, _ := newHandlerOpts(t, upstream, func(o *Options) { o.AuthToken = "s3cret" })
+
+	// Missing token → 401, never forwarded.
+	noTok := postRaw(t, h, toolsCallBody("1", "filesystem.read", `{"path":"a"}`), nil)
+	noTok.Body.Close()
+	if noTok.StatusCode != http.StatusUnauthorized {
+		t.Errorf("missing token should be 401, got %d", noTok.StatusCode)
+	}
+	if spy.hit {
+		t.Fatal("unauthenticated request must not reach upstream")
+	}
+
+	// Wrong token → 401.
+	wrong := postRaw(t, h, toolsCallBody("1", "filesystem.read", `{"path":"a"}`),
+		map[string]string{"Authorization": "Bearer nope"})
+	wrong.Body.Close()
+	if wrong.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong token should be 401, got %d", wrong.StatusCode)
+	}
+
+	// Correct token → forwarded.
+	ok := postRaw(t, h, toolsCallBody("1", "filesystem.read", `{"path":"a"}`),
+		map[string]string{"Authorization": "Bearer s3cret"})
+	ok.Body.Close()
+	if !spy.hit {
+		t.Fatal("authenticated allowed call must reach upstream")
+	}
+}
+
+// TestHTTPUpstreamFailureSurfacesDistinctError verifies an unreachable upstream
+// yields a JSON-RPC upstream-unavailable error (not a generic 502) addressed to
+// the request id.
+func TestHTTPUpstreamFailureSurfacesDistinctError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	upstream.Close() // close immediately so Do() fails
+
+	h, _ := newHandler(t, testPolicy(t), upstream, DenyAllApprover{})
+	resp := postJSONRPC(t, h, toolsCallBody("9", "filesystem.read", `{"path":"a"}`))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("JSON-RPC error envelope should be HTTP 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var jr mcp.JSONRPCResponse
+	if err := mcpUnmarshal(body, &jr); err != nil {
+		t.Fatalf("upstream failure not JSON-RPC: %v (%q)", err, body)
+	}
+	if jr.Error == nil || jr.Error.Code != mcp.ErrorCodeUpstreamUnavailable {
+		t.Errorf("expected upstream-unavailable error, got %+v", jr.Error)
+	}
+	if string(jr.ID) != "9" {
+		t.Errorf("upstream failure must echo request id; got %s", jr.ID)
+	}
+	// The agent-facing message must not leak the upstream URL/dial address.
+	host := strings.TrimPrefix(upstream.URL, "http://")
+	if jr.Error != nil && (strings.Contains(jr.Error.Message, "http://") || strings.Contains(jr.Error.Message, host)) {
+		t.Errorf("upstream error message leaks upstream address: %q", jr.Error.Message)
+	}
+}
+
+// TestHTTPNonJSONRPCUpstreamFailureIsPlainHTTP verifies that when a non-JSON-RPC
+// body is forwarded (OnUnparsed=forward) and the upstream fails, the client gets
+// a plain HTTP 502 rather than a JSON-RPC envelope.
+func TestHTTPNonJSONRPCUpstreamFailureIsPlainHTTP(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	upstream.Close() // closed so Do() fails
+
+	h, _ := newHandler(t, testPolicy(t), upstream, DenyAllApprover{})
+	resp := postRaw(t, h, "this is not json-rpc", nil)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("non-JSON-RPC upstream failure should be HTTP 502, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "jsonrpc") {
+		t.Errorf("non-JSON-RPC failure must not be a JSON-RPC envelope; got %q", body)
+	}
+}

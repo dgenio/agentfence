@@ -2110,3 +2110,61 @@ func TestNewProxyApproverInteractiveRequiresTTY(t *testing.T) {
 		t.Error("expected a non-nil approver when /dev/tty is available")
 	}
 }
+
+func TestParseBatchPolicy(t *testing.T) {
+	if _, err := parseBatchPolicy("reject"); err != nil {
+		t.Errorf("reject should be valid: %v", err)
+	}
+	if _, err := parseBatchPolicy("evaluate"); err != nil {
+		t.Errorf("evaluate should be valid: %v", err)
+	}
+	if _, err := parseBatchPolicy("bogus"); err == nil {
+		t.Error("bogus on-batch value must error")
+	}
+}
+
+func TestParseUnparsedPolicy(t *testing.T) {
+	if _, err := parseUnparsedPolicy("forward"); err != nil {
+		t.Errorf("forward should be valid: %v", err)
+	}
+	if _, err := parseUnparsedPolicy("reject"); err != nil {
+		t.Errorf("reject should be valid: %v", err)
+	}
+	if _, err := parseUnparsedPolicy("bogus"); err == nil {
+		t.Error("bogus on-unparsed value must error")
+	}
+}
+
+func TestIsLoopbackListen(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8787", true},
+		{"localhost:8787", true},
+		{"[::1]:8787", true},
+		{"0.0.0.0:8787", false},
+		{":8787", false},
+		{"192.168.1.10:8787", false},
+		{"[::]:8787", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopbackListen(tc.addr); got != tc.want {
+			t.Errorf("isLoopbackListen(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+// TestRunProxyHTTPRejectsBadEnum verifies invalid --on-batch/--on-unparsed
+// values fail fast before the server starts.
+func TestRunProxyHTTPRejectsBadEnum(t *testing.T) {
+	_, _, err := captureOutput(t, func() error {
+		return runProxyHTTP([]string{"--upstream", "http://localhost:1/mcp", "--passthrough", "--on-batch", "bogus"})
+	})
+	if err == nil {
+		t.Fatal("invalid --on-batch must error")
+	}
+	if !strings.Contains(err.Error(), "on-batch") {
+		t.Errorf("error %q should name the flag", err.Error())
+	}
+}

@@ -17,16 +17,33 @@
 // other than tools/call — is forwarded transparently so initialize, ping,
 // notifications, and the SSE GET channel keep working.
 //
+// Request-body edge cases are handled fail-closed rather than forwarded
+// uninspected:
+//
+//   - batch  → a JSON-RPC batch (array) body is refused by default
+//     (Options.OnBatch = BatchReject), or every member is gated and the batch
+//     forwarded only if all are allowed (BatchEvaluate).
+//   - oversize → a body over maxBodyBytes is refused (JSON-RPC error envelope
+//     when it looked like JSON-RPC, else HTTP 413).
+//   - unparseable → forwarded by default (Options.OnUnparsed = UnparsedForward)
+//     or refused (UnparsedReject).
+//
+// When Options.AuthToken is set, every request must carry a matching
+// "Authorization: Bearer <token>" header or it is refused with HTTP 401.
+//
 // Because JSON-RPC carries errors in a 200 response envelope, a policy denial
-// is returned as HTTP 200 with a JSON-RPC error body, not an HTTP error status.
-// See docs/threat-model.md for the HTTP-specific surface (auth, TLS, and
-// multi-client session handling) that the stdio transport does not have.
+// is returned as HTTP 200 with a JSON-RPC error body, not an HTTP error status;
+// upstream/proxy failures are surfaced the same way with distinct error codes
+// (see internal/mcp). See docs/threat-model.md for the HTTP-specific surface
+// (auth, TLS, and multi-client session handling) that the stdio transport does
+// not have.
 package httpproxy
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,6 +83,34 @@ type Approver = approval.Approver
 // non-interactive contexts (CI, --no-interactive).
 type DenyAllApprover = approval.DenyAllApprover
 
+// BatchPolicy controls how the proxy treats a JSON-RPC batch (array) body. The
+// single-request parser does not model batches, so without a policy a batch
+// would be forwarded uninspected and could smuggle a denied tools/call.
+type BatchPolicy string
+
+const (
+	// BatchReject refuses any batch body with a JSON-RPC error. This is the
+	// fail-closed default.
+	BatchReject BatchPolicy = "reject"
+	// BatchEvaluate evaluates every tools/call member against the policy and
+	// forwards the whole batch only if all members are allowed; if any member
+	// is denied (or an ask is not approved) the entire batch is rejected.
+	BatchEvaluate BatchPolicy = "evaluate"
+)
+
+// UnparsedPolicy controls how the proxy treats a POST body that does not parse
+// as a JSON-RPC request at all.
+type UnparsedPolicy string
+
+const (
+	// UnparsedForward forwards an unparseable body transparently (the historical
+	// behavior) so non-JSON-RPC traffic the proxy does not model keeps working.
+	UnparsedForward UnparsedPolicy = "forward"
+	// UnparsedReject refuses an unparseable body instead of forwarding it
+	// uninspected.
+	UnparsedReject UnparsedPolicy = "reject"
+)
+
 // Options configures NewHandler. Engine, AuditWriter, and Upstream are required
 // unless Passthrough is true.
 type Options struct {
@@ -95,6 +140,15 @@ type Options struct {
 	// Client is the HTTP client used for upstream requests. Defaults to a
 	// client with no timeout (so streamed/SSE responses are not cut off).
 	Client *http.Client
+	// OnBatch controls JSON-RPC batch (array) bodies. Defaults to BatchReject.
+	OnBatch BatchPolicy
+	// OnUnparsed controls POST bodies that do not parse as JSON-RPC. Defaults
+	// to UnparsedForward.
+	OnUnparsed UnparsedPolicy
+	// AuthToken, when non-empty, requires every request to carry an
+	// "Authorization: Bearer <token>" header matching it; requests without a
+	// valid token are refused with HTTP 401. Empty disables authentication.
+	AuthToken string
 }
 
 // Handler is the http.Handler that proxies and gates MCP-over-HTTP traffic.
@@ -123,6 +177,22 @@ func NewHandler(opts Options) (*Handler, error) {
 	}
 	if opts.Approver == nil {
 		opts.Approver = DenyAllApprover{}
+	}
+	if opts.OnBatch == "" {
+		opts.OnBatch = BatchReject
+	}
+	switch opts.OnBatch {
+	case BatchReject, BatchEvaluate:
+	default:
+		return nil, fmt.Errorf("httpproxy: invalid OnBatch %q (want %q or %q)", opts.OnBatch, BatchReject, BatchEvaluate)
+	}
+	if opts.OnUnparsed == "" {
+		opts.OnUnparsed = UnparsedForward
+	}
+	switch opts.OnUnparsed {
+	case UnparsedForward, UnparsedReject:
+	default:
+		return nil, fmt.Errorf("httpproxy: invalid OnUnparsed %q (want %q or %q)", opts.OnUnparsed, UnparsedForward, UnparsedReject)
 	}
 	if opts.Logger == nil {
 		opts.Logger = io.Discard
@@ -171,27 +241,71 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(h.opts.Logger, "httpproxy: %s %s\n", r.Method, r.URL.Path)
 	}
 
+	// Authenticate first when a token is configured, so an unauthenticated
+	// client can reach neither the policy edge nor the upstream server.
+	if h.opts.AuthToken != "" && !h.authorized(r) {
+		fmt.Fprintf(h.opts.Logger, "httpproxy: rejected unauthenticated %s %s\n", r.Method, r.URL.Path)
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "httpproxy: missing or invalid bearer token", http.StatusUnauthorized)
+		return
+	}
+
 	// Passthrough or anything that is not a POST cannot carry a tools/call we
 	// gate; forward it transparently with its body intact.
 	if h.opts.Passthrough || r.Method != http.MethodPost {
-		h.forward(w, r, nil, "")
+		h.forward(w, r, nil, "", nil, false)
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
-		http.Error(w, "httpproxy: error reading request body", http.StatusBadGateway)
+		fmt.Fprintln(h.opts.Logger, "httpproxy: read request body:", err)
+		h.writeJSONRPC(w, mcp.ProxyError(nil, "error reading request body"))
 		return
 	}
 	if len(body) > maxBodyBytes {
-		http.Error(w, "httpproxy: request body exceeds limit", http.StatusRequestEntityTooLarge)
+		// Oversize bodies are refused, never forwarded uninspected. Answer with
+		// a JSON-RPC error envelope when the body looked like JSON-RPC so the
+		// agent sees a structured error; otherwise a plain HTTP 413.
+		fmt.Fprintln(h.opts.Logger, "httpproxy: rejecting oversize request body")
+		if mcp.LooksLikeJSONRPC(body) {
+			h.writeJSONRPC(w, mcp.RequestRejectedError(nil, "request body exceeds limit"))
+		} else {
+			http.Error(w, "httpproxy: request body exceeds limit", http.StatusRequestEntityTooLarge)
+		}
+		return
+	}
+
+	// A JSON-RPC batch (array) body bypasses the single-request parser, so
+	// handle it explicitly per the configured policy instead of forwarding it
+	// ungated (which could smuggle a denied tools/call inside the array).
+	if mcp.IsBatch(body) {
+		h.handleBatch(w, r, body)
 		return
 	}
 
 	req, perr := mcp.ParseRequest(body)
-	if perr != nil || req.Method != mcp.MethodToolsCall {
-		// Not a gateable tools/call — forward transparently with the buffered body.
-		h.forward(w, r, body, "")
+	if perr != nil {
+		// Unparseable as JSON-RPC: forward transparently, or refuse if the
+		// operator opted into a fail-closed boundary.
+		if h.opts.OnUnparsed == UnparsedReject {
+			fmt.Fprintln(h.opts.Logger, "httpproxy: rejecting unparseable body:", perr)
+			if mcp.LooksLikeJSONRPC(body) {
+				h.writeJSONRPC(w, mcp.RequestRejectedError(nil, "request body is not valid JSON-RPC"))
+			} else {
+				http.Error(w, "httpproxy: request body is not valid JSON-RPC", http.StatusBadRequest)
+			}
+			return
+		}
+		// Unparseable, non-JSON-RPC body forwarded transparently: an upstream
+		// failure stays a plain HTTP error, not a JSON-RPC envelope.
+		h.forward(w, r, body, "", nil, false)
+		return
+	}
+	if req.Method != mcp.MethodToolsCall {
+		// Recognized JSON-RPC but not a gateable tools/call (initialize, ping,
+		// notifications). Forward transparently so the session keeps working.
+		h.forward(w, r, body, "", req.ID, true)
 		return
 	}
 
@@ -236,7 +350,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch result.Decision {
 	case policy.DecisionAllow:
-		h.forward(w, r, body, call.Tool)
+		h.forward(w, r, body, call.Tool, req.ID, true)
 	case policy.DecisionDeny:
 		h.writeJSONRPC(w, mcp.BlockedByPolicyError(req.ID, result.Reason))
 	default:
@@ -246,11 +360,80 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// authorized reports whether r carries the configured bearer token. The token
+// is compared in constant time so the proxy does not leak it via timing.
+func (h *Handler) authorized(r *http.Request) bool {
+	const prefix = "Bearer "
+	got := r.Header.Get("Authorization")
+	if !strings.HasPrefix(got, prefix) {
+		return false
+	}
+	token := strings.TrimSpace(got[len(prefix):])
+	return subtle.ConstantTimeCompare([]byte(token), []byte(h.opts.AuthToken)) == 1
+}
+
+// handleBatch applies the configured BatchPolicy to a JSON-RPC batch body.
+func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request, body []byte) {
+	if h.opts.OnBatch == BatchReject {
+		fmt.Fprintln(h.opts.Logger, "httpproxy: rejecting ungated JSON-RPC batch body")
+		h.writeJSONRPC(w, mcp.BatchNotGatedError(nil, "send one request per body, or run with --on-batch evaluate"))
+		return
+	}
+
+	// BatchEvaluate: evaluate every tools/call member and forward the whole
+	// batch only if all members are allowed (all-or-nothing), so a denied
+	// member can never ride along with allowed ones.
+	reqs, err := mcp.ParseBatch(body)
+	if err != nil {
+		h.writeJSONRPC(w, mcp.RequestRejectedError(nil, "invalid JSON-RPC batch: "+err.Error()))
+		return
+	}
+	for _, req := range reqs {
+		if req.Method != mcp.MethodToolsCall {
+			continue
+		}
+		params, perr := mcp.ParseToolCallParams(req.Params)
+		if perr != nil {
+			h.writeJSONRPC(w, mcp.InvalidParamsError(req.ID, perr.Error()))
+			return
+		}
+		fallback := fmt.Sprintf("call-%d", atomic.AddUint64(&h.callCounter, 1))
+		call := params.ToToolCall(mcp.CallIDFromRequestID(req.ID, fallback))
+		result, event := h.sess.Evaluate(call)
+		if werr := h.opts.AuditWriter.Write(event); werr != nil {
+			fmt.Fprintln(h.opts.Logger, "httpproxy: audit write:", werr)
+		}
+		if result.Decision == policy.DecisionAllow {
+			continue
+		}
+		if result.Decision == policy.DecisionAsk {
+			if approved, aerr := h.opts.Approver.Request(r.Context(), call); aerr == nil && approved {
+				continue
+			}
+		}
+		// Any non-allow member fails the whole batch.
+		h.writeJSONRPC(w, mcp.BlockedByPolicyError(nil,
+			fmt.Sprintf("batch rejected: tools/call %q -> %s: %s", call.Tool, result.Decision, result.Reason)))
+		return
+	}
+	// All members allowed: forward the batch unchanged. Batch responses are not
+	// split for per-member taint observation, so no observeTool is attributed.
+	// A batch is JSON-RPC, so an upstream failure is returned as an envelope.
+	h.forward(w, r, body, "", nil, true)
+}
+
 // forward proxies r to the upstream MCP server and relays the response. When
 // body is non-nil it is used as the request body (already buffered for
 // inspection); otherwise r.Body is streamed. observeTool, when set, attributes
-// the response to a tool for taint observation.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, observeTool string) {
+// the response to a tool for taint observation. id is the originating JSON-RPC
+// request id (or nil) used to address a failure back to the agent distinctly
+// from a policy block. jsonRPC reports whether the request is JSON-RPC: when
+// true a failure is returned as a JSON-RPC error envelope (HTTP 200), otherwise
+// it is a plain HTTP 502 so non-JSON-RPC clients (SSE GET, passthrough, and
+// transparently-forwarded bodies) keep the HTTP contract they expect. Failure
+// detail is logged operator-side; the agent-facing message never echoes the
+// upstream URL or dial address.
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, observeTool string, id json.RawMessage, jsonRPC bool) {
 	target := h.targetURL(r)
 
 	var reqBody io.Reader
@@ -262,12 +445,24 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 
 	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, reqBody)
 	if err != nil {
-		http.Error(w, "httpproxy: build upstream request: "+err.Error(), http.StatusBadGateway)
+		fmt.Fprintln(h.opts.Logger, "httpproxy: build upstream request:", err)
+		if jsonRPC {
+			h.writeJSONRPC(w, mcp.ProxyError(id, "could not build upstream request"))
+		} else {
+			http.Error(w, "httpproxy: could not build upstream request", http.StatusBadGateway)
+		}
 		return
 	}
 	copyHeader(outReq.Header, r.Header)
 	removeHopByHopHeaders(outReq.Header)
 	outReq.Header.Del("Host")
+	// When the proxy enforces its own bearer token, that header is the client's
+	// credential to AgentFence, not to the upstream; strip it so the gate token
+	// is never relayed onward. Without proxy auth, preserve the client's
+	// Authorization header so upstreams that authenticate the client still work.
+	if h.opts.AuthToken != "" {
+		outReq.Header.Del("Authorization")
+	}
 	// Drop the client's Accept-Encoding so Go's transport sets and transparently
 	// decompresses its own encoding; otherwise observeResponse() would see
 	// compressed bytes it cannot parse as JSON for taint observation.
@@ -278,7 +473,12 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 
 	resp, err := h.client.Do(outReq)
 	if err != nil {
-		http.Error(w, "httpproxy: upstream request failed: "+err.Error(), http.StatusBadGateway)
+		fmt.Fprintln(h.opts.Logger, "httpproxy: upstream request failed:", err)
+		if jsonRPC {
+			h.writeJSONRPC(w, mcp.UpstreamError(id, sanitizedUpstreamReason(err)))
+		} else {
+			http.Error(w, "httpproxy: upstream MCP server unavailable", http.StatusBadGateway)
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -304,6 +504,21 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 
 	if capture != nil {
 		h.observeResponse(observeTool, contentType, capture.Bytes())
+	}
+}
+
+// sanitizedUpstreamReason returns a short description of an upstream request
+// failure for the agent-facing JSON-RPC error envelope. It deliberately does
+// not echo the upstream URL or dial address (Go wraps those in *url.Error /
+// *net.OpError); the full error is logged operator-side instead.
+func sanitizedUpstreamReason(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "request canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request timed out"
+	default:
+		return "the upstream server could not be reached"
 	}
 }
 

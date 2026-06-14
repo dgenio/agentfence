@@ -79,22 +79,31 @@ It applies the **same** decision, redaction, approval, and hash-chained
 audit semantics as the stdio proxy, but the HTTP transport adds surface the
 stdio path does not have:
 
-- **Authentication and TLS are the operator's responsibility.** The proxy
-  forwards incoming request headers to the upstream (so a bearer token the
-  client sends still reaches the server) but does not itself authenticate
-  clients or originate TLS. Bind `--listen` to loopback, and terminate or
-  originate TLS at a trusted layer; never expose the listener to untrusted
-  networks. The network-isolation invariant above applies between the
-  proxy and the upstream just as it does for stdio.
+- **Authentication and TLS.** TLS termination remains the operator's
+  responsibility (terminate or originate it at a trusted layer). The proxy can
+  authenticate clients itself: set `--auth-token` (or
+  `$AGENTFENCE_PROXY_AUTH_TOKEN`) to require an
+  `Authorization: Bearer <token>` header on every request; unauthenticated
+  requests get HTTP 401 and reach neither the policy edge nor the upstream. The
+  gate token is consumed by the proxy and **not** relayed upstream; without a
+  configured token the client's `Authorization` header is still forwarded so
+  upstreams that authenticate the client keep working. Prefer loopback for
+  `--listen`; binding to a non-loopback address without a token prints a startup
+  warning. The network-isolation invariant above applies between the proxy and
+  the upstream just as it does for stdio.
 - **Sessions and multi-client use.** A single running proxy holds one
   evaluation session, so taint tracking (when enabled) is shared across all
   clients that connect to it. For per-client isolation, run one proxy per
   client. Audit events from concurrent clients interleave in the single
   log; the per-event `session_id` identifies the proxy run, not the client.
-- **Batching limitation.** Only single JSON-RPC request bodies are parsed
-  for a `tools/call`. A JSON-RPC *batch* (array) body is forwarded
-  transparently and is **not** gated; do not rely on AgentFence to enforce
-  policy on batched requests.
+- **Batch and unparseable bodies are fail-closed.** A JSON-RPC *batch*
+  (array) body is **refused** by default (`--on-batch reject`) so a denied
+  `tools/call` cannot be smuggled inside an array; `--on-batch evaluate` gates
+  every member and forwards the batch only if all are allowed (all-or-nothing).
+  An oversize body is refused rather than forwarded uninspected. A body that
+  does not parse as JSON-RPC is forwarded by default (`--on-unparsed forward`,
+  preserving non-JSON-RPC traffic) or refused with `--on-unparsed reject`. See
+  [`batch-handling.md`](batch-handling.md) for the cross-transport design note.
 - **Denials are HTTP 200.** Per JSON-RPC convention, a policy denial is
   returned as an HTTP 200 response carrying a JSON-RPC error envelope, not
   an HTTP error status.
@@ -163,6 +172,12 @@ it does **not** catch:
   parsed — for SSE the JSON-RPC payload is reassembled from the event's
   `data:` frames — so a result streamed over SSE taints later calls the same
   way the stdio proxy's results do.
+- **Batches are not observed for taint.** With `--on-batch evaluate` the proxy
+  gates every `tools/call` *request* in the batch, but it forwards the batch
+  unchanged and does not split the batch *response* per member, so tool results
+  returned inside a batch reply are **not** fed to the taint tracker. A value
+  exfiltrated through a batched call therefore will not taint a later call.
+  Prefer the default `--on-batch reject` when taint tracking is relied upon.
 - **False positives are possible** when legitimate arguments coincide with
   earlier output; `min_length` and `on_tainted_argument: escalate`
   (rather than `deny`) keep that failure mode safe (a human is asked).

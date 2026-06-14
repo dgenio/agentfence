@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -565,7 +566,7 @@ func printUsage() {
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
 	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug] -- <command> [args...]")
-	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug]")
+	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--on-batch reject|evaluate] [--on-unparsed forward|reject] [--auth-token <token>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug]")
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
@@ -1107,6 +1108,9 @@ func runProxyHTTP(args []string) error {
 	policyPath := fs.String("policy", "", "Path to policy YAML (required unless --passthrough)")
 	upstream := fs.String("upstream", "", "Upstream MCP server base URL (required), e.g. https://mcp.example.com/mcp")
 	listen := fs.String("listen", "127.0.0.1:8787", "Local address to listen on")
+	onBatch := fs.String("on-batch", "reject", "JSON-RPC batch (array) body handling: reject (fail-closed default) or evaluate (gate every member, forward only if all allowed)")
+	onUnparsed := fs.String("on-unparsed", "forward", "Handling for POST bodies that are not valid JSON-RPC: forward (default) or reject")
+	authToken := fs.String("auth-token", "", "Require this bearer token on every request (Authorization: Bearer <token>). Falls back to $AGENTFENCE_PROXY_AUTH_TOKEN; empty disables auth")
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
 	passthrough := fs.Bool("passthrough", false, "Forward every request without policy evaluation (useful for validating the relay)")
@@ -1132,6 +1136,26 @@ func runProxyHTTP(args []string) error {
 	}
 	if upstreamURL.Scheme == "" || upstreamURL.Host == "" {
 		return fmt.Errorf("--upstream %q must be an absolute URL with scheme and host", *upstream)
+	}
+
+	batchPolicy, err := parseBatchPolicy(*onBatch)
+	if err != nil {
+		return err
+	}
+	unparsedPolicy, err := parseUnparsedPolicy(*onUnparsed)
+	if err != nil {
+		return err
+	}
+
+	authTok := *authToken
+	if authTok == "" {
+		authTok = os.Getenv("AGENTFENCE_PROXY_AUTH_TOKEN")
+	}
+	// Bind-address guardrail: an off-loopback listener with no authentication
+	// exposes the gate to other clients. Warn rather than fail so deliberate
+	// fronting (e.g. behind a TLS terminator) still works.
+	if authTok == "" && !isLoopbackListen(*listen) {
+		fmt.Fprintf(os.Stderr, "agentfence: warning: --listen %s is not loopback and no --auth-token/$AGENTFENCE_PROXY_AUTH_TOKEN is set; the policy proxy is reachable without authentication\n", *listen)
 	}
 
 	var eng *engine.Engine
@@ -1186,12 +1210,61 @@ func runProxyHTTP(args []string) error {
 		Passthrough:     *passthrough,
 		Debug:           *debug,
 		Logger:          os.Stderr,
+		OnBatch:         batchPolicy,
+		OnUnparsed:      unparsedPolicy,
+		AuthToken:       authTok,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	return httpproxy.Serve(ctx, *listen, opts)
+}
+
+// parseBatchPolicy maps the --on-batch flag value to an httpproxy.BatchPolicy.
+func parseBatchPolicy(s string) (httpproxy.BatchPolicy, error) {
+	switch s {
+	case string(httpproxy.BatchReject):
+		return httpproxy.BatchReject, nil
+	case string(httpproxy.BatchEvaluate):
+		return httpproxy.BatchEvaluate, nil
+	default:
+		return "", fmt.Errorf("--on-batch must be %q or %q, got %q", httpproxy.BatchReject, httpproxy.BatchEvaluate, s)
+	}
+}
+
+// parseUnparsedPolicy maps the --on-unparsed flag value to an
+// httpproxy.UnparsedPolicy.
+func parseUnparsedPolicy(s string) (httpproxy.UnparsedPolicy, error) {
+	switch s {
+	case string(httpproxy.UnparsedForward):
+		return httpproxy.UnparsedForward, nil
+	case string(httpproxy.UnparsedReject):
+		return httpproxy.UnparsedReject, nil
+	default:
+		return "", fmt.Errorf("--on-unparsed must be %q or %q, got %q", httpproxy.UnparsedForward, httpproxy.UnparsedReject, s)
+	}
+}
+
+// isLoopbackListen reports whether a listen address binds only to loopback. A
+// host-less address (":8787") or a wildcard ("0.0.0.0", "::") is NOT loopback;
+// an explicit loopback IP or "localhost" is. Used by the bind-address guardrail.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Unparseable host:port — be conservative so the guardrail still fires.
+		host = addr
+	}
+	switch host {
+	case "":
+		return false // ":8787" binds all interfaces
+	case "localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // stringSliceFlag is a repeatable string flag (e.g. --audit-sink a --audit-sink b).

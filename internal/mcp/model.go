@@ -34,6 +34,22 @@ const (
 	// denies a tools/call request (either directly or after an ask
 	// decision is converted to a deny by the approver).
 	ErrorCodeBlockedByPolicy = -32001
+	// ErrorCodeUpstreamUnavailable is returned when the proxy cannot reach or
+	// complete a request to the upstream MCP server (connection refused,
+	// network failure). It lets the agent and operator tell a transport
+	// failure apart from a policy block.
+	ErrorCodeUpstreamUnavailable = -32002
+	// ErrorCodeProxyError is returned for an internal proxy failure (e.g. the
+	// proxy could not read or build a request) that is neither a policy block
+	// nor an upstream failure.
+	ErrorCodeProxyError = -32003
+	// ErrorCodeBatchNotGated is returned when a JSON-RPC batch (array) body is
+	// refused because the proxy is configured not to gate batches.
+	ErrorCodeBatchNotGated = -32004
+	// ErrorCodeRequestRejected is returned when the proxy refuses a request
+	// body up front (oversize, or unparseable under a reject policy) instead of
+	// forwarding it uninspected and bypassing the gate.
+	ErrorCodeRequestRejected = -32005
 )
 
 // JSONRPCVersion is the only JSON-RPC version AgentFence speaks.
@@ -98,6 +114,56 @@ func ParseRequest(b []byte) (JSONRPCRequest, error) {
 		return JSONRPCRequest{}, fmt.Errorf("mcp: parse request: %w", err)
 	}
 	return req, nil
+}
+
+// IsBatch reports whether body is a JSON-RPC batch request: a payload whose
+// first non-whitespace byte is '['. Per JSON-RPC 2.0 §6 a batch is an array of
+// request objects, which the single-request parser does not model.
+func IsBatch(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '[':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// LooksLikeJSONRPC reports whether body begins (after leading whitespace) with
+// '{' or '[', i.e. it is plausibly a JSON-RPC request or batch. Callers use it
+// to decide whether to answer a refused body with a JSON-RPC error envelope or
+// a plain HTTP error.
+func LooksLikeJSONRPC(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '{', '[':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// ParseBatch parses a JSON-RPC batch (array) body into its member requests. An
+// empty array is rejected: JSON-RPC 2.0 §6 treats an empty batch as an invalid
+// request, and forwarding it uninspected would undermine the fail-closed
+// posture.
+func ParseBatch(b []byte) ([]JSONRPCRequest, error) {
+	var reqs []JSONRPCRequest
+	if err := json.Unmarshal(b, &reqs); err != nil {
+		return nil, fmt.Errorf("mcp: parse batch: %w", err)
+	}
+	if len(reqs) == 0 {
+		return nil, errors.New("mcp: empty JSON-RPC batch")
+	}
+	return reqs, nil
 }
 
 // ParseResponse parses a single newline-delimited JSON-RPC response payload.
@@ -192,6 +258,63 @@ func InvalidParamsError(id json.RawMessage, reason string) JSONRPCResponse {
 		Error: &JSONRPCError{
 			Code:    ErrorCodeInvalidParams,
 			Message: "invalid tools/call params: " + reason,
+		},
+	}
+}
+
+// UpstreamError returns a JSON-RPC error response for a request the proxy
+// could not deliver to the upstream MCP server (connection refused, network
+// failure). It is distinct from a policy block so an operator can tell a
+// transport failure apart from an enforcement decision.
+func UpstreamError(id json.RawMessage, reason string) JSONRPCResponse {
+	return JSONRPCResponse{
+		JSONRPC: JSONRPCVersion,
+		ID:      id,
+		Error: &JSONRPCError{
+			Code:    ErrorCodeUpstreamUnavailable,
+			Message: "upstream MCP server unavailable: " + reason,
+		},
+	}
+}
+
+// ProxyError returns a JSON-RPC error response for an internal proxy failure
+// that is neither a policy block nor an upstream failure (e.g. the proxy could
+// not read or build the request).
+func ProxyError(id json.RawMessage, reason string) JSONRPCResponse {
+	return JSONRPCResponse{
+		JSONRPC: JSONRPCVersion,
+		ID:      id,
+		Error: &JSONRPCError{
+			Code:    ErrorCodeProxyError,
+			Message: "AgentFence proxy error: " + reason,
+		},
+	}
+}
+
+// BatchNotGatedError returns a JSON-RPC error response refusing a JSON-RPC
+// batch (array) body the proxy is configured not to gate. id is typically null
+// because the batch envelope itself carries no request id.
+func BatchNotGatedError(id json.RawMessage, reason string) JSONRPCResponse {
+	return JSONRPCResponse{
+		JSONRPC: JSONRPCVersion,
+		ID:      id,
+		Error: &JSONRPCError{
+			Code:    ErrorCodeBatchNotGated,
+			Message: "JSON-RPC batch not gated by AgentFence: " + reason,
+		},
+	}
+}
+
+// RequestRejectedError returns a JSON-RPC error response for a body the proxy
+// refused up front (oversize, or unparseable under a reject policy) rather than
+// forwarding it uninspected.
+func RequestRejectedError(id json.RawMessage, reason string) JSONRPCResponse {
+	return JSONRPCResponse{
+		JSONRPC: JSONRPCVersion,
+		ID:      id,
+		Error: &JSONRPCError{
+			Code:    ErrorCodeRequestRejected,
+			Message: "request rejected by AgentFence proxy: " + reason,
 		},
 	}
 }
