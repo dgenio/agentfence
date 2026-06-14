@@ -403,16 +403,19 @@ func resolveAsk(approver approval.Approver, call policy.ToolCall, res policy.Eva
 
 // newProxyApprover builds the approver for the long-running proxies. With
 // --no-interactive it returns the shared fail-closed DenyAllApprover; otherwise
-// it opens a TTYApprover that prompts the operator (preferring /dev/tty so the
-// prompt never collides with the stdio proxy's JSON-RPC channel). The returned
-// cleanup closes any TTY handle and is always safe to call.
+// it opens a TTYApprover bound to /dev/tty. Unlike check, the proxies must NOT
+// fall back to os.Stdin for prompts: the stdio proxy's stdin is the agent's
+// JSON-RPC channel, so reading approvals there would corrupt the protocol.
+// When no controlling terminal is available, this fails with a message telling
+// the operator to re-run with --no-interactive. The returned cleanup closes
+// any TTY handle and is always safe to call.
 func newProxyApprover(noInteractive bool) (approval.Approver, func(), error) {
 	if noInteractive {
 		return approval.DenyAllApprover{}, func() {}, nil
 	}
-	tty, err := approval.NewTTYApprover()
+	tty, err := approval.NewTTYApproverStrict()
 	if err != nil {
-		return nil, func() {}, fmt.Errorf("approval: %w", err)
+		return nil, func() {}, fmt.Errorf("interactive approval needs a terminal (/dev/tty); re-run with --no-interactive for unattended use: %w", err)
 	}
 	return tty, func() { _ = tty.Close() }, nil
 }

@@ -136,14 +136,29 @@ type TTYApprover struct {
 //
 // The returned approver owns any opened file handle; call Close when done.
 func NewTTYApprover() (*TTYApprover, error) {
-	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err == nil {
-		return &TTYApprover{in: f, out: f, closer: f}, nil
+	if a, err := NewTTYApproverStrict(); err == nil {
+		return a, nil
 	}
 	// Fallback: prompt to stderr, read from stdin. This is good enough for
 	// `check` where stdin is the user's terminal (the call file is read via
-	// --call, not stdin).
+	// --call, not stdin). It is NOT safe for the stdio proxy, whose stdin
+	// carries the agent's JSON-RPC channel — proxies must use
+	// NewTTYApproverStrict so a missing terminal fails loudly instead.
 	return &TTYApprover{in: os.Stdin, out: os.Stderr}, nil
+}
+
+// NewTTYApproverStrict opens /dev/tty and returns an error if it is
+// unavailable, never falling back to os.Stdin. Long-running proxies must use
+// this: the stdio proxy's stdin is the agent's JSON-RPC channel, so reading
+// approvals from stdin would block on protocol traffic and corrupt the stream.
+// Callers should tell operators to pass --no-interactive when no controlling
+// terminal is present.
+func NewTTYApproverStrict() (*TTYApprover, error) {
+	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return nil, fmt.Errorf("approval: open /dev/tty: %w", err)
+	}
+	return &TTYApprover{in: f, out: f, closer: f}, nil
 }
 
 // NewTTYApproverWithIO returns an approver that reads from in and writes to

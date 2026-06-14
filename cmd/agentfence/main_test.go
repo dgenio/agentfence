@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dgenio/agentfence/internal/approval"
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/policy"
 )
@@ -2068,5 +2070,43 @@ func TestAuditExportRejectsUnknownFormat(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "weaver-trace") {
 		t.Errorf("error %q must name the valid format", err.Error())
+	}
+}
+
+// TestNewProxyApproverNoInteractive verifies the proxy approver is the
+// fail-closed deny-all when --no-interactive is set, with a safe cleanup.
+func TestNewProxyApproverNoInteractive(t *testing.T) {
+	a, cleanup, err := newProxyApprover(true)
+	if err != nil {
+		t.Fatalf("newProxyApprover(true) error = %v", err)
+	}
+	defer cleanup()
+	if _, ok := a.(approval.DenyAllApprover); !ok {
+		t.Fatalf("newProxyApprover(true) = %T, want approval.DenyAllApprover", a)
+	}
+	approved, err := a.Request(context.Background(), policy.ToolCall{ID: "c1", Tool: "filesystem.write"})
+	if err != nil || approved {
+		t.Errorf("DenyAllApprover.Request() = (%v, %v), want (false, nil)", approved, err)
+	}
+}
+
+// TestNewProxyApproverInteractiveRequiresTTY verifies that interactive proxy
+// approval requires a real /dev/tty and never falls back to stdin (which, for
+// the stdio proxy, carries the JSON-RPC channel). The assertion is robust to
+// both environments: with no controlling terminal (e.g. CI) it must fail with
+// an actionable message; with one it must return a usable approver.
+func TestNewProxyApproverInteractiveRequiresTTY(t *testing.T) {
+	a, cleanup, err := newProxyApprover(false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		if !strings.Contains(err.Error(), "--no-interactive") {
+			t.Errorf("error should guide the operator to --no-interactive; got %v", err)
+		}
+		return
+	}
+	if a == nil {
+		t.Error("expected a non-nil approver when /dev/tty is available")
 	}
 }

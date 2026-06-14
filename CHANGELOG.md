@@ -77,7 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now resolve `ask` decisions through the interactive `TTYApprover` instead of a
   hardwired deny-all. `--no-interactive` keeps the fail-closed `DenyAllApprover`,
   and the new `--approval-timeout <duration>` bounds an attended prompt before it
-  auto-denies. (#126)
+  auto-denies. Interactive proxy approval requires a real `/dev/tty` and never
+  falls back to stdin (which carries the stdio proxy's JSON-RPC channel); with no
+  terminal the proxy exits with guidance to use `--no-interactive`. (#126)
 
 ### Changed
 - Audit event `schema_version` bumped to `"3"` for the optional `signature`

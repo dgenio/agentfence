@@ -133,8 +133,10 @@ When AgentFence is attached to a terminal, an `ask` rule prompts the operator on
 the TTY (`approve <tool> [<id>]? (y/N)`); answering `y`/`yes` forwards the call,
 and anything else — an explicit `n`, a closed input, or an expired
 `--approval-timeout` — denies it and returns a `BlockedByPolicy` response. The
-prompt is read from `/dev/tty`, so it never collides with the stdio proxy's
-JSON-RPC channel on stdin.
+prompt is read from `/dev/tty`, never from stdin, so it cannot collide with the
+stdio proxy's JSON-RPC channel. If no controlling terminal is available (for
+example in CI or a detached service), the proxy refuses to start rather than
+falling back to stdin — re-run with `--no-interactive` for unattended use.
 
 For unattended contexts (CI, a service with no terminal):
 
