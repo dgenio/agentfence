@@ -131,20 +131,28 @@ non-interactively, `ask` decisions are auto-denied and counted under `deny`.
 A copy-paste workflow is in
 [`examples/github-action-workflow.yml`](../examples/github-action-workflow.yml).
 
-## Approval today
+## Approval
 
-The current proxy ships with a default-deny approver: every `ask` decision is
-converted to a `deny` and the agent sees a `BlockedByPolicy` response with
-`"... (denied via ask)"` in the reason.
+Both `proxy` and `proxy-http` resolve `ask` decisions interactively by default.
+When AgentFence is attached to a terminal, an `ask` rule prompts the operator on
+the TTY (`approve <tool> [<id>]? (y/N)`); answering `y`/`yes` forwards the call,
+and anything else — an explicit `n`, a closed input, or an expired
+`--approval-timeout` — denies it and returns a `BlockedByPolicy` response. The
+prompt is read from `/dev/tty`, never from stdin, so it cannot collide with the
+stdio proxy's JSON-RPC channel. If no controlling terminal is available (for
+example in CI or a detached service), the proxy refuses to start rather than
+falling back to stdin — re-run with `--no-interactive` for unattended use.
 
-The interactive TTY approver is tracked under
-[issue #29](https://github.com/dgenio/agentfence/issues/29); a non-blocking
-timeout follows in [issue #30](https://github.com/dgenio/agentfence/issues/30).
-Once those land, the `--no-interactive` flag will switch off the prompt.
+For unattended contexts (CI, a service with no terminal):
 
-For now, configure your policies so the only `ask` rules cover calls you are
-fine seeing blocked in an unattended context — promote them to `allow` if
-you really want them through, or to `deny` if you really want them stopped.
+- `--no-interactive` auto-denies every `ask` (recorded with the
+  `non-interactive: ask auto-denied` reason) instead of prompting.
+- `--approval-timeout <duration>` (e.g. `30s`) bounds how long an attended
+  prompt waits before falling back to deny with the `approval timeout` reason.
+
+The audit event records the *resolved* decision (`allow`/`deny`) together with
+the engine's reason for the original `ask` — for example a taint escalation —
+so the trail captures both the cause and how it was resolved.
 
 ## Claude Code (CLI / Desktop)
 
@@ -217,7 +225,7 @@ tools:
   filesystem.read:
     decision: allow
   filesystem.write:
-    decision: ask           # while #29/#30 are open, this becomes deny
+    decision: ask           # prompts on a TTY; auto-denied with --no-interactive
   github.create_issue:
     decision: ask
   github.delete_repo:
@@ -285,10 +293,10 @@ command is not on `$PATH` from the proxy's perspective. Use an absolute
 path, or make sure `$PATH` is exported through your launcher.
 
 **The agent appears to hang on a tool call** — the policy probably issued
-an `ask` decision. While #29/#30 are open, the default approver always
-denies; the agent should receive a `BlockedByPolicy` response within
-microseconds. If you actually see a hang, run with `--debug` to see the
-forwarded messages on stderr.
+an `ask` decision and the proxy is waiting for your `y/N` answer on the
+terminal. Answer the prompt, set `--approval-timeout` to bound the wait, or
+pass `--no-interactive` to auto-deny `ask` immediately in unattended runs.
+Run with `--debug` to see the forwarded messages on stderr.
 
 **Audit log is empty** — `--audit-log` was not passed. The proxy
 intentionally does not write audit JSONL to stdout because stdout is
@@ -308,14 +316,8 @@ or archive it) before enabling the flag.
 
 ## Limitations and known issues
 
-- The proxy supports stdio transport only. HTTP/SSE proxying is on the
-  roadmap.
-- `--no-interactive` is reserved; today every `ask` decision is denied
-  (issue [#29](https://github.com/dgenio/agentfence/issues/29)).
-- There is no approval timeout flag yet (issue
-  [#30](https://github.com/dgenio/agentfence/issues/30)). The proxy's
-  context cancellation propagates to the approver, but no per-decision
-  timeout is wired in.
+- A JSON-RPC batch (array) body is forwarded transparently and is not gated;
+  keep `ask`/`deny` rules in mind for clients that batch.
 - The threat model for the proxy is documented at the trust-boundary level
   only; expansion is tracked under
   [issue #35](https://github.com/dgenio/agentfence/issues/35).

@@ -2,13 +2,17 @@ package httpproxy
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dgenio/agentfence/internal/approval"
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/engine"
 	"github.com/dgenio/agentfence/internal/mcp"
@@ -204,6 +208,125 @@ func TestHTTPAskDeniedByDefaultApprover(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "blocked by AgentFence policy") {
 		t.Errorf("ask-denied response should be a policy error; got %q", body)
+	}
+	if !strings.Contains(string(body), approval.ReasonDeniedInteractively) {
+		t.Errorf("ask-denied response should carry the interactive-deny reason; got %q", body)
+	}
+}
+
+// yesApprover approves every ask; erroringApprover fails; blockingApprover
+// never answers until its context is done. They drive the HTTP ask paths.
+type yesApprover struct{}
+
+func (yesApprover) Request(context.Context, policy.ToolCall) (bool, error) { return true, nil }
+
+type erroringApprover struct{}
+
+func (erroringApprover) Request(context.Context, policy.ToolCall) (bool, error) {
+	return false, errors.New("tty gone")
+}
+
+type blockingApprover struct{}
+
+func (blockingApprover) Request(ctx context.Context, _ policy.ToolCall) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// newHandlerWith builds a handler with an approval timeout configured.
+func newHandlerWith(t *testing.T, p policy.Policy, upstream *httptest.Server, approver Approver, timeout time.Duration) (*Handler, *bytes.Buffer) {
+	t.Helper()
+	eng, err := engine.New(p)
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditBuf := &bytes.Buffer{}
+	h, err := NewHandler(Options{
+		Engine:          eng,
+		AuditWriter:     audit.NewWriterOptions(auditBuf, audit.Options{SessionID: "http-session"}),
+		Approver:        approver,
+		ApprovalTimeout: timeout,
+		Upstream:        u,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h, auditBuf
+}
+
+func TestHTTPAskApprovedForwards(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":"3","result":{"ok":true}}`)
+	}))
+	defer upstream.Close()
+
+	h, auditBuf := newHandler(t, testPolicy(t), upstream, yesApprover{})
+	resp := postJSONRPC(t, h, toolsCallBody("3", "filesystem.write", `{"path":"src/x.go","content":"y"}`))
+	defer resp.Body.Close()
+
+	if !spy.hit {
+		t.Fatal("approved ask must reach upstream")
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(`"decision":"allow"`)) {
+		t.Errorf("approved ask must audit decision allow; got %q", auditBuf.String())
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(approval.ReasonApprovedInteractively)) {
+		t.Errorf("approved ask must audit the approval reason; got %q", auditBuf.String())
+	}
+}
+
+func TestHTTPAskApproverErrorBlocks(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+	}))
+	defer upstream.Close()
+
+	h, auditBuf := newHandler(t, testPolicy(t), upstream, erroringApprover{})
+	resp := postJSONRPC(t, h, toolsCallBody("4", "filesystem.write", `{"path":"src/x.go","content":"y"}`))
+	defer resp.Body.Close()
+
+	if spy.hit {
+		t.Fatal("approver error must not reach upstream")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), approval.ReasonApprovalIOError) {
+		t.Errorf("approver error should surface the canonical I/O reason; got %q", body)
+	}
+	if strings.Contains(string(body), "tty gone") {
+		t.Errorf("internal approver error text must not leak to the agent; got %q", body)
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(`"decision":"deny"`)) {
+		t.Errorf("approver error must audit decision deny; got %q", auditBuf.String())
+	}
+}
+
+func TestHTTPAskTimeout(t *testing.T) {
+	spy := &upstreamSpy{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spy.hit = true
+	}))
+	defer upstream.Close()
+
+	h, auditBuf := newHandlerWith(t, testPolicy(t), upstream, blockingApprover{}, 20*time.Millisecond)
+	resp := postJSONRPC(t, h, toolsCallBody("5", "filesystem.write", `{"path":"src/x.go","content":"y"}`))
+	defer resp.Body.Close()
+
+	if spy.hit {
+		t.Fatal("timed-out ask must not reach upstream")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), approval.ReasonApprovalTimeout) {
+		t.Errorf("timed-out ask should report the timeout reason; got %q", body)
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(`"decision":"deny"`)) {
+		t.Errorf("timed-out ask must audit decision deny; got %q", auditBuf.String())
 	}
 }
 
