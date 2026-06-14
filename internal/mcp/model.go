@@ -151,11 +151,17 @@ func LooksLikeJSONRPC(body []byte) bool {
 	return false
 }
 
-// ParseBatch parses a JSON-RPC batch (array) body into its member requests.
+// ParseBatch parses a JSON-RPC batch (array) body into its member requests. An
+// empty array is rejected: JSON-RPC 2.0 §6 treats an empty batch as an invalid
+// request, and forwarding it uninspected would undermine the fail-closed
+// posture.
 func ParseBatch(b []byte) ([]JSONRPCRequest, error) {
 	var reqs []JSONRPCRequest
 	if err := json.Unmarshal(b, &reqs); err != nil {
 		return nil, fmt.Errorf("mcp: parse batch: %w", err)
+	}
+	if len(reqs) == 0 {
+		return nil, errors.New("mcp: empty JSON-RPC batch")
 	}
 	return reqs, nil
 }

@@ -249,7 +249,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Passthrough or anything that is not a POST cannot carry a tools/call we
 	// gate; forward it transparently with its body intact.
 	if h.opts.Passthrough || r.Method != http.MethodPost {
-		h.forward(w, r, nil, "", nil)
+		h.forward(w, r, nil, "", nil, false)
 		return
 	}
 
@@ -293,13 +293,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		h.forward(w, r, body, "", nil)
+		// Unparseable, non-JSON-RPC body forwarded transparently: an upstream
+		// failure stays a plain HTTP error, not a JSON-RPC envelope.
+		h.forward(w, r, body, "", nil, false)
 		return
 	}
 	if req.Method != mcp.MethodToolsCall {
 		// Recognized JSON-RPC but not a gateable tools/call (initialize, ping,
 		// notifications). Forward transparently so the session keeps working.
-		h.forward(w, r, body, "", req.ID)
+		h.forward(w, r, body, "", req.ID, true)
 		return
 	}
 
@@ -321,7 +323,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch result.Decision {
 	case policy.DecisionAllow:
-		h.forward(w, r, body, call.Tool, req.ID)
+		h.forward(w, r, body, call.Tool, req.ID, true)
 	case policy.DecisionDeny:
 		h.writeJSONRPC(w, mcp.BlockedByPolicyError(req.ID, result.Reason))
 	case policy.DecisionAsk:
@@ -330,7 +332,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case aerr != nil:
 			h.writeJSONRPC(w, mcp.BlockedByPolicyError(req.ID, "approval error: "+aerr.Error()))
 		case approved:
-			h.forward(w, r, body, call.Tool, req.ID)
+			h.forward(w, r, body, call.Tool, req.ID, true)
 		default:
 			h.writeJSONRPC(w, mcp.BlockedByPolicyError(req.ID, result.Reason+" (denied via ask)"))
 		}
@@ -399,7 +401,8 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	// All members allowed: forward the batch unchanged. Batch responses are not
 	// split for per-member taint observation, so no observeTool is attributed.
-	h.forward(w, r, body, "", nil)
+	// A batch is JSON-RPC, so an upstream failure is returned as an envelope.
+	h.forward(w, r, body, "", nil, true)
 }
 
 // forward proxies r to the upstream MCP server and relays the response. When
@@ -407,8 +410,13 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request, body []byt
 // inspection); otherwise r.Body is streamed. observeTool, when set, attributes
 // the response to a tool for taint observation. id is the originating JSON-RPC
 // request id (or nil) used to address a failure back to the agent distinctly
-// from a policy block.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, observeTool string, id json.RawMessage) {
+// from a policy block. jsonRPC reports whether the request is JSON-RPC: when
+// true a failure is returned as a JSON-RPC error envelope (HTTP 200), otherwise
+// it is a plain HTTP 502 so non-JSON-RPC clients (SSE GET, passthrough, and
+// transparently-forwarded bodies) keep the HTTP contract they expect. Failure
+// detail is logged operator-side; the agent-facing message never echoes the
+// upstream URL or dial address.
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, observeTool string, id json.RawMessage, jsonRPC bool) {
 	target := h.targetURL(r)
 
 	var reqBody io.Reader
@@ -421,7 +429,11 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, reqBody)
 	if err != nil {
 		fmt.Fprintln(h.opts.Logger, "httpproxy: build upstream request:", err)
-		h.writeJSONRPC(w, mcp.ProxyError(id, "could not build upstream request: "+err.Error()))
+		if jsonRPC {
+			h.writeJSONRPC(w, mcp.ProxyError(id, "could not build upstream request"))
+		} else {
+			http.Error(w, "httpproxy: could not build upstream request", http.StatusBadGateway)
+		}
 		return
 	}
 	copyHeader(outReq.Header, r.Header)
@@ -445,7 +457,11 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 	resp, err := h.client.Do(outReq)
 	if err != nil {
 		fmt.Fprintln(h.opts.Logger, "httpproxy: upstream request failed:", err)
-		h.writeJSONRPC(w, mcp.UpstreamError(id, err.Error()))
+		if jsonRPC {
+			h.writeJSONRPC(w, mcp.UpstreamError(id, sanitizedUpstreamReason(err)))
+		} else {
+			http.Error(w, "httpproxy: upstream MCP server unavailable", http.StatusBadGateway)
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -471,6 +487,21 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 
 	if capture != nil {
 		h.observeResponse(observeTool, contentType, capture.Bytes())
+	}
+}
+
+// sanitizedUpstreamReason returns a short description of an upstream request
+// failure for the agent-facing JSON-RPC error envelope. It deliberately does
+// not echo the upstream URL or dial address (Go wraps those in *url.Error /
+// *net.OpError); the full error is logged operator-side instead.
+func sanitizedUpstreamReason(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "request canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request timed out"
+	default:
+		return "the upstream server could not be reached"
 	}
 }
 

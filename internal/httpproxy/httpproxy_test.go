@@ -707,4 +707,29 @@ func TestHTTPUpstreamFailureSurfacesDistinctError(t *testing.T) {
 	if string(jr.ID) != "9" {
 		t.Errorf("upstream failure must echo request id; got %s", jr.ID)
 	}
+	// The agent-facing message must not leak the upstream URL/dial address.
+	host := strings.TrimPrefix(upstream.URL, "http://")
+	if jr.Error != nil && (strings.Contains(jr.Error.Message, "http://") || strings.Contains(jr.Error.Message, host)) {
+		t.Errorf("upstream error message leaks upstream address: %q", jr.Error.Message)
+	}
+}
+
+// TestHTTPNonJSONRPCUpstreamFailureIsPlainHTTP verifies that when a non-JSON-RPC
+// body is forwarded (OnUnparsed=forward) and the upstream fails, the client gets
+// a plain HTTP 502 rather than a JSON-RPC envelope.
+func TestHTTPNonJSONRPCUpstreamFailureIsPlainHTTP(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	upstream.Close() // closed so Do() fails
+
+	h, _ := newHandler(t, testPolicy(t), upstream, DenyAllApprover{})
+	resp := postRaw(t, h, "this is not json-rpc", nil)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("non-JSON-RPC upstream failure should be HTTP 502, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "jsonrpc") {
+		t.Errorf("non-JSON-RPC failure must not be a JSON-RPC envelope; got %q", body)
+	}
 }

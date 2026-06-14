@@ -261,6 +261,9 @@ func TestParseBatch(t *testing.T) {
 	if _, err := ParseBatch([]byte(`{"not":"an array"}`)); err == nil {
 		t.Error("ParseBatch must error on a non-array body")
 	}
+	if _, err := ParseBatch([]byte(`[]`)); err == nil {
+		t.Error("ParseBatch must reject an empty batch (JSON-RPC 2.0 §6)")
+	}
 }
 
 func TestProxyErrorCodes(t *testing.T) {
