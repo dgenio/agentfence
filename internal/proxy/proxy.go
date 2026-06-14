@@ -374,7 +374,11 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 		// Preserve the engine's reason for *why* the call was ask (e.g. a taint
 		// escalation) and annotate it with the approval outcome, so the audit
 		// trail keeps both the cause and how it was resolved.
-		result.Reason = result.Reason + " (" + outcome.Reason + ")"
+		if result.Reason == "" {
+			result.Reason = outcome.Reason
+		} else {
+			result.Reason = result.Reason + " (" + outcome.Reason + ")"
+		}
 		event.Decision = result.Decision
 		event.Reason = result.Reason
 		if outcome.Reason == approval.ReasonApprovalIOError {

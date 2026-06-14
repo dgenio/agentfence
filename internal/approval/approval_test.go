@@ -136,6 +136,40 @@ func TestTTYApproverCloseIsSafeWithoutOpenFile(t *testing.T) {
 	}
 }
 
+// TestTTYApproverTimeoutThenLateResponse verifies that when a Request times out
+// while the operator has not yet typed, the parked read is reused by the next
+// Request rather than being lost or raced by a second reader on the same fd. A
+// keystroke that arrives after the first prompt times out is consumed by the
+// following prompt.
+func TestTTYApproverTimeoutThenLateResponse(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	out := &bytes.Buffer{}
+	a := NewTTYApproverWithIO(pr, out)
+
+	// First prompt: no input yet, so it times out and denies. Its read
+	// goroutine stays parked on the pipe.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel1()
+	if approved, err := a.Request(ctx1, policy.ToolCall{ID: "c1", Tool: "shell.exec"}); approved || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first Request = (%v, %v), want (false, DeadlineExceeded)", approved, err)
+	}
+
+	// The operator now types "y"; the parked reader consumes it, so the second
+	// prompt must observe the approval rather than spawning a competing reader.
+	go func() { _, _ = pw.Write([]byte("y\n")) }()
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	approved, err := a.Request(ctx2, policy.ToolCall{ID: "c2", Tool: "shell.exec"})
+	if err != nil {
+		t.Fatalf("second Request error = %v", err)
+	}
+	if !approved {
+		t.Fatal("expected the late keystroke to approve the second prompt")
+	}
+}
+
 // blockingReader implements io.Reader and blocks until done is closed,
 // allowing the test goroutine to unblock it deterministically after the
 // timeout/cancel path is exercised.

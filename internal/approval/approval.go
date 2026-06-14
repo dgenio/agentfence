@@ -126,6 +126,20 @@ type TTYApprover struct {
 	in     io.Reader
 	out    io.Writer
 	closer io.Closer
+	// reader is created once and reused across calls so bytes buffered by one
+	// prompt are not discarded when the next prompt begins.
+	reader *bufio.Reader
+	// pending holds an in-flight read goroutine's result. When a Request times
+	// out, its read goroutine stays parked on the terminal; the next Request
+	// adopts this channel instead of spawning a second reader on the same fd,
+	// so a late keystroke is delivered to one prompt rather than raced for.
+	pending chan readResult
+}
+
+// readResult carries the outcome of a single blocking terminal read.
+type readResult struct {
+	approved bool
+	err      error
 }
 
 // NewTTYApprover opens /dev/tty for read/write so the prompt and response do
@@ -199,29 +213,40 @@ func (a *TTYApprover) Request(ctx context.Context, call policy.ToolCall) (bool, 
 		return false, fmt.Errorf("approval: write prompt: %w", err)
 	}
 
-	type readResult struct {
-		approved bool
-		err      error
-	}
-	ch := make(chan readResult, 1)
-	go func() {
-		reader := bufio.NewReader(a.in)
-		line, err := reader.ReadString('\n')
-		// EOF with no input means "no response" → deny, not an error.
-		if err != nil && !errors.Is(err, io.EOF) {
-			ch <- readResult{false, err}
-			return
+	// Reuse a single reader and a single in-flight read across calls. If a prior
+	// Request timed out, its read goroutine is still parked on the terminal;
+	// adopt its pending channel rather than spawning a second reader on the same
+	// fd (two readers would race for the operator's keystroke, and a discarded
+	// bufio.Reader could drop already-buffered bytes).
+	if a.pending == nil {
+		if a.reader == nil {
+			a.reader = bufio.NewReader(a.in)
 		}
-		ch <- readResult{isYes(line), nil}
-	}()
+		reader := a.reader
+		ch := make(chan readResult, 1)
+		go func() {
+			line, err := reader.ReadString('\n')
+			// EOF with no input means "no response" → deny, not an error.
+			if err != nil && !errors.Is(err, io.EOF) {
+				ch <- readResult{false, err}
+				return
+			}
+			ch <- readResult{isYes(line), nil}
+		}()
+		a.pending = ch
+	}
 
 	select {
-	case r := <-ch:
+	case r := <-a.pending:
+		a.pending = nil
 		if r.err != nil {
 			return false, fmt.Errorf("approval: read response: %w", r.err)
 		}
 		return r.approved, nil
 	case <-ctx.Done():
+		// Leave a.pending in place: the read goroutine is still blocked on the
+		// terminal, so the next Request consumes its result. This keeps exactly
+		// one reader on the fd and never loses or steals a late keystroke.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			fmt.Fprintf(a.out, "\nAgentFence: approval timeout for [%s] %s — denying\n", call.ID, call.Tool)
 		}
