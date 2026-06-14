@@ -208,3 +208,84 @@ func TestParseToolCallParamsErrorIsWrapped(t *testing.T) {
 		t.Error("expected wrapped error from ParseToolCallParams on malformed JSON")
 	}
 }
+
+func TestIsBatch(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"array", `[{"jsonrpc":"2.0"}]`, true},
+		{"array leading ws", "  \n\t[1,2]", true},
+		{"object", `{"jsonrpc":"2.0"}`, false},
+		{"empty", "", false},
+		{"garbage", "not json", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsBatch([]byte(tc.body)); got != tc.want {
+				t.Errorf("IsBatch(%q) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeJSONRPC(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{`{"a":1}`, true},
+		{"  [1]", true},
+		{"plain text", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := LooksLikeJSONRPC([]byte(tc.body)); got != tc.want {
+			t.Errorf("LooksLikeJSONRPC(%q) = %v, want %v", tc.body, got, tc.want)
+		}
+	}
+}
+
+func TestParseBatch(t *testing.T) {
+	reqs, err := ParseBatch([]byte(`[{"jsonrpc":"2.0","id":1,"method":"tools/call"},{"jsonrpc":"2.0","id":2,"method":"ping"}]`))
+	if err != nil {
+		t.Fatalf("ParseBatch: %v", err)
+	}
+	if len(reqs) != 2 {
+		t.Fatalf("got %d requests, want 2", len(reqs))
+	}
+	if reqs[0].Method != "tools/call" || reqs[1].Method != "ping" {
+		t.Errorf("unexpected methods: %q, %q", reqs[0].Method, reqs[1].Method)
+	}
+	if _, err := ParseBatch([]byte(`{"not":"an array"}`)); err == nil {
+		t.Error("ParseBatch must error on a non-array body")
+	}
+}
+
+func TestProxyErrorCodes(t *testing.T) {
+	id := json.RawMessage(`5`)
+	cases := []struct {
+		name string
+		resp JSONRPCResponse
+		code int
+	}{
+		{"upstream", UpstreamError(id, "refused"), ErrorCodeUpstreamUnavailable},
+		{"proxy", ProxyError(id, "read"), ErrorCodeProxyError},
+		{"batch", BatchNotGatedError(nil, "no"), ErrorCodeBatchNotGated},
+		{"rejected", RequestRejectedError(nil, "oversize"), ErrorCodeRequestRejected},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.resp.Error == nil {
+				t.Fatalf("%s: Error must be set", tc.name)
+			}
+			if tc.resp.Error.Code != tc.code {
+				t.Errorf("%s: code = %d, want %d", tc.name, tc.resp.Error.Code, tc.code)
+			}
+			if tc.resp.JSONRPC != JSONRPCVersion {
+				t.Errorf("%s: jsonrpc = %q", tc.name, tc.resp.JSONRPC)
+			}
+		})
+	}
+}

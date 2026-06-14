@@ -5,6 +5,29 @@ All notable changes to AgentFence are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `proxy-http`: **fail-closed request handling.** JSON-RPC batch (array) bodies
+  are now refused by default (`--on-batch reject`) so a denied `tools/call`
+  cannot be smuggled inside an array; `--on-batch evaluate` gates every member
+  and forwards the batch only if all are allowed. (#128, #145)
+- `proxy-http`: `--on-unparsed forward|reject` controls bodies that are not
+  valid JSON-RPC, and oversize bodies are refused rather than forwarded
+  uninspected. (#152)
+- `proxy-http`: optional client authentication via `--auth-token` (or
+  `$AGENTFENCE_PROXY_AUTH_TOKEN`); a startup warning fires when `--listen`
+  binds a non-loopback address without a token. (#138)
+- `docs/batch-handling.md`: cross-transport design note for JSON-RPC batch
+  handling. (#145)
+
+### Changed
+- `proxy-http`: upstream and internal proxy failures are now surfaced as
+  distinct JSON-RPC error envelopes (`-32002` upstream unavailable, `-32003`
+  proxy error) addressed to the request id, instead of a generic HTTP 502, so
+  the agent and operator can tell a transport failure apart from a policy
+  block. (#133)
+
 ## [0.6.0] - 2026-06-09
 
 ### Added
