@@ -45,7 +45,10 @@ building full batch fan-out.
   `tools/call` member and forwards the **whole** batch only if all members are
   allowed (all-or-nothing). A single non-allow member rejects the entire batch,
   so a denied call can never ride along with allowed ones. Each member's
-  decision is still audited.
+  decision is still audited. Note two consequences of `evaluate`: a batch with
+  several `ask`-tier members triggers one approval prompt per member, and
+  because the batch is forwarded unchanged its response is not observed for
+  taint tracking (see [`threat-model.md`](threat-model.md) taint limits).
 - **stdio proxy:** the line-framed relay already forwards a batch line
   untouched. Because the per-line model never evaluates it, the safe posture is
   the same reject-by-default intent; a batch line that fails single-request

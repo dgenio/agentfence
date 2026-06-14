@@ -172,6 +172,12 @@ it does **not** catch:
   parsed — for SSE the JSON-RPC payload is reassembled from the event's
   `data:` frames — so a result streamed over SSE taints later calls the same
   way the stdio proxy's results do.
+- **Batches are not observed for taint.** With `--on-batch evaluate` the proxy
+  gates every `tools/call` *request* in the batch, but it forwards the batch
+  unchanged and does not split the batch *response* per member, so tool results
+  returned inside a batch reply are **not** fed to the taint tracker. A value
+  exfiltrated through a batched call therefore will not taint a later call.
+  Prefer the default `--on-batch reject` when taint tracking is relied upon.
 - **False positives are possible** when legitimate arguments coincide with
   earlier output; `min_length` and `on_tainted_argument: escalate`
   (rather than `deny`) keep that failure mode safe (a human is asked).
