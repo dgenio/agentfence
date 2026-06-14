@@ -93,15 +93,20 @@ relayed incrementally.
 
 Useful flags mirror `proxy`, plus:
 
-| Flag               | What it does |
-|--------------------|--------------|
-| `--upstream <url>` | Required. Absolute base URL of the MCP server to forward to. |
-| `--listen <addr>`  | Local address to bind (default `127.0.0.1:8787`). Keep it on loopback. |
+| Flag                      | What it does |
+|---------------------------|--------------|
+| `--upstream <url>`        | Required. Absolute base URL of the MCP server to forward to. |
+| `--listen <addr>`         | Local address to bind (default `127.0.0.1:8787`). Keep it on loopback. |
+| `--on-batch reject\|evaluate` | JSON-RPC batch (array) body handling. `reject` (default) refuses batches fail-closed; `evaluate` gates every member and forwards only if all are allowed. |
+| `--on-unparsed forward\|reject` | Handling for POST bodies that are not valid JSON-RPC. `forward` (default) preserves non-JSON-RPC traffic; `reject` refuses them. |
+| `--auth-token <token>`    | Require `Authorization: Bearer <token>` on every request (also read from `$AGENTFENCE_PROXY_AUTH_TOKEN`). Empty disables auth. |
 
-Operational caveats specific to the HTTP transport — authentication/TLS being
-the operator's responsibility, one shared session per running proxy, and
-JSON-RPC *batch* bodies being forwarded ungated — are documented in
-[`threat-model.md`](threat-model.md#streamable-http-proxy-surface).
+Operational caveats specific to the HTTP transport — TLS being the operator's
+responsibility, optional bearer-token authentication, one shared session per
+running proxy, and how batch/oversize/unparseable bodies are handled
+fail-closed — are documented in
+[`threat-model.md`](threat-model.md#streamable-http-proxy-surface) and
+[`batch-handling.md`](batch-handling.md).
 
 <a id="github-action"></a>
 ## GitHub Action
