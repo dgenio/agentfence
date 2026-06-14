@@ -105,10 +105,12 @@ func TestRotatorSync(t *testing.T) {
 	}
 }
 
-// TestWriterFsyncThroughRotatorIsDurable proves the Fsync option reaches a
-// rotating destination (the path the proxies use with --audit-max-size), so a
-// rotated log is as durable as a plain one.
-func TestWriterFsyncThroughRotatorIsDurable(t *testing.T) {
+// TestWriterFsyncThroughRotatorWritesEvent checks that the Fsync option drives
+// a rotating destination (the path the proxies use with --audit-max-size)
+// without error and the event lands on disk. It does not attempt to observe a
+// real fsync(2) — that is not portable; TestWriterFsyncSyncsEveryWrite covers
+// the Sync()-is-called contract via a counting syncer.
+func TestWriterFsyncThroughRotatorWritesEvent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	rot, err := NewRotator(RotationConfig{Path: path})
 	if err != nil {

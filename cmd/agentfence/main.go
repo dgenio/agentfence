@@ -1368,9 +1368,12 @@ func openAuditOutput(cfg auditConfig) (io.Writer, func(), audit.Options, error) 
 	}
 
 	// fsync only has a destination to flush when a file (or rotated file) backs
-	// the log. Against stdout/discard it is a no-op, so warn rather than imply
-	// a durability guarantee that isn't there.
+	// the log. Against stdout/discard it is disabled outright: there is nothing
+	// meaningful to flush, and Sync() on a TTY or pipe stdout (check's text
+	// mode) returns EINVAL, which would fail the run. Warn rather than imply a
+	// durability guarantee that isn't there.
 	if cfg.fsync && cfg.path == "" {
+		options.Fsync = false
 		fmt.Fprintln(os.Stderr, "AgentFence: warning: --audit-fsync has no effect without --audit-log")
 	}
 

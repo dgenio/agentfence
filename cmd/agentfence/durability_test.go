@@ -32,6 +32,27 @@ func TestCheckAuditFsyncProducesVerifiableLog(t *testing.T) {
 	}
 }
 
+// TestCheckAuditFsyncWithoutLogDoesNotFail guards against --audit-fsync turning
+// into a fatal Sync() on a TTY/pipe stdout when no --audit-log is given: the
+// flag must degrade to a no-op (with a warning), not fail the run. captureOutput
+// redirects stdout to an os.Pipe, so a stray fsync on stdout would surface here.
+func TestCheckAuditFsyncWithoutLogDoesNotFail(t *testing.T) {
+	policyFile, callFile, _, _ := writeSigningFixtures(t)
+
+	_, stderr, err := captureOutput(t, func() error {
+		return runCheck([]string{
+			"--policy", policyFile, "--call", callFile,
+			"--output", "text", "--audit-fsync",
+		})
+	})
+	if err != nil {
+		t.Fatalf("runCheck --audit-fsync without --audit-log: %v", err)
+	}
+	if !strings.Contains(stderr, "--audit-fsync has no effect without --audit-log") {
+		t.Fatalf("expected a no-effect warning on stderr, got: %q", stderr)
+	}
+}
+
 // TestVerifyReportsCorruptInput confirms `audit verify` reports a damaged,
 // unparseable log as CORRUPT (distinct from a tamper FAILED) and exits non-zero
 // (#180).
