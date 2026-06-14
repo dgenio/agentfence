@@ -1,9 +1,10 @@
 // Package approval converts policy ask decisions into a final allow/deny.
 //
-// The Approver interface is the single integration point that the check (and
-// future proxy) command uses to interact with an operator. Implementations
-// must be safe to call concurrently from goroutines that forward different
-// tool calls, but a single call to Request is expected to be sequential.
+// The Approver interface is the single integration point that the check
+// command and both proxies (internal/proxy, internal/httpproxy) use to
+// interact with an operator. Implementations must be safe to call
+// concurrently from goroutines that forward different tool calls, but a single
+// call to Request is expected to be sequential.
 package approval
 
 import (
@@ -15,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dgenio/agentfence/internal/policy"
 )
@@ -64,6 +66,54 @@ type DenyAllApprover struct{}
 // Request always returns (false, nil).
 func (DenyAllApprover) Request(_ context.Context, _ policy.ToolCall) (bool, error) {
 	return false, nil
+}
+
+// Outcome is the resolved result of an ask approval: whether the call may
+// proceed and the canonical audit reason describing why.
+type Outcome struct {
+	// Approved reports whether the ask decision was converted to allow.
+	Approved bool
+	// Reason is the canonical audit reason for the outcome — one of the
+	// Reason* constants in this package.
+	Reason string
+}
+
+// Resolve runs approver for an ask decision and maps the result to a final
+// allow/deny Outcome with the canonical audit reason, applying an optional
+// timeout. It is the single place that decision-to-reason mapping lives, so
+// the check command and both proxies report ask outcomes identically.
+//
+// When timeout > 0 the request is bounded by a context deadline; on expiry the
+// call is denied with ReasonApprovalTimeout. A denial with no I/O error is
+// reported as ReasonNonInteractive when noInteractive is set, otherwise
+// ReasonDeniedInteractively.
+//
+// The returned error is the approver's raw error (a context error on
+// timeout/cancel, or an I/O failure), exposed so callers can log the detail;
+// the audit-facing reason is already captured in Outcome.Reason. Callers must
+// treat any non-Approved Outcome as deny regardless of the error (fail closed).
+func Resolve(ctx context.Context, approver Approver, call policy.ToolCall, timeout time.Duration, noInteractive bool) (Outcome, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	approved, err := approver.Request(ctx, call)
+	switch {
+	case approved:
+		return Outcome{Approved: true, Reason: ReasonApprovedInteractively}, err
+	case errors.Is(err, context.DeadlineExceeded):
+		return Outcome{Reason: ReasonApprovalTimeout}, err
+	case errors.Is(err, context.Canceled):
+		return Outcome{Reason: ReasonApprovalCancelled}, err
+	case err != nil:
+		return Outcome{Reason: ReasonApprovalIOError}, err
+	case noInteractive:
+		return Outcome{Reason: ReasonNonInteractive}, nil
+	default:
+		return Outcome{Reason: ReasonDeniedInteractively}, nil
+	}
 }
 
 // TTYApprover prompts the operator on a real terminal for each ask decision.

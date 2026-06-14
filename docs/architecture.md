@@ -43,10 +43,13 @@ configuration examples.
 - On `deny` the proxy answers the agent with a JSON-RPC error response
   (code `-32001`, "blocked by AgentFence policy: <reason>") and the
   subprocess never sees the request.
-- On `ask` a pluggable `Approver` decides at runtime; an approved call is
-  forwarded, a denied one becomes the same blocked-by-policy response.
-  The default `DenyAllApprover` denies every `ask` until a TTY-backed
-  approver lands (issues #29, #30).
+- On `ask` a pluggable `Approver` (the shared `approval.Approver` contract,
+  used by both proxies and `check`) decides at runtime: by default an
+  interactive `TTYApprover` prompts the operator, bounded by
+  `--approval-timeout`; `--no-interactive` substitutes the fail-closed
+  `DenyAllApprover`. An approved call is forwarded, a denied one becomes the
+  same blocked-by-policy response, and the audit event records the resolved
+  decision.
 - Every evaluated request produces one audit event using the same
   `audit.Writer` as `check`, so `--tamper-evident` and `agentfence audit
   verify` work identically against proxy logs.

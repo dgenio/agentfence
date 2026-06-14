@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dgenio/agentfence/internal/approval"
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/engine"
 	"github.com/dgenio/agentfence/internal/mcp"
@@ -106,6 +107,39 @@ func newTestRelay(t *testing.T, approver Approver, passthrough bool) (*relay, *b
 	return newRelay(opts, eng.NewSession()), agentBuf, subBuf, auditBuf
 }
 
+// newTestRelayWith builds a relay like newTestRelay but lets a test set the
+// approval timeout and the non-interactive flag, so the ask resolution paths
+// (timeout, non-interactive deny) can be driven deterministically.
+func newTestRelayWith(t *testing.T, approver Approver, timeout time.Duration, noInteractive bool) (*relay, *bytes.Buffer, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	eng, err := engine.New(allowDenyAskPolicy(t))
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	auditBuf := &bytes.Buffer{}
+	subBuf := &bytes.Buffer{}
+	agentBuf := &bytes.Buffer{}
+	opts := Options{
+		Engine:          eng,
+		AuditWriter:     audit.NewWriterOptions(auditBuf, audit.Options{SessionID: "test-session"}),
+		Approver:        approver,
+		ApprovalTimeout: timeout,
+		NoInteractive:   noInteractive,
+	}
+	opts = applyDefaults(opts)
+	return newRelay(opts, eng.NewSession()), agentBuf, subBuf, auditBuf
+}
+
+// blockingApprover blocks until its context is done, then returns the context
+// error. It models an operator who never answers, exercising the
+// approval-timeout path.
+type blockingApprover struct{}
+
+func (blockingApprover) Request(ctx context.Context, _ policy.ToolCall) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
 // helperRequest builds a minimal JSON-RPC tools/call line. id may be any JSON
 // fragment ("1", `"abc"`, etc.).
 func helperRequest(t *testing.T, id, name, arguments string) []byte {
@@ -173,7 +207,7 @@ func (erroringApprover) Request(context.Context, policy.ToolCall) (bool, error) 
 }
 
 func TestProcessAgentLineAskApproved(t *testing.T) {
-	r, agent, sub, _ := newTestRelay(t, yesApprover{}, false)
+	r, agent, sub, auditBuf := newTestRelay(t, yesApprover{}, false)
 	line := helperRequest(t, `3`, "github.create_issue", `{"title":"hi"}`)
 	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
 		t.Fatalf("processAgentLine: %v", err)
@@ -184,10 +218,16 @@ func TestProcessAgentLineAskApproved(t *testing.T) {
 	if agent.Len() != 0 {
 		t.Errorf("approved ask must not write to agent stdout; got %q", agent.String())
 	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(`"decision":"allow"`)) {
+		t.Errorf("approved ask must audit decision allow; got %q", auditBuf.String())
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(approval.ReasonApprovedInteractively)) {
+		t.Errorf("approved ask must audit the approval reason; got %q", auditBuf.String())
+	}
 }
 
 func TestProcessAgentLineAskDenied(t *testing.T) {
-	r, agent, sub, _ := newTestRelay(t, DenyAllApprover{}, false)
+	r, agent, sub, auditBuf := newTestRelay(t, DenyAllApprover{}, false)
 	line := helperRequest(t, `4`, "github.create_issue", `{"title":"hi"}`)
 	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
 		t.Fatalf("processAgentLine: %v", err)
@@ -195,13 +235,16 @@ func TestProcessAgentLineAskDenied(t *testing.T) {
 	if sub.Len() != 0 {
 		t.Errorf("denied ask must NOT forward to subprocess; got %q", sub.String())
 	}
-	if !strings.Contains(agent.String(), "denied via ask") {
-		t.Errorf("denied-via-ask message must mention the ask path; got %q", agent.String())
+	if !strings.Contains(agent.String(), approval.ReasonDeniedInteractively) {
+		t.Errorf("denied ask must report the interactive-deny reason; got %q", agent.String())
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(`"decision":"deny"`)) {
+		t.Errorf("denied ask must audit decision deny; got %q", auditBuf.String())
 	}
 }
 
 func TestProcessAgentLineAskErrors(t *testing.T) {
-	r, agent, sub, _ := newTestRelay(t, erroringApprover{}, false)
+	r, agent, sub, auditBuf := newTestRelay(t, erroringApprover{}, false)
 	line := helperRequest(t, `5`, "github.create_issue", `{"title":"hi"}`)
 	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
 		t.Fatalf("processAgentLine: %v", err)
@@ -209,8 +252,65 @@ func TestProcessAgentLineAskErrors(t *testing.T) {
 	if sub.Len() != 0 {
 		t.Errorf("approver error must NOT forward to subprocess; got %q", sub.String())
 	}
-	if !strings.Contains(agent.String(), "approval error: user terminated") {
-		t.Errorf("approver error must surface in the response; got %q", agent.String())
+	// The agent sees the canonical I/O-error reason, not the internal error text.
+	if !strings.Contains(agent.String(), approval.ReasonApprovalIOError) {
+		t.Errorf("approver error must surface the canonical reason; got %q", agent.String())
+	}
+	if strings.Contains(agent.String(), "user terminated") {
+		t.Errorf("internal approver error text must not leak to the agent; got %q", agent.String())
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(`"decision":"deny"`)) {
+		t.Errorf("approver error must audit decision deny; got %q", auditBuf.String())
+	}
+}
+
+// TestProcessAgentLineAskTimeout drives the approval-timeout path: a blocking
+// approver plus a short ApprovalTimeout must auto-deny with the timeout reason.
+func TestProcessAgentLineAskTimeout(t *testing.T) {
+	r, agent, sub, auditBuf := newTestRelayWith(t, blockingApprover{}, 20*time.Millisecond, false)
+	line := helperRequest(t, `6`, "github.create_issue", `{"title":"hi"}`)
+	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
+		t.Fatalf("processAgentLine: %v", err)
+	}
+	if sub.Len() != 0 {
+		t.Errorf("timed-out ask must NOT forward to subprocess; got %q", sub.String())
+	}
+	if !strings.Contains(agent.String(), approval.ReasonApprovalTimeout) {
+		t.Errorf("timed-out ask must report the timeout reason; got %q", agent.String())
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(`"decision":"deny"`)) {
+		t.Errorf("timed-out ask must audit decision deny; got %q", auditBuf.String())
+	}
+}
+
+// TestProcessAgentLineAskNonInteractive verifies that with NoInteractive set, a
+// denied ask is attributed to the non-interactive reason.
+func TestProcessAgentLineAskNonInteractive(t *testing.T) {
+	r, agent, sub, _ := newTestRelayWith(t, DenyAllApprover{}, 0, true /*noInteractive*/)
+	line := helperRequest(t, `7`, "github.create_issue", `{"title":"hi"}`)
+	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
+		t.Fatalf("processAgentLine: %v", err)
+	}
+	if !strings.Contains(agent.String(), approval.ReasonNonInteractive) {
+		t.Errorf("non-interactive ask must report the non-interactive reason; got %q", agent.String())
+	}
+}
+
+// TestProcessAgentLineAskNotificationDropped verifies that an ask decision on a
+// JSON-RPC notification (no id) is dropped without a synthesized response,
+// since the spec forbids replying to notifications.
+func TestProcessAgentLineAskNotificationDropped(t *testing.T) {
+	r, agent, sub, _ := newTestRelay(t, DenyAllApprover{}, false)
+	// tools/call with no id is a notification.
+	line := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"github.create_issue","arguments":{"title":"hi"}}}`)
+	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
+		t.Fatalf("processAgentLine: %v", err)
+	}
+	if sub.Len() != 0 {
+		t.Errorf("denied ask notification must NOT forward to subprocess; got %q", sub.String())
+	}
+	if agent.Len() != 0 {
+		t.Errorf("ask notification must not produce a response; got %q", agent.String())
 	}
 }
 

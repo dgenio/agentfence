@@ -30,7 +30,9 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/dgenio/agentfence/internal/approval"
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/engine"
 	"github.com/dgenio/agentfence/internal/mcp"
@@ -43,22 +45,17 @@ import (
 const maxScanLine = 16 * 1024 * 1024 // 16 MiB
 
 // Approver decides whether an "ask" decision becomes an allow or deny at
-// runtime. Implementations live outside this package (issue #29 will add a
-// TTY-backed approver in internal/approval). The proxy ships with a default
-// DenyAllApprover so the intercept loop never silently treats ask as allow.
-type Approver interface {
-	Request(ctx context.Context, call policy.ToolCall) (bool, error)
-}
+// runtime. It is an alias for approval.Approver: the stdio proxy, the HTTP
+// proxy, and the check command all share one contract so a single approver
+// implementation (e.g. approval.TTYApprover) wires into every call site
+// without adapters.
+type Approver = approval.Approver
 
-// DenyAllApprover converts every ask decision into deny. Use this in
-// non-interactive contexts (CI, --no-interactive) until issue #29 lands a
-// real TTY approver.
-type DenyAllApprover struct{}
-
-// Request always returns (false, nil) — an unattended proxy must default-deny.
-func (DenyAllApprover) Request(context.Context, policy.ToolCall) (bool, error) {
-	return false, nil
-}
+// DenyAllApprover converts every ask decision into deny. It is an alias for
+// approval.DenyAllApprover — the shared fail-closed default used in
+// non-interactive contexts (CI, --no-interactive) and whenever no TTY is
+// available, so the intercept loop never silently treats ask as allow.
+type DenyAllApprover = approval.DenyAllApprover
 
 // Options configures Run. Engine and AuditWriter are required when
 // Passthrough is false; the rest have sensible defaults documented below.
@@ -77,6 +74,17 @@ type Options struct {
 
 	// Approver handles ask decisions. Defaults to DenyAllApprover.
 	Approver Approver
+
+	// ApprovalTimeout bounds how long a single ask prompt may wait before the
+	// call is auto-denied with the approval-timeout reason. Zero waits
+	// indefinitely (subject to ctx cancellation).
+	ApprovalTimeout time.Duration
+
+	// NoInteractive records that interactive approval was disabled, so a
+	// denied ask is attributed to the non-interactive reason rather than an
+	// explicit operator rejection. It does not by itself select the approver;
+	// callers pass DenyAllApprover when this is set.
+	NoInteractive bool
 
 	// Passthrough forwards every message in both directions without
 	// touching it. Use this only to validate the relay; production
@@ -352,8 +360,32 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 	call := params.ToToolCall(callID)
 	result, event := r.sess.Evaluate(call)
 
-	// Audit first so the decision is durable even if the forwarding step
-	// fails (e.g. subprocess pipe closed mid-relay).
+	// Resolve an ask decision to a final allow/deny via the approver before we
+	// audit, so the audit event records the outcome the agent actually saw
+	// (mirrors the check command's resolveAsk). The approver runs first; the
+	// engine event is then rewritten to the resolved decision and reason.
+	if result.Decision == policy.DecisionAsk {
+		outcome, aerr := approval.Resolve(ctx, r.opts.Approver, call, r.opts.ApprovalTimeout, r.opts.NoInteractive)
+		if outcome.Approved {
+			result.Decision = policy.DecisionAllow
+		} else {
+			result.Decision = policy.DecisionDeny
+		}
+		// Preserve the engine's reason for *why* the call was ask (e.g. a taint
+		// escalation) and annotate it with the approval outcome, so the audit
+		// trail keeps both the cause and how it was resolved.
+		result.Reason = result.Reason + " (" + outcome.Reason + ")"
+		event.Decision = result.Decision
+		event.Reason = result.Reason
+		if outcome.Reason == approval.ReasonApprovalIOError {
+			// Surface the I/O detail to the operator only; the agent sees the
+			// canonical reason, not the internal error text.
+			fmt.Fprintf(r.opts.Logger, "proxy: approval I/O error for [%s] %s: %v\n", call.ID, call.Tool, aerr)
+		}
+	}
+
+	// Audit so the decision is durable even if the forwarding step fails
+	// (e.g. subprocess pipe closed mid-relay).
 	if writeErr := r.opts.AuditWriter.Write(event); writeErr != nil {
 		fmt.Fprintln(r.opts.Logger, "proxy: audit write:", writeErr)
 	}
@@ -368,27 +400,6 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 			return nil
 		}
 		return writeResponse(agentStdout, mcp.BlockedByPolicyError(req.ID, result.Reason))
-	case policy.DecisionAsk:
-		approved, aerr := r.opts.Approver.Request(ctx, call)
-		if aerr != nil {
-			if isNotification {
-				fmt.Fprintln(r.opts.Logger,
-					"proxy: dropping ask-notification on approval error:", aerr)
-				return nil
-			}
-			return writeResponse(agentStdout,
-				mcp.BlockedByPolicyError(req.ID, "approval error: "+aerr.Error()))
-		}
-		if approved {
-			r.rememberPending(req.ID, call.Tool)
-			_, err := writeLine(subStdin, line)
-			return err
-		}
-		if isNotification {
-			return nil
-		}
-		return writeResponse(agentStdout,
-			mcp.BlockedByPolicyError(req.ID, result.Reason+" (denied via ask)"))
 	default:
 		// Unknown decision (engine extension): default-deny so a future
 		// decision value cannot silently widen the allow set.

@@ -386,38 +386,35 @@ func runCheck(args []string) error {
 // the approver. The audit event is updated in place to reflect the final
 // decision and reason. A zero timeout means "wait forever."
 func resolveAsk(approver approval.Approver, call policy.ToolCall, res policy.EvaluationResult, event audit.Event, timeout time.Duration, noInteractive bool) (policy.EvaluationResult, audit.Event) {
-	ctx := context.Background()
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-
-	approved, err := approver.Request(ctx, call)
-	switch {
-	case approved:
+	outcome, err := approval.Resolve(context.Background(), approver, call, timeout, noInteractive)
+	if outcome.Approved {
 		res.Decision = policy.DecisionAllow
-		res.Reason = approval.ReasonApprovedInteractively
-	case errors.Is(err, context.DeadlineExceeded):
+	} else {
 		res.Decision = policy.DecisionDeny
-		res.Reason = approval.ReasonApprovalTimeout
-	case errors.Is(err, context.Canceled):
-		res.Decision = policy.DecisionDeny
-		res.Reason = approval.ReasonApprovalCancelled
-	case err != nil:
+	}
+	res.Reason = outcome.Reason
+	if outcome.Reason == approval.ReasonApprovalIOError {
 		fmt.Fprintf(os.Stderr, "AgentFence: approval I/O error for [%s] %s: %v\n", call.ID, call.Tool, err)
-		res.Decision = policy.DecisionDeny
-		res.Reason = approval.ReasonApprovalIOError
-	case noInteractive:
-		res.Decision = policy.DecisionDeny
-		res.Reason = approval.ReasonNonInteractive
-	default:
-		res.Decision = policy.DecisionDeny
-		res.Reason = approval.ReasonDeniedInteractively
 	}
 	event.Decision = res.Decision
 	event.Reason = res.Reason
 	return res, event
+}
+
+// newProxyApprover builds the approver for the long-running proxies. With
+// --no-interactive it returns the shared fail-closed DenyAllApprover; otherwise
+// it opens a TTYApprover that prompts the operator (preferring /dev/tty so the
+// prompt never collides with the stdio proxy's JSON-RPC channel). The returned
+// cleanup closes any TTY handle and is always safe to call.
+func newProxyApprover(noInteractive bool) (approval.Approver, func(), error) {
+	if noInteractive {
+		return approval.DenyAllApprover{}, func() {}, nil
+	}
+	tty, err := approval.NewTTYApprover()
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("approval: %w", err)
+	}
+	return tty, func() { _ = tty.Close() }, nil
 }
 
 func runValidate(args []string) error {
@@ -564,8 +561,8 @@ func printUsage() {
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
-	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--debug] -- <command> [args...]")
-	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--debug]")
+	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug] -- <command> [args...]")
+	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug]")
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
@@ -1011,7 +1008,8 @@ func runProxy(args []string) error {
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
 	passthrough := fs.Bool("passthrough", false, "Forward every message without policy evaluation (skeleton mode; useful for validating the relay)")
-	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting (reserved for the TTY approver in issue #29)")
+	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting the operator on the TTY")
+	approvalTimeout := fs.Duration("approval-timeout", 0, "Maximum time to wait for an interactive ask response (e.g. 30s, 2m). 0 waits indefinitely")
 	debug := fs.Bool("debug", false, "Log every forwarded message to stderr")
 	signKey := fs.String("sign-key", "", "Path to an Ed25519 private key (PEM) to sign each audit event; verify with 'agentfence audit verify --pubkey'")
 	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
@@ -1022,8 +1020,6 @@ func runProxy(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
 	}
-	_ = noInteractive // The current default approver is deny-all; the TTY
-	// approver landing in #29 will branch on this flag.
 
 	rest := fs.Args()
 	if len(rest) == 0 {
@@ -1063,13 +1059,26 @@ func runProxy(args []string) error {
 	defer closeAudit()
 	aw := audit.NewWriterOptions(auditOut, auditOptions)
 
+	// In passthrough mode the engine never runs, so no approver is needed.
+	var approver proxy.Approver = proxy.DenyAllApprover{}
+	if !*passthrough {
+		a, cleanup, err := newProxyApprover(*noInteractive)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		approver = a
+	}
+
 	opts := proxy.Options{
-		Engine:      eng,
-		AuditWriter: aw,
-		Approver:    proxy.DenyAllApprover{},
-		Passthrough: *passthrough,
-		Debug:       *debug,
-		Logger:      os.Stderr,
+		Engine:          eng,
+		AuditWriter:     aw,
+		Approver:        approver,
+		ApprovalTimeout: *approvalTimeout,
+		NoInteractive:   *noInteractive,
+		Passthrough:     *passthrough,
+		Debug:           *debug,
+		Logger:          os.Stderr,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -1098,7 +1107,8 @@ func runProxyHTTP(args []string) error {
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
 	passthrough := fs.Bool("passthrough", false, "Forward every request without policy evaluation (useful for validating the relay)")
-	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting")
+	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting the operator on the TTY")
+	approvalTimeout := fs.Duration("approval-timeout", 0, "Maximum time to wait for an interactive ask response (e.g. 30s, 2m). 0 waits indefinitely")
 	debug := fs.Bool("debug", false, "Log every proxied request to stderr")
 	signKey := fs.String("sign-key", "", "Path to an Ed25519 private key (PEM) to sign each audit event; verify with 'agentfence audit verify --pubkey'")
 	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
@@ -1152,19 +1162,27 @@ func runProxyHTTP(args []string) error {
 	defer closeAudit()
 	aw := audit.NewWriterOptions(auditOut, auditOptions)
 
+	// In passthrough mode the engine never runs, so no approver is needed.
 	var approver httpproxy.Approver = httpproxy.DenyAllApprover{}
-	_ = noInteractive // The HTTP proxy's only approver today is deny-all; the
-	// flag is accepted for parity with `proxy` and to reserve the interactive
-	// path. A TTY approver would be wired here.
+	if !*passthrough {
+		a, cleanup, err := newProxyApprover(*noInteractive)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		approver = a
+	}
 
 	opts := httpproxy.Options{
-		Engine:      eng,
-		AuditWriter: aw,
-		Approver:    approver,
-		Upstream:    upstreamURL,
-		Passthrough: *passthrough,
-		Debug:       *debug,
-		Logger:      os.Stderr,
+		Engine:          eng,
+		AuditWriter:     aw,
+		Approver:        approver,
+		ApprovalTimeout: *approvalTimeout,
+		NoInteractive:   *noInteractive,
+		Upstream:        upstreamURL,
+		Passthrough:     *passthrough,
+		Debug:           *debug,
+		Logger:          os.Stderr,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

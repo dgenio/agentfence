@@ -73,11 +73,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audit event JSON Schema** — `schema/agentfence-audit-event.schema.json` plus
   a reference page (`docs/audit-event-schema.md`) and a drift-guard test keeping
   the schema in sync with the Go struct. (#124)
+- **Interactive approval in the proxies** — `agentfence proxy` and `proxy-http`
+  now resolve `ask` decisions through the interactive `TTYApprover` instead of a
+  hardwired deny-all. `--no-interactive` keeps the fail-closed `DenyAllApprover`,
+  and the new `--approval-timeout <duration>` bounds an attended prompt before it
+  auto-denies. (#126)
 
 ### Changed
 - Audit event `schema_version` bumped to `"3"` for the optional `signature`
   field.
 - `docs/threat-model.md` audit-integrity section updated to document signing,
   anchors, rotation, and sinks as implemented mitigations.
+- **Unified approver contract** — `proxy.Approver`/`proxy.DenyAllApprover` and
+  the `httpproxy` equivalents are now type aliases for the single
+  `approval.Approver`/`approval.DenyAllApprover`, so one approver implementation
+  wires into both proxies and `check`. (#137)
+- The proxies now audit the **resolved** `ask` decision (`allow`/`deny`) with the
+  approval outcome appended to the engine's reason (e.g. a taint escalation),
+  rather than auditing the unresolved `ask`. The agent-facing blocked-call
+  message uses the canonical approval reason (`denied interactively`, `approval
+  timeout`, `approval I/O error`) and no longer leaks internal approver error
+  text. (#126)
+- Corrected `docs/integration-guide.md` and `docs/architecture.md`, which still
+  described `proxy-http` and the interactive approver as unimplemented/roadmap
+  and referenced closed issues #29/#30. (#127)
 
 [Unreleased]: https://github.com/dgenio/agentfence/compare/v0.6.0...HEAD
