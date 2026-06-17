@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-17
+
 ### Added
+- **Ed25519-signed audit events** — `--sign-key <pem>` on `check`, `proxy`, and
+  `proxy-http` adds a base64 signature over each event's canonical digest;
+  `agentfence audit keygen` generates a key pair and `agentfence audit verify
+  --pubkey` checks signatures offline. Signing authenticates the writer, which
+  hash chaining alone cannot. (#95)
+- **Audit anchors** — `agentfence audit anchor` emits a compact, publishable
+  commitment to a tamper-evident log's final event; `agentfence audit verify
+  --anchor` detects silent whole-log deletion or truncation against it.
+  `audit anchor --sign-key` signs the anchor and `audit verify --anchor-pubkey`
+  authenticates it, so a published anchor cannot be swapped for one naming an
+  earlier event. (#99)
+- **Audit-log rotation and retention** — `--audit-max-size`, `--audit-max-age`,
+  and `--audit-keep` rotate a long-running log into segments, each of which
+  starts a fresh chain root and stays independently verifiable. (#117)
+- **External audit sinks** — `--audit-sink` streams events to an
+  operator-controlled destination (`syslog://`, `syslog+tcp://`, or
+  `http(s)://` webhook) with best-effort, non-blocking, bounded buffering. (#118)
+- **Audit event JSON Schema** — `schema/agentfence-audit-event.schema.json` plus
+  a reference page (`docs/audit-event-schema.md`) and a drift-guard test keeping
+  the schema in sync with the Go struct. (#124)
+- **Interactive approval in the proxies** — `agentfence proxy` and `proxy-http`
+  now resolve `ask` decisions through the interactive `TTYApprover` instead of a
+  hardwired deny-all. `--no-interactive` keeps the fail-closed `DenyAllApprover`,
+  and the new `--approval-timeout <duration>` bounds an attended prompt before it
+  auto-denies. Interactive proxy approval requires a real `/dev/tty` and never
+  falls back to stdin (which carries the stdio proxy's JSON-RPC channel); with no
+  terminal the proxy exits with guidance to use `--no-interactive`. (#126)
 - `proxy-http`: **fail-closed request handling.** JSON-RPC batch (array) bodies
   are now refused by default (`--on-batch reject`) so a denied `tools/call`
   cannot be smuggled inside an array; `--on-batch evaluate` gates every member
@@ -22,6 +51,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handling. (#145)
 
 ### Changed
+- Audit event `schema_version` bumped to `"3"` for the optional `signature`
+  field.
+- `docs/threat-model.md` audit-integrity section updated to document signing,
+  anchors, rotation, and sinks as implemented mitigations.
+- **Unified approver contract** — `proxy.Approver`/`proxy.DenyAllApprover` and
+  the `httpproxy` equivalents are now type aliases for the single
+  `approval.Approver`/`approval.DenyAllApprover`, so one approver implementation
+  wires into both proxies and `check`. (#137)
+- The proxies now audit the **resolved** `ask` decision (`allow`/`deny`) with the
+  approval outcome appended to the engine's reason (e.g. a taint escalation),
+  rather than auditing the unresolved `ask`. The agent-facing blocked-call
+  message uses the canonical approval reason (`denied interactively`, `approval
+  timeout`, `approval I/O error`) and no longer leaks internal approver error
+  text. (#126)
+- Corrected `docs/integration-guide.md` and `docs/architecture.md`, which still
+  described `proxy-http` and the interactive approver as unimplemented/roadmap
+  and referenced closed issues #29/#30. (#127)
 - `proxy-http`: upstream and internal proxy failures are now surfaced as
   distinct JSON-RPC error envelopes (`-32002` upstream unavailable, `-32003`
   proxy error) addressed to the request id, instead of a generic HTTP 502, so
@@ -73,54 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lessonweaver. The export is read-only over the native log, so the
   hash-chained audit remains verifiable. See [`docs/interop.md`](docs/interop.md). (#77)
 
-## [Unreleased]
-
-### Added
-- **Ed25519-signed audit events** — `--sign-key <pem>` on `check`, `proxy`, and
-  `proxy-http` adds a base64 signature over each event's canonical digest;
-  `agentfence audit keygen` generates a key pair and `agentfence audit verify
-  --pubkey` checks signatures offline. Signing authenticates the writer, which
-  hash chaining alone cannot. (#95)
-- **Audit anchors** — `agentfence audit anchor` emits a compact, publishable
-  commitment to a tamper-evident log's final event; `agentfence audit verify
-  --anchor` detects silent whole-log deletion or truncation against it.
-  `audit anchor --sign-key` signs the anchor and `audit verify --anchor-pubkey`
-  authenticates it, so a published anchor cannot be swapped for one naming an
-  earlier event. (#99)
-- **Audit-log rotation and retention** — `--audit-max-size`, `--audit-max-age`,
-  and `--audit-keep` rotate a long-running log into segments, each of which
-  starts a fresh chain root and stays independently verifiable. (#117)
-- **External audit sinks** — `--audit-sink` streams events to an
-  operator-controlled destination (`syslog://`, `syslog+tcp://`, or
-  `http(s)://` webhook) with best-effort, non-blocking, bounded buffering. (#118)
-- **Audit event JSON Schema** — `schema/agentfence-audit-event.schema.json` plus
-  a reference page (`docs/audit-event-schema.md`) and a drift-guard test keeping
-  the schema in sync with the Go struct. (#124)
-- **Interactive approval in the proxies** — `agentfence proxy` and `proxy-http`
-  now resolve `ask` decisions through the interactive `TTYApprover` instead of a
-  hardwired deny-all. `--no-interactive` keeps the fail-closed `DenyAllApprover`,
-  and the new `--approval-timeout <duration>` bounds an attended prompt before it
-  auto-denies. Interactive proxy approval requires a real `/dev/tty` and never
-  falls back to stdin (which carries the stdio proxy's JSON-RPC channel); with no
-  terminal the proxy exits with guidance to use `--no-interactive`. (#126)
-
-### Changed
-- Audit event `schema_version` bumped to `"3"` for the optional `signature`
-  field.
-- `docs/threat-model.md` audit-integrity section updated to document signing,
-  anchors, rotation, and sinks as implemented mitigations.
-- **Unified approver contract** — `proxy.Approver`/`proxy.DenyAllApprover` and
-  the `httpproxy` equivalents are now type aliases for the single
-  `approval.Approver`/`approval.DenyAllApprover`, so one approver implementation
-  wires into both proxies and `check`. (#137)
-- The proxies now audit the **resolved** `ask` decision (`allow`/`deny`) with the
-  approval outcome appended to the engine's reason (e.g. a taint escalation),
-  rather than auditing the unresolved `ask`. The agent-facing blocked-call
-  message uses the canonical approval reason (`denied interactively`, `approval
-  timeout`, `approval I/O error`) and no longer leaks internal approver error
-  text. (#126)
-- Corrected `docs/integration-guide.md` and `docs/architecture.md`, which still
-  described `proxy-http` and the interactive approver as unimplemented/roadmap
-  and referenced closed issues #29/#30. (#127)
-
-[Unreleased]: https://github.com/dgenio/agentfence/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/dgenio/agentfence/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/dgenio/agentfence/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/dgenio/agentfence/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/dgenio/agentfence/compare/v0.4.0...v0.5.0
