@@ -116,7 +116,20 @@ type Options struct {
 	// for delivery to an external destination (syslog, HTTP webhook). Delivery
 	// is best-effort and never blocks the Write path.
 	Sink Sink
+
+	// Fsync, when true, flushes the destination through to stable storage after
+	// every successful write (and on Sync), so a decision the proxy already
+	// acted on survives a crash or power loss rather than lingering in the OS
+	// page cache. It applies only when the destination implements Sync() error
+	// (a *os.File or *Rotator); for in-memory or discard writers it is a no-op.
+	// Per-event fsync trades throughput for durability and is opt-in.
+	Fsync bool
 }
+
+// syncer is the subset of *os.File (and *Rotator) used to flush buffered audit
+// data through to stable storage. A destination that does not implement it
+// (e.g. a bytes.Buffer or io.Discard) makes Sync a no-op.
+type syncer interface{ Sync() error }
 
 // Writer serialises Events as newline-delimited JSON. It owns the per-session
 // fields (SchemaVersion, SessionID, Sequence) and the hash chain state when
@@ -131,6 +144,7 @@ type Writer struct {
 	signer        *Signer
 	rotator       *Rotator
 	sink          Sink
+	fsync         bool
 }
 
 // NewWriter returns a Writer that does not chain events.
@@ -155,7 +169,32 @@ func NewWriterOptions(w io.Writer, opts Options) *Writer {
 		signer:        opts.Signer,
 		rotator:       opts.Rotator,
 		sink:          opts.Sink,
+		fsync:         opts.Fsync,
 	}
+}
+
+// Sync flushes any buffered audit data through to stable storage when the
+// destination supports it (a *os.File or *Rotator). It is a no-op for
+// destinations that do not implement Sync() (e.g. an in-memory buffer or
+// io.Discard).
+//
+// Sync takes the same lock as Write, so a shutdown path can call it without
+// racing an in-flight writer, and a partially written final line is never
+// observed. It exists so the proxies can guarantee an in-flight decision is
+// durable before exiting on SIGINT/SIGTERM, independent of the per-event Fsync
+// option.
+func (w *Writer) Sync() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.syncLocked()
+}
+
+// syncLocked flushes the destination. The caller must hold w.mu.
+func (w *Writer) syncLocked() error {
+	if s, ok := w.w.(syncer); ok {
+		return s.Sync()
+	}
+	return nil
 }
 
 // SessionID returns the writer's session identifier. Useful for tests and for
@@ -245,10 +284,27 @@ func (w *Writer) Write(event Event) error {
 		w.prevHash = event.Hash
 	}
 
-	// Fan out to the external sink last and best-effort: a slow or failing
-	// sink must never block enforcement or roll back the committed log line.
+	// Fan out to the external sink before the durability fsync, and
+	// best-effort: a slow or failing sink must never block enforcement or roll
+	// back the committed log line. The event is already committed to seq/chain
+	// and written to the destination, so the sink must mirror it regardless of
+	// whether the subsequent fsync succeeds — otherwise a fsync failure would
+	// silently drop the event from the sink while keeping it in the local log.
 	if w.sink != nil {
 		w.sink.Emit(b)
+	}
+
+	// Durability: with Fsync set, force the committed line through to stable
+	// storage before returning so a crash or power loss cannot lose a decision
+	// the proxy already acted on. Without it the line is in the OS page cache
+	// (already flushed from this process), which survives a process crash but
+	// not a sudden power loss. The seq/chain state is already committed above:
+	// a fsync failure is a durability warning on a line that IS written, so it
+	// must not roll back state (which would risk a gap or chain fork on retry).
+	if w.fsync {
+		if err := w.syncLocked(); err != nil {
+			return fmt.Errorf("audit: fsync: %w", err)
+		}
 	}
 	return nil
 }

@@ -33,6 +33,13 @@ var ErrPartialChain = errors.New("audit: log mixes unchained and chained events;
 type VerifyError struct {
 	EventNumber int
 	Reason      string
+
+	// Malformed is true when the failure is a corrupt or unparseable line
+	// (invalid JSON) rather than an integrity break (a hash/prev_hash mismatch
+	// or a missing-hash gap in a chained log). It lets a caller report "corrupt
+	// input" distinctly from "tampering detected" — the two point an
+	// investigator at very different causes (a damaged file vs. a rewritten one).
+	Malformed bool
 }
 
 func (e *VerifyError) Error() string {
@@ -147,6 +154,7 @@ func verifyChain(r io.Reader) (int, string, int, error) {
 			return eventNumber, prevHash, firstChained, &VerifyError{
 				EventNumber: eventNumber,
 				Reason:      fmt.Sprintf("invalid JSON: %s", err),
+				Malformed:   true,
 			}
 		}
 

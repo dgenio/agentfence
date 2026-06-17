@@ -91,6 +91,18 @@ func (r *Rotator) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// Sync flushes the active segment's buffered data through to stable storage,
+// so a rotated log is as durable as a plain one under audit.Writer's Fsync
+// option. It is called by audit.Writer under that writer's lock.
+func (r *Rotator) Sync() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.f == nil {
+		return os.ErrClosed
+	}
+	return r.f.Sync()
+}
+
 // Close closes the active segment.
 func (r *Rotator) Close() error {
 	r.mu.Lock()

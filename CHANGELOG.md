@@ -37,6 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto-denies. Interactive proxy approval requires a real `/dev/tty` and never
   falls back to stdin (which carries the stdio proxy's JSON-RPC channel); with no
   terminal the proxy exits with guidance to use `--no-interactive`. (#126)
+- **Durable audit writes.** `--audit-fsync` (on `check`, `proxy`, and
+  `proxy-http`) forces each audit event through to stable storage before the
+  call proceeds, and again on shutdown, so a decision the proxy already acted on
+  survives a crash or power loss instead of lingering in the OS page cache.
+  `audit.Writer` also gains a `Sync()` method used by the shutdown path. (#132)
+- `proxy`/`proxy-http`: **graceful-shutdown audit flush.** On `SIGINT`/`SIGTERM`
+  the relay stops and the audit destination is flushed (fsync under
+  `--audit-fsync`) and closed before exit, so an in-flight decision is never
+  lost to an attended `Ctrl-C` or an orchestrator's `SIGTERM`; the shutdown
+  ordering is documented in `docs/threat-model.md`. (#158)
+- Race-detector coverage for the stdio proxy's `lockedWriter` (JSON-RPC frame
+  atomicity) and the audit `Writer` (gap-free sequence numbers under
+  concurrency), protecting two security-relevant invariants. (#172)
 - `proxy-http`: **fail-closed request handling.** JSON-RPC batch (array) bodies
   are now refused by default (`--on-batch reject`) so a denied `tools/call`
   cannot be smuggled inside an array; `--on-batch evaluate` gates every member
@@ -73,6 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxy error) addressed to the request id, instead of a generic HTTP 502, so
   the agent and operator can tell a transport failure apart from a policy
   block. (#133)
+- `audit verify` now reports a damaged/unreadable log as `CORRUPT` and an
+  internally inconsistent chain as `FAILED` (possible tampering) on separate
+  status lines, so an operator does not mistake a truncated download or disk
+  fault for an attack. The underlying `audit.VerifyError` carries a `Malformed`
+  flag to distinguish the two. (#180)
 
 ## [0.6.0] - 2026-06-09
 

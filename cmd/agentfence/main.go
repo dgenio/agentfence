@@ -166,6 +166,7 @@ func runCheck(args []string) error {
 	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
 	auditMaxAge := fs.Duration("audit-max-age", 0, "Rotate the audit log once it has been open this long, e.g. 24h (0 = no age rotation; requires --audit-log)")
 	auditKeep := fs.Int("audit-keep", 0, "Number of rotated audit segments to retain (0 = keep all)")
+	auditFsync := fs.Bool("audit-fsync", false, "fsync the audit log to disk after every event so a decision survives a crash or power loss (slower; requires --audit-log)")
 	var auditSinks stringSliceFlag
 	fs.Var(&auditSinks, "audit-sink", "Ship audit events to an external sink; repeatable. Schemes: http(s)://…, syslog://host:port, syslog+tcp://host:port")
 	if err := fs.Parse(args); err != nil {
@@ -223,6 +224,7 @@ func runCheck(args []string) error {
 		maxAge:        *auditMaxAge,
 		keep:          *auditKeep,
 		sinkSpecs:     auditSinks,
+		fsync:         *auditFsync,
 		noFileWriter:  noFileWriter,
 	})
 	if err != nil {
@@ -561,12 +563,12 @@ func scaffoldRootPolicy(names, packFiles []string) string {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
+	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
-	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug] -- <command> [args...]")
-	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--on-batch reject|evaluate] [--on-unparsed forward|reject] [--auth-token <token>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug]")
+	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug] -- <command> [args...]")
+	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--on-batch reject|evaluate] [--on-unparsed forward|reject] [--auth-token <token>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug]")
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
@@ -908,6 +910,14 @@ func verifyChainReport(logPath string) error {
 	default:
 		var ve *audit.VerifyError
 		if errors.As(err, &ve) {
+			// Distinguish a damaged/unreadable line (corrupt input) from a
+			// genuine integrity break (a rewritten or truncated chain): they
+			// point an investigator at very different causes.
+			if ve.Malformed {
+				fmt.Printf("CORRUPT: unreadable event at position %d; the file is damaged or is not an audit log\n", ve.EventNumber)
+			} else {
+				fmt.Printf("FAILED: integrity check failed at event %d (possible tampering)\n", ve.EventNumber)
+			}
 			return fmt.Errorf("audit verify: %s", ve.Error())
 		}
 		return fmt.Errorf("audit verify: %w", err)
@@ -1019,6 +1029,7 @@ func runProxy(args []string) error {
 	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
 	auditMaxAge := fs.Duration("audit-max-age", 0, "Rotate the audit log once it has been open this long, e.g. 24h (0 = no age rotation; requires --audit-log)")
 	auditKeep := fs.Int("audit-keep", 0, "Number of rotated audit segments to retain (0 = keep all)")
+	auditFsync := fs.Bool("audit-fsync", false, "fsync the audit log to disk after every event so a decision survives a crash or power loss (slower; requires --audit-log)")
 	var auditSinks stringSliceFlag
 	fs.Var(&auditSinks, "audit-sink", "Ship audit events to an external sink; repeatable. Schemes: http(s)://…, syslog://host:port, syslog+tcp://host:port")
 	if err := fs.Parse(args); err != nil {
@@ -1055,6 +1066,7 @@ func runProxy(args []string) error {
 		maxAge:        *auditMaxAge,
 		keep:          *auditKeep,
 		sinkSpecs:     auditSinks,
+		fsync:         *auditFsync,
 		noFileWriter:  io.Discard,
 	})
 	if err != nil {
@@ -1121,6 +1133,7 @@ func runProxyHTTP(args []string) error {
 	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
 	auditMaxAge := fs.Duration("audit-max-age", 0, "Rotate the audit log once it has been open this long, e.g. 24h (0 = no age rotation; requires --audit-log)")
 	auditKeep := fs.Int("audit-keep", 0, "Number of rotated audit segments to retain (0 = keep all)")
+	auditFsync := fs.Bool("audit-fsync", false, "fsync the audit log to disk after every event so a decision survives a crash or power loss (slower; requires --audit-log)")
 	var auditSinks stringSliceFlag
 	fs.Var(&auditSinks, "audit-sink", "Ship audit events to an external sink; repeatable. Schemes: http(s)://…, syslog://host:port, syslog+tcp://host:port")
 	if err := fs.Parse(args); err != nil {
@@ -1181,6 +1194,7 @@ func runProxyHTTP(args []string) error {
 		maxAge:        *auditMaxAge,
 		keep:          *auditKeep,
 		sinkSpecs:     auditSinks,
+		fsync:         *auditFsync,
 		noFileWriter:  io.Discard,
 	})
 	if err != nil {
@@ -1289,6 +1303,7 @@ type auditConfig struct {
 	maxAge        time.Duration
 	keep          int
 	sinkSpecs     []string
+	fsync         bool
 	noFileWriter  io.Writer
 }
 
@@ -1306,7 +1321,7 @@ type auditConfig struct {
 // close the file/rotator first, then drain and close any external sink — so a
 // sink never loses buffered events written just before shutdown.
 func openAuditOutput(cfg auditConfig) (io.Writer, func(), audit.Options, error) {
-	options := audit.Options{TamperEvident: cfg.tamperEvident}
+	options := audit.Options{TamperEvident: cfg.tamperEvident, Fsync: cfg.fsync}
 
 	var closers []func()
 	closeAll := func() {
@@ -1352,6 +1367,16 @@ func openAuditOutput(cfg auditConfig) (io.Writer, func(), audit.Options, error) 
 		fmt.Fprintln(os.Stderr, "AgentFence: warning: --audit-keep has no effect without --audit-max-size or --audit-max-age")
 	}
 
+	// fsync only has a destination to flush when a file (or rotated file) backs
+	// the log. Against stdout/discard it is disabled outright: there is nothing
+	// meaningful to flush, and Sync() on a TTY or pipe stdout (check's text
+	// mode) returns EINVAL, which would fail the run. Warn rather than imply a
+	// durability guarantee that isn't there.
+	if cfg.fsync && cfg.path == "" {
+		options.Fsync = false
+		fmt.Fprintln(os.Stderr, "AgentFence: warning: --audit-fsync has no effect without --audit-log")
+	}
+
 	if cfg.path == "" {
 		if rotationRequested {
 			return fail(errors.New("audit: --audit-max-size/--audit-max-age require --audit-log"))
@@ -1380,7 +1405,14 @@ func openAuditOutput(cfg auditConfig) (io.Writer, func(), audit.Options, error) 
 		if err != nil {
 			return fail(err)
 		}
-		closers = append(closers, func() { _ = rot.Close() })
+		closers = append(closers, func() {
+			// On shutdown, force a final flush to stable storage before closing
+			// so a --audit-fsync run loses nothing to a signal-driven exit.
+			if cfg.fsync {
+				_ = rot.Sync()
+			}
+			_ = rot.Close()
+		})
 		if cfg.tamperEvident {
 			lastHash, eventCount, firstChained, err := rot.ResumeState()
 			if err != nil {
@@ -1403,7 +1435,14 @@ func openAuditOutput(cfg auditConfig) (io.Writer, func(), audit.Options, error) 
 	if err != nil {
 		return fail(err)
 	}
-	closers = append(closers, func() { _ = f.Close() })
+	closers = append(closers, func() {
+		// Mirror the rotator path: a final fsync on shutdown guarantees a
+		// --audit-fsync log is durable even if the process is terminated.
+		if cfg.fsync {
+			_ = f.Sync()
+		}
+		_ = f.Close()
+	})
 	if cfg.tamperEvident {
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
 			return fail(err)

@@ -47,6 +47,7 @@ today from what is planned. Do not assume planned features are usable yet.
 | Ed25519-signed audit events (`--sign-key`)          | Implemented    | [`docs/audit-event-schema.md`](docs/audit-event-schema.md), [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | Audit anchors (`audit anchor` / `verify --anchor`)  | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | Audit-log rotation and retention (`--audit-max-*`)  | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
+| Durable audit writes (`--audit-fsync`)              | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | External audit sinks (`--audit-sink` syslog/HTTP)   | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | Audit event JSON Schema                             | Implemented    | [`docs/audit-event-schema.md`](docs/audit-event-schema.md) |
 | Audit-log summarisation (`audit summarize`)         | Implemented    | `agentfence audit summarize --help` |

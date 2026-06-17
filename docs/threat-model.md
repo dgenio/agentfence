@@ -264,6 +264,28 @@ protection, an attacker with filesystem access can rewrite a `deny` to
   and `--audit-keep` rotate a long-running log into segments. Each segment
   starts a fresh chain root, so every rotated file remains independently
   verifiable with `audit verify`.
+- **Durability of recorded decisions.** Every event is written as a single
+  `write(2)` of one JSONL line, so a committed decision reaches the OS page
+  cache immediately and survives a process crash. By default AgentFence does
+  **not** `fsync`, so a *power loss* can still lose the last few buffered
+  events. `--audit-fsync` forces each event through to stable storage before
+  the call is allowed to proceed (and again on shutdown), at a throughput cost;
+  enable it where losing a just-made decision to a hard crash is unacceptable.
+  Because the decision is audited *before* the proxy forwards the call, a
+  terminated proxy never leaves a call made-but-unaudited.
+- **Graceful shutdown.** Both proxies run under
+  `signal.NotifyContext(SIGINT, SIGTERM)`; on a signal the relay stops, then a
+  deferred close flushes (and, under `--audit-fsync`, `fsync`s) and closes the
+  audit destination before the process exits, in that order — so in-flight
+  audit events are not lost to an attended `Ctrl-C` or an orchestrator's
+  `SIGTERM`.
+- **Corrupt input is diagnosed distinctly from tampering.** `audit verify`
+  reports an unreadable/garbled line as `CORRUPT` (a damaged file or a
+  non-audit file) and an internally inconsistent chain as `FAILED` (possible
+  tampering), so an operator does not mistake a truncated download or disk
+  fault for an attack. `audit summarize` tolerates and counts malformed lines
+  so a partially damaged log is still reviewable; `audit export` refuses a
+  malformed line with its line number rather than silently dropping records.
 
 ### Residual risk
 
