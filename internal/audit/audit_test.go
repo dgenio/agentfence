@@ -145,6 +145,36 @@ func TestWriterIsConcurrencySafe(t *testing.T) {
 	}
 }
 
+// TestTamperEvidentWriterIsConcurrencySafe hammers a tamper-evident Writer from
+// many goroutines and asserts the resulting log not only has gap-free sequence
+// numbers but also still verifies as an intact hash chain. Where
+// TestWriterIsConcurrencySafe covers seq contiguity on an unchained writer,
+// this proves the chain links (prev_hash) stay consistent under concurrency —
+// the second half of #172's audit-writer guarantee. Run under `-race`.
+func TestTamperEvidentWriterIsConcurrencySafe(t *testing.T) {
+	const writers = 50
+	buf := &bytes.Buffer{}
+	w := NewWriterOptions(buf, Options{TamperEvident: true, SessionID: "s"})
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = w.Write(Event{CallID: "c", Tool: "t", Decision: policy.DecisionAllow})
+		}()
+	}
+	wg.Wait()
+
+	// The chain must verify end-to-end and cover exactly the events written.
+	n, err := VerifyChain(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("VerifyChain on concurrently written chain: %v", err)
+	}
+	if n != writers {
+		t.Fatalf("VerifyChain counted %d events, want %d", n, writers)
+	}
+}
+
 // ── #33: tamper-evident hash chain ────────────────────────────────────────────
 
 func TestTamperEvidentChainStart(t *testing.T) {

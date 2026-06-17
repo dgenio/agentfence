@@ -131,3 +131,32 @@ func TestWriterFsyncThroughRotatorWritesEvent(t *testing.T) {
 		t.Fatalf("event not durably written: %q", b)
 	}
 }
+
+// recordingSink captures every event handed to it, so a test can assert the
+// Writer fans out to the external sink even on the fsync-failure path.
+type recordingSink struct{ events [][]byte }
+
+func (r *recordingSink) Emit(event []byte) {
+	r.events = append(r.events, append([]byte(nil), event...))
+}
+
+func (r *recordingSink) Close() error { return nil }
+
+// TestWriterFsyncFailureStillEmitsToSink asserts the external sink receives a
+// committed event even when the subsequent fsync fails. The line is already
+// written and seq/chain are committed, so the sink must mirror the local log
+// rather than silently drop the event when fsync errors.
+func TestWriterFsyncFailureStillEmitsToSink(t *testing.T) {
+	sentinel := errors.New("disk full")
+	dst := &countingSyncer{syncErr: sentinel}
+	sink := &recordingSink{}
+	w := NewWriterOptions(dst, Options{Fsync: true, Sink: sink})
+
+	err := w.Write(Event{CallID: "c", Tool: "t", Decision: policy.DecisionAllow})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Write() error = %v, want it to wrap %v", err, sentinel)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("sink received %d events, want 1 despite fsync failure", len(sink.events))
+	}
+}

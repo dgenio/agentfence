@@ -284,6 +284,16 @@ func (w *Writer) Write(event Event) error {
 		w.prevHash = event.Hash
 	}
 
+	// Fan out to the external sink before the durability fsync, and
+	// best-effort: a slow or failing sink must never block enforcement or roll
+	// back the committed log line. The event is already committed to seq/chain
+	// and written to the destination, so the sink must mirror it regardless of
+	// whether the subsequent fsync succeeds — otherwise a fsync failure would
+	// silently drop the event from the sink while keeping it in the local log.
+	if w.sink != nil {
+		w.sink.Emit(b)
+	}
+
 	// Durability: with Fsync set, force the committed line through to stable
 	// storage before returning so a crash or power loss cannot lose a decision
 	// the proxy already acted on. Without it the line is in the OS page cache
@@ -295,12 +305,6 @@ func (w *Writer) Write(event Event) error {
 		if err := w.syncLocked(); err != nil {
 			return fmt.Errorf("audit: fsync: %w", err)
 		}
-	}
-
-	// Fan out to the external sink last and best-effort: a slow or failing
-	// sink must never block enforcement or roll back the committed log line.
-	if w.sink != nil {
-		w.sink.Emit(b)
 	}
 	return nil
 }
