@@ -2410,3 +2410,30 @@ func TestCheckGateSummaryToStderr(t *testing.T) {
 		t.Fatalf("unexpected summary: %+v", gs)
 	}
 }
+
+func TestAuditVerifyJSONMissingLogHasErrorStatus(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist.jsonl")
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", missing, "--output", "json"})
+	})
+	if err == nil {
+		t.Fatal("expected non-zero exit for a missing log file")
+	}
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"chain"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("expected JSON object even on I/O error: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "error" {
+		t.Errorf("expected chain status 'error', got %q", report.Chain.Status)
+	}
+	if report.Chain.Detail == "" {
+		t.Error("expected a non-empty detail for the I/O error")
+	}
+}

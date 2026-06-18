@@ -984,7 +984,8 @@ type auditVerifyReport struct {
 }
 
 // auditChainResult reports the hash-chain check. Status is one of: ok, no_chain,
-// partial, corrupt, failed.
+// partial, corrupt, failed, error (the last covers I/O failures and otherwise
+// unclassified verification errors, so the JSON status is never empty).
 type auditChainResult struct {
 	Status          string `json:"status"`
 	Events          int    `json:"events"`
@@ -1094,7 +1095,7 @@ func runAuditVerify(args []string) error {
 func computeChainResult(logPath string) (auditChainResult, error) {
 	f, err := os.Open(logPath)
 	if err != nil {
-		return auditChainResult{}, err
+		return auditChainResult{Status: "error", Detail: err.Error()}, err
 	}
 	defer f.Close()
 
@@ -1117,6 +1118,8 @@ func computeChainResult(logPath string) (auditChainResult, error) {
 			res.Detail = pe.Error()
 			return res, fmt.Errorf("audit verify: %s", pe.Error())
 		}
+		res.Status = "error"
+		res.Detail = err.Error()
 		return res, fmt.Errorf("audit verify: %w", err)
 	default:
 		var ve *audit.VerifyError
@@ -1133,6 +1136,8 @@ func computeChainResult(logPath string) (auditChainResult, error) {
 			res.Detail = ve.Error()
 			return res, fmt.Errorf("audit verify: %s", ve.Error())
 		}
+		res.Status = "error"
+		res.Detail = err.Error()
 		return res, fmt.Errorf("audit verify: %w", err)
 	}
 }
@@ -1203,11 +1208,12 @@ func (s auditSignatureResult) printText() {
 func computeAnchorResult(logPath, anchorPath, anchorPubKeyPath string) (auditAnchorResult, error) {
 	ab, err := os.ReadFile(anchorPath)
 	if err != nil {
-		return auditAnchorResult{}, err
+		return auditAnchorResult{Status: "error", Detail: err.Error()}, err
 	}
 	var anchor audit.Anchor
 	if err := json.Unmarshal(ab, &anchor); err != nil {
-		return auditAnchorResult{}, fmt.Errorf("audit verify: parse anchor %q: %w", anchorPath, err)
+		wrapped := fmt.Errorf("audit verify: parse anchor %q: %w", anchorPath, err)
+		return auditAnchorResult{Status: "error", Detail: wrapped.Error()}, wrapped
 	}
 	res := auditAnchorResult{AnchoredSeq: anchor.LastSeq}
 
