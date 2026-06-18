@@ -2168,3 +2168,448 @@ func TestRunProxyHTTPRejectsBadEnum(t *testing.T) {
 		t.Errorf("error %q should name the flag", err.Error())
 	}
 }
+
+// ── #171: policy test --output json ─────────────────────────────────────────
+
+func TestPolicyTestJSONOutput(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	testsFile := filepath.Join(dir, "tests.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, testsFile, []byte(`tests:
+  - id: allow-read
+    tool: filesystem.read
+    arguments: {}
+    expect: allow
+  - id: wrong
+    tool: filesystem.read
+    arguments: {}
+    expect: deny
+`))
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runPolicyTest([]string{"--policy", policyFile, "--tests", testsFile, "--output", "json"})
+	})
+	if err == nil {
+		t.Fatal("expected non-zero exit when a case fails")
+	}
+
+	var report struct {
+		Total  int `json:"total"`
+		Passed int `json:"passed"`
+		Failed int `json:"failed"`
+		Cases  []struct {
+			ID     string `json:"id"`
+			Tool   string `json:"tool"`
+			Expect string `json:"expect"`
+			Got    string `json:"got"`
+			Pass   bool   `json:"pass"`
+			Reason string `json:"reason"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, stdout)
+	}
+	if report.Total != 2 || report.Passed != 1 || report.Failed != 1 {
+		t.Fatalf("unexpected totals: %+v", report)
+	}
+	if len(report.Cases) != 2 {
+		t.Fatalf("expected 2 cases, got %d", len(report.Cases))
+	}
+	if !report.Cases[0].Pass || report.Cases[0].Got != "allow" {
+		t.Errorf("case 0 wrong: %+v", report.Cases[0])
+	}
+	if report.Cases[1].Pass || report.Cases[1].Got != "allow" || report.Cases[1].Expect != "deny" {
+		t.Errorf("case 1 wrong: %+v", report.Cases[1])
+	}
+	// JSON mode must not leak PASS/FAIL prose onto the stdout JSON stream.
+	if strings.Contains(stdout, "PASS:") || strings.Contains(stdout, "FAIL:") {
+		t.Errorf("JSON mode leaked prose: %s", stdout)
+	}
+}
+
+func TestPolicyTestUnknownOutput(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	testsFile := filepath.Join(dir, "tests.yaml")
+	writeTestFile(t, policyFile, []byte("version: \"0.1\"\ndefaults:\n  decision: deny\n"))
+	writeTestFile(t, testsFile, []byte("tests:\n  - id: x\n    tool: t\n    arguments: {}\n    expect: deny\n"))
+	err := runPolicyTest([]string{"--policy", policyFile, "--tests", testsFile, "--output", "xml"})
+	if err == nil || !strings.Contains(err.Error(), "unknown --output mode") {
+		t.Fatalf("expected unknown --output error, got %v", err)
+	}
+}
+
+// ── #160: audit verify --output json ────────────────────────────────────────
+
+func TestAuditVerifyJSONOutput(t *testing.T) {
+	auditFile := writeTamperEvidentLog(t)
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("runAuditVerify --output json error: %v\n%s", err, stdout)
+	}
+
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+			Events int    `json:"events"`
+		} `json:"chain"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, stdout)
+	}
+	if report.Chain.Status != "ok" || report.Chain.Events != 3 {
+		t.Fatalf("unexpected chain result: %+v", report.Chain)
+	}
+	// stdout must be pure JSON, not the OK: prose line.
+	if strings.Contains(stdout, "OK:") {
+		t.Errorf("JSON mode leaked prose: %s", stdout)
+	}
+}
+
+func TestAuditVerifyJSONTamperedReturnsError(t *testing.T) {
+	auditFile := writeTamperEvidentLog(t)
+
+	contents, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Replace(contents, []byte(`"reason":"`), []byte(`"reason":"TAMPER:`), 1)
+	if bytes.Equal(tampered, contents) {
+		t.Fatal("test setup failed: nothing replaced")
+	}
+	if err := os.WriteFile(auditFile, tampered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--output", "json"})
+	})
+	if err == nil {
+		t.Fatal("expected non-zero exit on a tampered log in JSON mode")
+	}
+
+	// The JSON object must still be emitted so a pipeline can read the status.
+	var report struct {
+		Chain struct {
+			Status   string `json:"status"`
+			BadEvent int    `json:"bad_event"`
+		} `json:"chain"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("expected JSON object even on failure: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "failed" {
+		t.Errorf("expected chain status 'failed', got %q", report.Chain.Status)
+	}
+}
+
+func TestAuditVerifyUnknownOutput(t *testing.T) {
+	auditFile := writeTamperEvidentLog(t)
+	err := runAuditVerify([]string{"--log", auditFile, "--output", "yaml"})
+	if err == nil || !strings.Contains(err.Error(), "unknown --output mode") {
+		t.Fatalf("expected unknown --output error, got %v", err)
+	}
+}
+
+// ── #150: check --summary gate summary ──────────────────────────────────────
+
+func TestCheckGateSummaryFile(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	summaryFile := filepath.Join(dir, "summary.json")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(
+		`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"+
+			`{"id":"c2","tool":"github.delete_repo","arguments":{}}`+"\n"+
+			`{"id":"c3","tool":"github.delete_repo","arguments":{}}`+"\n",
+	))
+
+	_, _, err := captureOutput(t, func() error {
+		return runCheck([]string{
+			"--policy", policyFile,
+			"--call", callFile,
+			"--output", "json",
+			"--fail-on", "deny",
+			"--summary", summaryFile,
+		})
+	})
+	if err == nil {
+		t.Fatal("expected non-zero exit (2 denies with --fail-on deny)")
+	}
+
+	b, readErr := os.ReadFile(summaryFile)
+	if readErr != nil {
+		t.Fatalf("gate summary not written: %v", readErr)
+	}
+	var gs struct {
+		Total          int            `json:"total"`
+		ParseErrors    int            `json:"parse_errors"`
+		ByDecision     map[string]int `json:"by_decision"`
+		TopDeniedTools []struct {
+			Tool  string `json:"tool"`
+			Count int    `json:"count"`
+		} `json:"top_denied_tools"`
+		FailOn  []string `json:"fail_on"`
+		Matched int      `json:"matched"`
+		Failed  bool     `json:"failed"`
+		DryRun  bool     `json:"dry_run"`
+	}
+	if err := json.Unmarshal(b, &gs); err != nil {
+		t.Fatalf("invalid gate summary JSON: %v\n%s", err, b)
+	}
+	if gs.Total != 3 || gs.ByDecision["allow"] != 1 || gs.ByDecision["deny"] != 2 {
+		t.Fatalf("unexpected counts: %+v", gs)
+	}
+	if gs.Matched != 2 || !gs.Failed {
+		t.Errorf("expected matched=2 failed=true, got matched=%d failed=%v", gs.Matched, gs.Failed)
+	}
+	if len(gs.TopDeniedTools) != 1 || gs.TopDeniedTools[0].Tool != "github.delete_repo" || gs.TopDeniedTools[0].Count != 2 {
+		t.Errorf("unexpected top denied tools: %+v", gs.TopDeniedTools)
+	}
+}
+
+func TestCheckGateSummaryToStderr(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	writeTestFile(t, policyFile, []byte("version: \"0.1\"\ndefaults:\n  decision: deny\n"))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"x.y","arguments":{}}`+"\n"))
+
+	_, stderr, err := captureOutput(t, func() error {
+		return runCheck([]string{"--policy", policyFile, "--call", callFile, "--output", "json", "--summary", "-"})
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	var gs struct {
+		Total      int            `json:"total"`
+		ByDecision map[string]int `json:"by_decision"`
+		Failed     bool           `json:"failed"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stderr)), &gs); e != nil {
+		t.Fatalf("gate summary not on stderr as JSON: %v\nstderr: %s", e, stderr)
+	}
+	if gs.Total != 1 || gs.ByDecision["deny"] != 1 || gs.Failed {
+		t.Fatalf("unexpected summary: %+v", gs)
+	}
+}
+
+func TestAuditVerifyJSONMissingLogHasErrorStatus(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist.jsonl")
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", missing, "--output", "json"})
+	})
+	if err == nil {
+		t.Fatal("expected non-zero exit for a missing log file")
+	}
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"chain"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("expected JSON object even on I/O error: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "error" {
+		t.Errorf("expected chain status 'error', got %q", report.Chain.Status)
+	}
+	if report.Chain.Detail == "" {
+		t.Error("expected a non-empty detail for the I/O error")
+	}
+}
+
+// ── #160 follow-up: audit verify --output json signatures & anchor contracts ──
+// The chain sub-object is covered above; these lock down the signatures
+// (--pubkey) and anchor (--anchor) sub-objects — public JSON contracts that
+// were previously unexercised in JSON mode — plus the no_chain chain status.
+
+func TestAuditVerifyJSONWithSignatures(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+	privFile := filepath.Join(dir, "key.pem")
+	pubFile := filepath.Join(dir, "key.pub")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(
+		`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"+
+			`{"id":"c2","tool":"filesystem.read","arguments":{"path":"go.mod"}}`+"\n"+
+			`{"id":"c3","tool":"filesystem.read","arguments":{"path":"main.go"}}`+"\n",
+	))
+
+	if _, _, err := captureOutput(t, func() error {
+		return runAuditKeygen([]string{"--private", privFile, "--public", pubFile})
+	}); err != nil {
+		t.Fatalf("audit keygen: %v", err)
+	}
+
+	if _, _, err := captureOutput(t, func() error {
+		return runCheck([]string{
+			"--policy", policyFile,
+			"--call", callFile,
+			"--audit-log", auditFile,
+			"--output", "json",
+			"--tamper-evident",
+			"--sign-key", privFile,
+		})
+	}); err != nil {
+		t.Fatalf("runCheck --sign-key: %v", err)
+	}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--pubkey", pubFile, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("audit verify --pubkey --output json: %v\n%s", err, stdout)
+	}
+
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+		} `json:"chain"`
+		Signatures *struct {
+			Status   string `json:"status"`
+			Verified int    `json:"verified"`
+			Unsigned int    `json:"unsigned"`
+		} `json:"signatures"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "ok" {
+		t.Errorf("expected chain status 'ok', got %q", report.Chain.Status)
+	}
+	if report.Signatures == nil {
+		t.Fatal("expected a signatures sub-object in JSON output")
+	}
+	if report.Signatures.Status != "ok" || report.Signatures.Verified != 3 || report.Signatures.Unsigned != 0 {
+		t.Errorf("unexpected signatures result: %+v", report.Signatures)
+	}
+	// JSON mode must not leak the SIGNATURES: prose line onto the stdout stream.
+	if strings.Contains(stdout, "SIGNATURES:") {
+		t.Errorf("JSON mode leaked prose: %s", stdout)
+	}
+}
+
+func TestAuditVerifyJSONWithAnchor(t *testing.T) {
+	auditFile := writeTamperEvidentLog(t)
+	anchorFile := filepath.Join(filepath.Dir(auditFile), "anchor.json")
+
+	if _, _, err := captureOutput(t, func() error {
+		return runAuditAnchor([]string{"--log", auditFile, "--out", anchorFile})
+	}); err != nil {
+		t.Fatalf("audit anchor: %v", err)
+	}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--anchor", anchorFile, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("audit verify --anchor --output json: %v\n%s", err, stdout)
+	}
+
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+		} `json:"chain"`
+		Anchor *struct {
+			Status          string `json:"status"`
+			AnchoredSeq     uint64 `json:"anchored_seq"`
+			SignatureStatus string `json:"signature_status"`
+		} `json:"anchor"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "ok" {
+		t.Errorf("expected chain status 'ok', got %q", report.Chain.Status)
+	}
+	if report.Anchor == nil {
+		t.Fatal("expected an anchor sub-object in JSON output")
+	}
+	if report.Anchor.Status != "ok" {
+		t.Errorf("expected anchor status 'ok', got %q", report.Anchor.Status)
+	}
+	// No --anchor-pubkey and an unsigned anchor → signature_status not_checked.
+	if report.Anchor.SignatureStatus != "not_checked" {
+		t.Errorf("expected anchor signature_status 'not_checked', got %q", report.Anchor.SignatureStatus)
+	}
+	// JSON mode must not leak the ANCHOR: prose line onto the stdout stream.
+	if strings.Contains(stdout, "ANCHOR:") {
+		t.Errorf("JSON mode leaked prose: %s", stdout)
+	}
+}
+
+func TestAuditVerifyJSONNoChainStatus(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"))
+
+	// Plain check (no --tamper-evident) → the log carries no hash chain.
+	if _, _, err := captureOutput(t, func() error {
+		return runCheck([]string{"--policy", policyFile, "--call", callFile, "--audit-log", auditFile, "--output", "json"})
+	}); err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("audit verify on a non-chained log should not error: %v\n%s", err, stdout)
+	}
+
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"chain"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("expected pure JSON on stdout: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "no_chain" {
+		t.Errorf("expected chain status 'no_chain', got %q", report.Chain.Status)
+	}
+	// JSON mode must not leak the PARSED: prose line onto the stdout stream.
+	if strings.Contains(stdout, "PARSED:") {
+		t.Errorf("JSON mode leaked prose: %s", stdout)
+	}
+}

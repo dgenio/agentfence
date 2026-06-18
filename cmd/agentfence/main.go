@@ -43,6 +43,98 @@ type DecisionSummary struct {
 	Reason   string          `json:"reason"`
 }
 
+// checkGateSummary is the machine-readable artifact written by `check
+// --summary <path>`. It is independent of --output so CI can consume a stable
+// gate summary (per-decision counts, top denied tools/reasons, and whether the
+// gate failed) without parsing the decision stream or recomputing it with jq.
+type checkGateSummary struct {
+	Total            int               `json:"total"`
+	ParseErrors      int               `json:"parse_errors"`
+	ByDecision       map[string]int    `json:"by_decision"`
+	TopDeniedTools   []gateToolCount   `json:"top_denied_tools"`
+	TopDeniedReasons []gateReasonCount `json:"top_denied_reasons"`
+	FailOn           []string          `json:"fail_on,omitempty"`
+	Matched          int               `json:"matched"`
+	Failed           bool              `json:"failed"`
+	DryRun           bool              `json:"dry_run"`
+}
+
+type gateToolCount struct {
+	Tool  string `json:"tool"`
+	Count int    `json:"count"`
+}
+
+type gateReasonCount struct {
+	Reason string `json:"reason"`
+	Count  int    `json:"count"`
+}
+
+// decisionCounts renders the per-decision tally with all three classes always
+// present, so the JSON shape is stable regardless of which decisions occurred.
+func decisionCounts(counts map[policy.Decision]int) map[string]int {
+	return map[string]int{
+		"allow": counts[policy.DecisionAllow],
+		"deny":  counts[policy.DecisionDeny],
+		"ask":   counts[policy.DecisionAsk],
+	}
+}
+
+func topToolRows(m map[string]int, topN int) []gateToolCount {
+	keys := sortedByCount(m, topN)
+	rows := make([]gateToolCount, len(keys))
+	for i, k := range keys {
+		rows[i] = gateToolCount{Tool: k, Count: m[k]}
+	}
+	return rows
+}
+
+func topReasonRows(m map[string]int, topN int) []gateReasonCount {
+	keys := sortedByCount(m, topN)
+	rows := make([]gateReasonCount, len(keys))
+	for i, k := range keys {
+		rows[i] = gateReasonCount{Reason: k, Count: m[k]}
+	}
+	return rows
+}
+
+// sortedByCount returns the map keys ordered by count descending, then key
+// ascending for deterministic ties, bounded to topN (non-positive = all).
+func sortedByCount(m map[string]int, topN int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if m[keys[i]] != m[keys[j]] {
+			return m[keys[i]] > m[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	if topN > 0 && len(keys) > topN {
+		keys = keys[:topN]
+	}
+	return keys
+}
+
+// writeGateSummary writes the gate summary as indented JSON to path, or to
+// stderr when path is "-" (stdout is reserved for the --output decision stream).
+func writeGateSummary(path string, gs checkGateSummary) error {
+	b, err := json.MarshalIndent(gs, "", "  ")
+	if err != nil {
+		return fmt.Errorf("check: gate summary marshal: %w", err)
+	}
+	if path == "-" {
+		if _, err := fmt.Fprintf(os.Stderr, "%s\n", b); err != nil {
+			return fmt.Errorf("check: write gate summary: %w", err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		return fmt.Errorf("check: write gate summary: %w", err)
+	}
+	return nil
+}
+
 func main() {
 	if err := runRoot(os.Args[1:]); err != nil {
 		// Subprocess exit propagation: the proxy returns *exec.ExitError when
@@ -158,6 +250,7 @@ func runCheck(args []string) error {
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	outputMode := fs.String("output", "text", "Output mode: text, json, jsonl")
 	failOn := fs.String("fail-on", "", "Comma-separated decisions to fail on: deny, ask")
+	summaryPath := fs.String("summary", "", "Write a machine-readable JSON gate summary (per-decision counts, top denied tools/reasons) independent of --output. Pass a file path for a clean artifact (written even when --fail-on fails); pass - to write to stderr, which on a gate failure also carries diagnostic lines and is not pure JSON")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
 	dryRun := fs.Bool("dry-run", false, "Evaluate and audit without enforcing: ask decisions are not prompted, and --fail-on does not change the exit code")
 	noInteractive := fs.Bool("no-interactive", false, "Do not prompt the operator on ask decisions; auto-deny instead")
@@ -261,6 +354,8 @@ func runCheck(args []string) error {
 	lineNum := 0
 	parseErrors := 0
 	counts := map[policy.Decision]int{}
+	deniedTools := map[string]int{}
+	deniedReasons := map[string]int{}
 	summaries := make([]DecisionSummary, 0)
 
 	for scanner.Scan() {
@@ -332,6 +427,12 @@ func runCheck(args []string) error {
 		}
 
 		counts[res.Decision]++
+		if res.Decision == policy.DecisionDeny {
+			if call.Tool != "" {
+				deniedTools[call.Tool]++
+			}
+			deniedReasons[res.Reason]++
+		}
 		if err := aw.Write(event); err != nil {
 			return err
 		}
@@ -359,26 +460,47 @@ func runCheck(args []string) error {
 		return fmt.Errorf("all %d line(s) failed to parse; no calls were evaluated", lineNum)
 	}
 
+	// Compute the --fail-on tally once: it drives both the optional gate summary
+	// and the exit decision below.
+	matched := 0
+	gated := make([]string, 0, len(failOnSet))
+	for d := range failOnSet {
+		matched += counts[d]
+		gated = append(gated, string(d))
+	}
+	sort.Strings(gated)
+	gateFailed := !*dryRun && len(failOnSet) > 0 && matched > 0
+
+	// --summary: emit a machine-readable gate summary independent of --output,
+	// so CI can surface "what was denied" without a second `audit summarize`
+	// pass or bespoke jq over the decision stream. Written before the --fail-on
+	// exit so the artifact exists even when the gate fails.
+	if *summaryPath != "" {
+		gs := checkGateSummary{
+			Total:            lineNum,
+			ParseErrors:      parseErrors,
+			ByDecision:       decisionCounts(counts),
+			TopDeniedTools:   topToolRows(deniedTools, 10),
+			TopDeniedReasons: topReasonRows(deniedReasons, 10),
+			FailOn:           gated,
+			Matched:          matched,
+			Failed:           gateFailed,
+			DryRun:           *dryRun,
+		}
+		if err := writeGateSummary(*summaryPath, gs); err != nil {
+			return err
+		}
+	}
+
 	// --fail-on: exit 1 if any call matched a gated decision. In dry-run we
 	// report what would have failed but do not propagate the non-zero exit —
 	// the whole point of dry-run is "evaluate without enforcing."
-	if len(failOnSet) > 0 {
-		matched := 0
-		for d := range failOnSet {
-			matched += counts[d]
-		}
-		if matched > 0 {
-			gated := make([]string, 0, len(failOnSet))
-			for d := range failOnSet {
-				gated = append(gated, string(d))
-			}
-			sort.Strings(gated)
-			if *dryRun {
-				fmt.Fprintf(os.Stderr, "AgentFence: dry-run: %d call(s) would have matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
-			} else {
-				fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
-				return fmt.Errorf("%d call(s) matched --fail-on criteria", matched)
-			}
+	if len(failOnSet) > 0 && matched > 0 {
+		if *dryRun {
+			fmt.Fprintf(os.Stderr, "AgentFence: dry-run: %d call(s) would have matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+		} else {
+			fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+			return fmt.Errorf("%d call(s) matched --fail-on criteria", matched)
 		}
 	}
 
@@ -563,14 +685,14 @@ func scaffoldRootPolicy(names, packFiles []string) string {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
+	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--summary <file|->] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
-	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
+	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--output text|json] [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
 	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug] -- <command> [args...]")
 	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--on-batch reject|evaluate] [--on-unparsed forward|reject] [--auth-token <token>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug]")
 	fmt.Println("  agentfence validate --policy <file>")
-	fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
+	fmt.Println("  agentfence audit   verify    --log <file> [--output text|json] [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
 	fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
 	fmt.Println("  agentfence audit   keygen    --private <file> --public <file>")
@@ -666,7 +788,7 @@ func runAuditSubcmd(args []string) error {
 	}
 	if isHelpArg(args[0]) {
 		fmt.Println("Usage:")
-		fmt.Println("  agentfence audit   verify    --log <file> [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
+		fmt.Println("  agentfence audit   verify    --log <file> [--output text|json] [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
 		fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
 		fmt.Println("  agentfence audit   export    --log <file> [--format weaver-trace]")
 		fmt.Println("  agentfence audit   keygen    --private <file> --public <file>")
@@ -851,90 +973,203 @@ func runAuditSummarize(args []string) error {
 	return nil
 }
 
+// auditVerifyReport is the combined result of `audit verify --output json`. The
+// chain check always runs; signatures and anchor are present only when their
+// respective flags were given. Each sub-result carries a stable status enum so
+// CI and monitoring can act on integrity without parsing prose.
+type auditVerifyReport struct {
+	Chain      auditChainResult      `json:"chain"`
+	Signatures *auditSignatureResult `json:"signatures,omitempty"`
+	Anchor     *auditAnchorResult    `json:"anchor,omitempty"`
+}
+
+// auditChainResult reports the hash-chain check. Status is one of: ok, no_chain,
+// partial, corrupt, failed, error (the last covers I/O failures and otherwise
+// unclassified verification errors, so the JSON status is never empty).
+type auditChainResult struct {
+	Status          string `json:"status"`
+	Events          int    `json:"events"`
+	ChainStartEvent int    `json:"chain_start_event,omitempty"`
+	BadEvent        int    `json:"bad_event,omitempty"`
+	Detail          string `json:"detail,omitempty"`
+}
+
+// auditSignatureResult reports Ed25519 signature verification. Status is one of:
+// ok, no_signatures, error.
+type auditSignatureResult struct {
+	Status   string `json:"status"`
+	Verified int    `json:"verified"`
+	Unsigned int    `json:"unsigned"`
+	Detail   string `json:"detail,omitempty"`
+
+	// reported records whether a SIGNATURES count line was produced, so the
+	// text presenter matches the historical behaviour of staying silent when
+	// verification itself errored before any counts were available.
+	reported bool
+}
+
+// auditAnchorResult reports anchor truncation detection. Status is one of: ok,
+// truncated, error. SignatureStatus is one of: verified, unsigned,
+// signed_unverified, not_checked, error.
+type auditAnchorResult struct {
+	Status          string `json:"status,omitempty"`
+	AnchoredSeq     uint64 `json:"anchored_seq"`
+	SignatureStatus string `json:"signature_status,omitempty"`
+	Detail          string `json:"detail,omitempty"`
+}
+
 // runAuditVerify checks the tamper-evident hash chain of a JSONL audit log and,
 // optionally, the Ed25519 signatures (--pubkey) and presence of a previously
-// published anchor (--anchor).
+// published anchor (--anchor). With --output json it emits a single combined
+// result object; exit-code semantics are identical in both modes.
 func runAuditVerify(args []string) error {
 	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
 	logPath := fs.String("log", "", "Path to audit JSONL log to verify")
 	pubKeyPath := fs.String("pubkey", "", "Optional Ed25519 public key (PEM) to verify event signatures")
 	anchorPath := fs.String("anchor", "", "Optional anchor JSON (from 'audit anchor') to confirm the log has not been truncated")
 	anchorPubKeyPath := fs.String("anchor-pubkey", "", "Optional Ed25519 public key (PEM) to authenticate a signed anchor (from 'audit anchor --sign-key')")
+	outputMode := fs.String("output", "text", "Output mode: text, json")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
 	}
 	if *logPath == "" {
 		return errors.New("--log is required")
 	}
+	switch *outputMode {
+	case "text", "json":
+	default:
+		return fmt.Errorf("unknown --output mode %q; valid values: text, json", *outputMode)
+	}
+	jsonOut := *outputMode == "json"
 
-	if err := verifyChainReport(*logPath); err != nil {
-		return err
+	report := auditVerifyReport{}
+	// finish emits the JSON object once (in json mode) and returns the gating
+	// error so the exit code is identical to text mode.
+	finish := func(gateErr error) error {
+		if jsonOut {
+			b, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				return fmt.Errorf("audit verify: json marshal: %w", err)
+			}
+			fmt.Printf("%s\n", b)
+		}
+		return gateErr
 	}
+
+	chain, err := computeChainResult(*logPath)
+	report.Chain = chain
+	if !jsonOut {
+		chain.printText()
+	}
+	if err != nil {
+		return finish(err)
+	}
+
 	if *pubKeyPath != "" {
-		if err := verifySignaturesReport(*logPath, *pubKeyPath); err != nil {
-			return err
+		sig, err := computeSignatureResult(*logPath, *pubKeyPath)
+		report.Signatures = &sig
+		if !jsonOut {
+			sig.printText()
+		}
+		if err != nil {
+			return finish(err)
 		}
 	}
+
 	if *anchorPath != "" {
-		if err := verifyAnchorReport(*logPath, *anchorPath, *anchorPubKeyPath); err != nil {
-			return err
+		anc, err := computeAnchorResult(*logPath, *anchorPath, *anchorPubKeyPath)
+		report.Anchor = &anc
+		if !jsonOut {
+			anc.printText()
+		}
+		if err != nil {
+			return finish(err)
 		}
 	}
-	return nil
+
+	return finish(nil)
 }
 
-// verifyChainReport runs the hash-chain check and prints a status line.
-func verifyChainReport(logPath string) error {
+// computeChainResult runs the hash-chain check and maps it onto a structured
+// result plus the gating error (nil for ok / no_chain, non-nil otherwise).
+func computeChainResult(logPath string) (auditChainResult, error) {
 	f, err := os.Open(logPath)
 	if err != nil {
-		return err
+		return auditChainResult{Status: "error", Detail: err.Error()}, err
 	}
 	defer f.Close()
 
 	n, err := audit.VerifyChain(f)
+	res := auditChainResult{Events: n}
 	switch {
 	case err == nil:
-		fmt.Printf("OK: %d event(s) verified\n", n)
-		return nil
+		res.Status = "ok"
+		return res, nil
 	case errors.Is(err, audit.ErrNoChain):
-		fmt.Fprintf(os.Stderr, "AgentFence: warning: %s; cannot verify integrity\n", err)
-		fmt.Printf("PARSED: %d event(s); chain absent\n", n)
-		return nil
+		res.Status = "no_chain"
+		res.Detail = err.Error()
+		return res, nil
 	case errors.Is(err, audit.ErrPartialChain):
 		var pe *audit.PartialChainError
 		if errors.As(err, &pe) {
-			fmt.Printf("PARTIAL: %d event(s); chain starts at event %d; events 1..%d are not integrity-protected\n", pe.Total, pe.ChainStartEvent, pe.ChainStartEvent-1)
-			return fmt.Errorf("audit verify: %s", pe.Error())
+			res.Status = "partial"
+			res.Events = pe.Total
+			res.ChainStartEvent = pe.ChainStartEvent
+			res.Detail = pe.Error()
+			return res, fmt.Errorf("audit verify: %s", pe.Error())
 		}
-		return fmt.Errorf("audit verify: %w", err)
+		res.Status = "error"
+		res.Detail = err.Error()
+		return res, fmt.Errorf("audit verify: %w", err)
 	default:
 		var ve *audit.VerifyError
 		if errors.As(err, &ve) {
 			// Distinguish a damaged/unreadable line (corrupt input) from a
 			// genuine integrity break (a rewritten or truncated chain): they
 			// point an investigator at very different causes.
+			res.BadEvent = ve.EventNumber
 			if ve.Malformed {
-				fmt.Printf("CORRUPT: unreadable event at position %d; the file is damaged or is not an audit log\n", ve.EventNumber)
+				res.Status = "corrupt"
 			} else {
-				fmt.Printf("FAILED: integrity check failed at event %d (possible tampering)\n", ve.EventNumber)
+				res.Status = "failed"
 			}
-			return fmt.Errorf("audit verify: %s", ve.Error())
+			res.Detail = ve.Error()
+			return res, fmt.Errorf("audit verify: %s", ve.Error())
 		}
-		return fmt.Errorf("audit verify: %w", err)
+		res.Status = "error"
+		res.Detail = err.Error()
+		return res, fmt.Errorf("audit verify: %w", err)
 	}
 }
 
-// verifySignaturesReport verifies Ed25519 signatures and prints a status line.
-// A non-empty log with no verifiable signatures is reported as a failure, since
-// the operator explicitly asked for signature verification.
-func verifySignaturesReport(logPath, pubKeyPath string) error {
+// printText reproduces the historical one-line chain status output.
+func (c auditChainResult) printText() {
+	switch c.Status {
+	case "ok":
+		fmt.Printf("OK: %d event(s) verified\n", c.Events)
+	case "no_chain":
+		fmt.Fprintf(os.Stderr, "AgentFence: warning: %s; cannot verify integrity\n", c.Detail)
+		fmt.Printf("PARSED: %d event(s); chain absent\n", c.Events)
+	case "partial":
+		fmt.Printf("PARTIAL: %d event(s); chain starts at event %d; events 1..%d are not integrity-protected\n", c.Events, c.ChainStartEvent, c.ChainStartEvent-1)
+	case "corrupt":
+		fmt.Printf("CORRUPT: unreadable event at position %d; the file is damaged or is not an audit log\n", c.BadEvent)
+	case "failed":
+		fmt.Printf("FAILED: integrity check failed at event %d (possible tampering)\n", c.BadEvent)
+	}
+}
+
+// computeSignatureResult verifies Ed25519 signatures. A non-empty log with no
+// verifiable signatures is a failure, since the operator explicitly asked for
+// signature verification.
+func computeSignatureResult(logPath, pubKeyPath string) (auditSignatureResult, error) {
 	pub, err := audit.LoadPublicKey(pubKeyPath)
 	if err != nil {
-		return err
+		return auditSignatureResult{Status: "error", Detail: err.Error()}, err
 	}
 	f, err := os.Open(logPath)
 	if err != nil {
-		return err
+		return auditSignatureResult{Status: "error", Detail: err.Error()}, err
 	}
 	defer f.Close()
 
@@ -942,69 +1177,109 @@ func verifySignaturesReport(logPath, pubKeyPath string) error {
 	if err != nil {
 		var ve *audit.VerifyError
 		if errors.As(err, &ve) {
-			return fmt.Errorf("audit verify: signature: %s", ve.Error())
+			return auditSignatureResult{Status: "error", Detail: ve.Error()}, fmt.Errorf("audit verify: signature: %s", ve.Error())
 		}
-		return fmt.Errorf("audit verify: signature: %w", err)
+		return auditSignatureResult{Status: "error", Detail: err.Error()}, fmt.Errorf("audit verify: signature: %w", err)
 	}
-	fmt.Printf("SIGNATURES: %d verified, %d unsigned\n", verified, unsigned)
+	res := auditSignatureResult{Status: "ok", Verified: verified, Unsigned: unsigned, reported: true}
 	if verified == 0 && unsigned > 0 {
-		return fmt.Errorf("audit verify: no events were signed by the given key")
+		res.Status = "no_signatures"
+		res.Detail = "no events were signed by the given key"
+		return res, fmt.Errorf("audit verify: no events were signed by the given key")
 	}
-	return nil
+	return res, nil
 }
 
-// verifyAnchorReport confirms the log still contains the anchored event and,
+// printText reproduces the historical SIGNATURES status line. It stays silent
+// when verification errored before any counts were available.
+func (s auditSignatureResult) printText() {
+	if !s.reported {
+		return
+	}
+	fmt.Printf("SIGNATURES: %d verified, %d unsigned\n", s.Verified, s.Unsigned)
+}
+
+// computeAnchorResult confirms the log still contains the anchored event and,
 // when an anchor public key is supplied, that the anchor itself is
 // authentically signed — truncation detection is only trustworthy if the
 // anchor we compare against was not itself swapped for one naming an earlier
 // event. The anchor key is separate from the event-signing key (--pubkey): a
 // log may sign its events, its anchor, both, or neither, with distinct keys.
-func verifyAnchorReport(logPath, anchorPath, anchorPubKeyPath string) error {
+func computeAnchorResult(logPath, anchorPath, anchorPubKeyPath string) (auditAnchorResult, error) {
 	ab, err := os.ReadFile(anchorPath)
 	if err != nil {
-		return err
+		return auditAnchorResult{Status: "error", Detail: err.Error()}, err
 	}
 	var anchor audit.Anchor
 	if err := json.Unmarshal(ab, &anchor); err != nil {
-		return fmt.Errorf("audit verify: parse anchor %q: %w", anchorPath, err)
+		wrapped := fmt.Errorf("audit verify: parse anchor %q: %w", anchorPath, err)
+		return auditAnchorResult{Status: "error", Detail: wrapped.Error()}, wrapped
 	}
+	res := auditAnchorResult{AnchoredSeq: anchor.LastSeq}
 
 	if anchorPubKeyPath != "" {
 		pub, err := audit.LoadPublicKey(anchorPubKeyPath)
 		if err != nil {
-			return err
+			res.SignatureStatus = "error"
+			return res, err
 		}
 		switch err := audit.VerifyAnchorSignature(anchor, pub); {
 		case err == nil:
-			fmt.Println("ANCHOR SIGNATURE: verified")
+			res.SignatureStatus = "verified"
 		case errors.Is(err, audit.ErrNoSignature):
-			fmt.Fprintln(os.Stderr, "AgentFence: warning: anchor is unsigned; its origin cannot be authenticated")
+			res.SignatureStatus = "unsigned"
 		default:
-			return fmt.Errorf("audit verify: anchor signature: %w", err)
+			res.SignatureStatus = "error"
+			return res, fmt.Errorf("audit verify: anchor signature: %w", err)
 		}
 	} else if anchor.Signature != "" {
-		fmt.Fprintln(os.Stderr, "AgentFence: warning: anchor is signed but no --anchor-pubkey was given; its signature was not verified")
+		res.SignatureStatus = "signed_unverified"
+	} else {
+		res.SignatureStatus = "not_checked"
 	}
 
 	f, err := os.Open(logPath)
 	if err != nil {
-		return err
+		return res, err
 	}
 	defer f.Close()
 
 	switch err := audit.VerifyAgainstAnchor(f, anchor); {
 	case err == nil:
-		fmt.Printf("ANCHOR: log still contains anchored event seq=%d\n", anchor.LastSeq)
-		return nil
+		res.Status = "ok"
+		return res, nil
 	case errors.Is(err, audit.ErrAnchorTruncated):
-		fmt.Printf("ANCHOR: FAILED — anchored event seq=%d is missing\n", anchor.LastSeq)
-		return fmt.Errorf("audit verify: %w", err)
+		res.Status = "truncated"
+		res.Detail = err.Error()
+		return res, fmt.Errorf("audit verify: %w", err)
 	default:
+		res.Status = "error"
 		var ve *audit.VerifyError
 		if errors.As(err, &ve) {
-			return fmt.Errorf("audit verify: anchor: %s", ve.Error())
+			res.Detail = ve.Error()
+			return res, fmt.Errorf("audit verify: anchor: %s", ve.Error())
 		}
-		return fmt.Errorf("audit verify: anchor: %w", err)
+		res.Detail = err.Error()
+		return res, fmt.Errorf("audit verify: anchor: %w", err)
+	}
+}
+
+// printText reproduces the historical anchor status output, including the
+// stderr warnings for an unsigned or unverified-signature anchor.
+func (a auditAnchorResult) printText() {
+	switch a.SignatureStatus {
+	case "verified":
+		fmt.Println("ANCHOR SIGNATURE: verified")
+	case "unsigned":
+		fmt.Fprintln(os.Stderr, "AgentFence: warning: anchor is unsigned; its origin cannot be authenticated")
+	case "signed_unverified":
+		fmt.Fprintln(os.Stderr, "AgentFence: warning: anchor is signed but no --anchor-pubkey was given; its signature was not verified")
+	}
+	switch a.Status {
+	case "ok":
+		fmt.Printf("ANCHOR: log still contains anchored event seq=%d\n", a.AnchoredSeq)
+	case "truncated":
+		fmt.Printf("ANCHOR: FAILED — anchored event seq=%d is missing\n", a.AnchoredSeq)
 	}
 }
 
@@ -1490,7 +1765,7 @@ func runPolicySubcmd(args []string) error {
 	}
 	if isHelpArg(args[0]) {
 		fmt.Println("Usage:")
-		fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--verbose]")
+		fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--output text|json] [--verbose]")
 		fmt.Println("  agentfence policy  validate --policy <file>")
 		return nil
 	}
@@ -1504,17 +1779,45 @@ func runPolicySubcmd(args []string) error {
 	}
 }
 
-// runPolicyTest evaluates a YAML fixture file against a policy and reports pass/fail.
+// policyTestCaseResult is one row of the `policy test --output json` report.
+type policyTestCaseResult struct {
+	ID     string          `json:"id"`
+	Tool   string          `json:"tool"`
+	Expect policy.Decision `json:"expect"`
+	Got    policy.Decision `json:"got"`
+	Pass   bool            `json:"pass"`
+	Reason string          `json:"reason"`
+}
+
+// policyTestReport is the top-level shape emitted by `policy test --output json`.
+// It mirrors the text PASS/FAIL output so CI can consume per-case results and a
+// totals summary structurally.
+type policyTestReport struct {
+	Total  int                    `json:"total"`
+	Passed int                    `json:"passed"`
+	Failed int                    `json:"failed"`
+	Cases  []policyTestCaseResult `json:"cases"`
+}
+
+// runPolicyTest evaluates a YAML fixture file against a policy and reports
+// pass/fail. With --output json it emits a stable report instead of PASS/FAIL
+// prose; either way it returns a non-zero exit (an error) when any case fails.
 func runPolicyTest(args []string) error {
 	fs := flag.NewFlagSet("policy test", flag.ContinueOnError)
 	policyPath := fs.String("policy", "", "Path to policy YAML")
 	testsPath := fs.String("tests", "", "Path to test fixture YAML")
-	verbose := fs.Bool("verbose", false, "Print decision reason alongside each result")
+	outputMode := fs.String("output", "text", "Output mode: text, json")
+	verbose := fs.Bool("verbose", false, "Print decision reason alongside each result (text mode only; JSON always includes the reason)")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
 	}
 	if *policyPath == "" || *testsPath == "" {
 		return errors.New("--policy and --tests are required")
+	}
+	switch *outputMode {
+	case "text", "json":
+	default:
+		return fmt.Errorf("unknown --output mode %q; valid values: text, json", *outputMode)
 	}
 
 	p, err := policy.LoadFile(*policyPath)
@@ -1535,7 +1838,8 @@ func runPolicyTest(args []string) error {
 		return err
 	}
 
-	failed := 0
+	jsonOut := *outputMode == "json"
+	report := policyTestReport{Cases: make([]policyTestCaseResult, 0, len(fixture.Tests))}
 	for _, tc := range fixture.Tests {
 		arguments := tc.Arguments
 		if arguments == nil {
@@ -1547,8 +1851,29 @@ func runPolicyTest(args []string) error {
 			Arguments: arguments,
 		}
 		result, _ := eng.Evaluate(call)
+		pass := result.Decision == tc.Expect
 
-		if result.Decision == tc.Expect {
+		report.Total++
+		if pass {
+			report.Passed++
+		} else {
+			report.Failed++
+		}
+
+		if jsonOut {
+			report.Cases = append(report.Cases, policyTestCaseResult{
+				ID:     tc.ID,
+				Tool:   tc.Tool,
+				Expect: tc.Expect,
+				Got:    result.Decision,
+				Pass:   pass,
+				Reason: result.Reason,
+			})
+			continue
+		}
+
+		// Text mode: keep the historical PASS/FAIL line shapes.
+		if pass {
 			if *verbose {
 				fmt.Printf("PASS: %s (%s)\n", tc.ID, result.Reason)
 			} else {
@@ -1556,12 +1881,19 @@ func runPolicyTest(args []string) error {
 			}
 		} else {
 			fmt.Printf("FAIL: %s (expected %s, got %s)\n", tc.ID, tc.Expect, result.Decision)
-			failed++
 		}
 	}
 
-	if failed > 0 {
-		return fmt.Errorf("%d test(s) failed", failed)
+	if jsonOut {
+		out, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("policy test: json marshal: %w", err)
+		}
+		fmt.Printf("%s\n", out)
+	}
+
+	if report.Failed > 0 {
+		return fmt.Errorf("%d test(s) failed", report.Failed)
 	}
 	return nil
 }
