@@ -250,7 +250,7 @@ func runCheck(args []string) error {
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	outputMode := fs.String("output", "text", "Output mode: text, json, jsonl")
 	failOn := fs.String("fail-on", "", "Comma-separated decisions to fail on: deny, ask")
-	summaryPath := fs.String("summary", "", "Write a machine-readable JSON gate summary (per-decision counts, top denied tools/reasons) to this path; use - for stderr. Independent of --output, so the decision stream stays clean")
+	summaryPath := fs.String("summary", "", "Write a machine-readable JSON gate summary (per-decision counts, top denied tools/reasons) independent of --output. Pass a file path for a clean artifact (written even when --fail-on fails); pass - to write to stderr, which on a gate failure also carries diagnostic lines and is not pure JSON")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
 	dryRun := fs.Bool("dry-run", false, "Evaluate and audit without enforcing: ask decisions are not prompted, and --fail-on does not change the exit code")
 	noInteractive := fs.Bool("no-interactive", false, "Do not prompt the operator on ask decisions; auto-deny instead")

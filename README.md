@@ -154,8 +154,10 @@ Get machine-readable output for CI pipelines:
 `check --summary <file>` writes a compact JSON gate summary (per-decision
 counts, top denied tools/reasons, and whether `--fail-on` matched) alongside the
 decision stream, so CI can surface "what was denied" without recomputing it with
-`jq`. Use `--summary -` to send it to stderr instead of a file, keeping
-`--output` stdout clean:
+`jq`. Write it to a **file** for a clean machine-readable artifact — it is
+produced even when `--fail-on` fails the run. (`--summary -` writes to stderr
+instead, which is convenient for logs but, on a gate failure, also carries
+diagnostic lines and so is not pure JSON.)
 
 ```bash
 ./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl \
