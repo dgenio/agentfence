@@ -2437,3 +2437,179 @@ func TestAuditVerifyJSONMissingLogHasErrorStatus(t *testing.T) {
 		t.Error("expected a non-empty detail for the I/O error")
 	}
 }
+
+// ── #160 follow-up: audit verify --output json signatures & anchor contracts ──
+// The chain sub-object is covered above; these lock down the signatures
+// (--pubkey) and anchor (--anchor) sub-objects — public JSON contracts that
+// were previously unexercised in JSON mode — plus the no_chain chain status.
+
+func TestAuditVerifyJSONWithSignatures(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+	privFile := filepath.Join(dir, "key.pem")
+	pubFile := filepath.Join(dir, "key.pub")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(
+		`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"+
+			`{"id":"c2","tool":"filesystem.read","arguments":{"path":"go.mod"}}`+"\n"+
+			`{"id":"c3","tool":"filesystem.read","arguments":{"path":"main.go"}}`+"\n",
+	))
+
+	if _, _, err := captureOutput(t, func() error {
+		return runAuditKeygen([]string{"--private", privFile, "--public", pubFile})
+	}); err != nil {
+		t.Fatalf("audit keygen: %v", err)
+	}
+
+	if _, _, err := captureOutput(t, func() error {
+		return runCheck([]string{
+			"--policy", policyFile,
+			"--call", callFile,
+			"--audit-log", auditFile,
+			"--output", "json",
+			"--tamper-evident",
+			"--sign-key", privFile,
+		})
+	}); err != nil {
+		t.Fatalf("runCheck --sign-key: %v", err)
+	}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--pubkey", pubFile, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("audit verify --pubkey --output json: %v\n%s", err, stdout)
+	}
+
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+		} `json:"chain"`
+		Signatures *struct {
+			Status   string `json:"status"`
+			Verified int    `json:"verified"`
+			Unsigned int    `json:"unsigned"`
+		} `json:"signatures"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "ok" {
+		t.Errorf("expected chain status 'ok', got %q", report.Chain.Status)
+	}
+	if report.Signatures == nil {
+		t.Fatal("expected a signatures sub-object in JSON output")
+	}
+	if report.Signatures.Status != "ok" || report.Signatures.Verified != 3 || report.Signatures.Unsigned != 0 {
+		t.Errorf("unexpected signatures result: %+v", report.Signatures)
+	}
+	// JSON mode must not leak the SIGNATURES: prose line onto the stdout stream.
+	if strings.Contains(stdout, "SIGNATURES:") {
+		t.Errorf("JSON mode leaked prose: %s", stdout)
+	}
+}
+
+func TestAuditVerifyJSONWithAnchor(t *testing.T) {
+	auditFile := writeTamperEvidentLog(t)
+	anchorFile := filepath.Join(filepath.Dir(auditFile), "anchor.json")
+
+	if _, _, err := captureOutput(t, func() error {
+		return runAuditAnchor([]string{"--log", auditFile, "--out", anchorFile})
+	}); err != nil {
+		t.Fatalf("audit anchor: %v", err)
+	}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--anchor", anchorFile, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("audit verify --anchor --output json: %v\n%s", err, stdout)
+	}
+
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+		} `json:"chain"`
+		Anchor *struct {
+			Status          string `json:"status"`
+			AnchoredSeq     uint64 `json:"anchored_seq"`
+			SignatureStatus string `json:"signature_status"`
+		} `json:"anchor"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "ok" {
+		t.Errorf("expected chain status 'ok', got %q", report.Chain.Status)
+	}
+	if report.Anchor == nil {
+		t.Fatal("expected an anchor sub-object in JSON output")
+	}
+	if report.Anchor.Status != "ok" {
+		t.Errorf("expected anchor status 'ok', got %q", report.Anchor.Status)
+	}
+	// No --anchor-pubkey and an unsigned anchor → signature_status not_checked.
+	if report.Anchor.SignatureStatus != "not_checked" {
+		t.Errorf("expected anchor signature_status 'not_checked', got %q", report.Anchor.SignatureStatus)
+	}
+	// JSON mode must not leak the ANCHOR: prose line onto the stdout stream.
+	if strings.Contains(stdout, "ANCHOR:") {
+		t.Errorf("JSON mode leaked prose: %s", stdout)
+	}
+}
+
+func TestAuditVerifyJSONNoChainStatus(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	callFile := filepath.Join(dir, "calls.jsonl")
+	auditFile := filepath.Join(dir, "audit.jsonl")
+
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  filesystem.read:
+    decision: allow
+`))
+	writeTestFile(t, callFile, []byte(`{"id":"c1","tool":"filesystem.read","arguments":{"path":"README.md"}}`+"\n"))
+
+	// Plain check (no --tamper-evident) → the log carries no hash chain.
+	if _, _, err := captureOutput(t, func() error {
+		return runCheck([]string{"--policy", policyFile, "--call", callFile, "--audit-log", auditFile, "--output", "json"})
+	}); err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return runAuditVerify([]string{"--log", auditFile, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("audit verify on a non-chained log should not error: %v\n%s", err, stdout)
+	}
+
+	var report struct {
+		Chain struct {
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"chain"`
+	}
+	if e := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &report); e != nil {
+		t.Fatalf("expected pure JSON on stdout: %v\noutput: %s", e, stdout)
+	}
+	if report.Chain.Status != "no_chain" {
+		t.Errorf("expected chain status 'no_chain', got %q", report.Chain.Status)
+	}
+	// JSON mode must not leak the PARSED: prose line onto the stdout stream.
+	if strings.Contains(stdout, "PARSED:") {
+		t.Errorf("JSON mode leaked prose: %s", stdout)
+	}
+}
