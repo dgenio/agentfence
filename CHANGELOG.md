@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Machine-readable output completed across the CLI.** `policy test` and
+  `audit verify` now accept `--output text|json`, matching the JSON convention
+  already used by `check`, `explain`, and `audit summarize`. `policy test
+  --output json` emits a per-case report (`{id, tool, expect, got, pass,
+  reason}`) plus totals; `audit verify --output json` emits a combined
+  `{chain, signatures?, anchor?}` object with a stable status enum. Both
+  preserve their existing exit-code semantics. (#171, #160)
+- `check`: **`--summary <file|->`** writes a compact JSON gate summary
+  (per-decision counts, top denied tools/reasons, `--fail-on` match, and a
+  `failed` flag) independent of `--output`, so CI can surface "what was denied"
+  without a second `audit summarize` pass or bespoke `jq`. It is written before
+  the `--fail-on` exit, so the artifact exists even when the gate fails. (#150)
+
 ## [0.7.0] - 2026-06-17
 
 ### Added

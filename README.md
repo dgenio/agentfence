@@ -151,6 +151,26 @@ Get machine-readable output for CI pipelines:
 ./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl --output jsonl | jq '.decision'
 ```
 
+`check --summary <file>` writes a compact JSON gate summary (per-decision
+counts, top denied tools/reasons, and whether `--fail-on` matched) alongside the
+decision stream, so CI can surface "what was denied" without recomputing it with
+`jq`. Use `--summary -` to send it to stderr instead of a file, keeping
+`--output` stdout clean:
+
+```bash
+./agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl \
+  --no-interactive --fail-on deny --output json --summary gate-summary.json
+```
+
+`policy test` and `audit verify` share the same `--output text|json` convention
+as `check`, `explain`, and `audit summarize`, so every gate the pipeline runs
+can be consumed structurally while preserving each command's exit code:
+
+```bash
+./agentfence policy test --policy examples/policy.yaml --tests examples/policy-tests.yaml --output json
+./agentfence audit verify --log audit.jsonl --output json
+```
+
 Validate a policy file before use (catches typos and unknown fields):
 
 ```bash
