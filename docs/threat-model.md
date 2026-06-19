@@ -220,9 +220,11 @@ it does **not** catch:
 
 AgentFence is a deny-by-default gate. The following invariants guarantee that
 an evaluation never *silently grants* access when something is unspecified,
-malformed, or unmatched. Each is protected by a dedicated regression test in
-`internal/engine/failclosed_test.go` (and the parser tests in
-`internal/policy`) so it fails loudly if a future change weakens it.
+malformed, or unmatched. Each is protected by a dedicated regression test —
+in `internal/engine/failclosed_test.go`, the parser tests in
+`internal/policy`, and (for the audit and approver invariants below) the
+`internal/audit`, `internal/proxy`, and `internal/httpproxy` tests — so it
+fails loudly if a future change weakens it.
 
 - **No matching rule → `defaults.decision`.** A tool with no exact, group, or
   wildcard match receives the policy's default decision, not a hardcoded value.
@@ -242,6 +244,15 @@ malformed, or unmatched. Each is protected by a dedicated regression test in
 - **Path-safety pre-check applies to every matched rule** with a string `path`
   argument, even when the rule omits `constraints.paths` (see *What MVP does
   not yet mitigate* for its lexical-only limits).
+- **Audit state advances only after a successful write.** The writer commits
+  its sequence number and hash-chain state *after* the record is durably
+  written, so a failed write never leaves a gap or a chain that references a
+  record that was never persisted (`internal/audit/audit.go` `Write`; tests
+  `TestWriteFailureDoesNotAdvanceSequence`, `TestWriteFailureDoesNotAdvanceChainState`).
+- **Ask decisions default to deny.** When no interactive approver is wired in,
+  proxies fall back to `DenyAllApprover`, which converts every `ask` into a
+  deny rather than silently allowing it (`internal/proxy/proxy.go`,
+  `internal/httpproxy/httpproxy.go`; test `TestHTTPAskDeniedByDefaultApprover`).
 
 These are operational guarantees about the decision path; they do not by
 themselves bound what a *misconfigured* policy can allow (e.g. an explicit
