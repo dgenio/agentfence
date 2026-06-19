@@ -66,22 +66,18 @@ audit:
 	})
 }
 
-// Scalar fields follow importer-wins: the importing file's non-empty version
-// and defaults.decision override the imported file's, while a field the
-// importer omits is inherited from the import.
+// Scalar fields follow importer-wins when the importer sets them explicitly.
 func TestPolicyImportsImporterWinsScalars(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "base.yaml", `version: "base-version"
 defaults:
   decision: allow
-audit:
-  format: jsonl
 `)
 	root := writeFile(t, dir, "root.yaml", `version: "root-version"
 imports:
   - base.yaml
 defaults:
-  decision: deny
+  decision: ask
 `)
 	p, err := LoadFile(root)
 	if err != nil {
@@ -90,10 +86,42 @@ defaults:
 	if p.Version != "root-version" {
 		t.Errorf("version: importer should win; got %q want %q", p.Version, "root-version")
 	}
-	if p.Defaults.Decision != DecisionDeny {
-		t.Errorf("defaults.decision: importer should win; got %q want %q", p.Defaults.Decision, DecisionDeny)
+	if p.Defaults.Decision != DecisionAsk {
+		t.Errorf("defaults.decision: importer should win; got %q want %q", p.Defaults.Decision, DecisionAsk)
 	}
-	if p.Audit.Format != "jsonl" {
-		t.Errorf("audit.format: should be inherited from base; got %q want %q", p.Audit.Format, "jsonl")
+}
+
+// When the importer *omits* a scalar, the behavior depends on whether the field
+// has a per-file default. ParsePolicy applies defaults (defaults.decision→deny,
+// audit.format→jsonl) to every file *before* imports are merged, so omitting
+// those in the importer is equivalent to setting them to their default — the
+// filled-in value wins over the base and the base value does NOT shine through.
+// `version` has no per-file default, so it is the one scalar that truly
+// inherits from the base when omitted. See docs/policy-language.md
+// ("Policy imports") for the contract this pins.
+func TestPolicyImportsOmittedScalarsUsePerFileDefaults(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "base.yaml", `version: "base-version"
+defaults:
+  decision: allow
+`)
+	// root omits both version and defaults.decision.
+	root := writeFile(t, dir, "root.yaml", `imports:
+  - base.yaml
+tools:
+  root.tool:
+    decision: deny
+`)
+	p, err := LoadFile(root)
+	if err != nil {
+		t.Fatalf("LoadFile error: %v", err)
+	}
+	if p.Version != "base-version" {
+		t.Errorf("version: should inherit from base when omitted (no per-file default); got %q want %q", p.Version, "base-version")
+	}
+	// The base says allow, but the importer's per-file default (deny) is applied
+	// before merge and overrides it — omission does not inherit the base here.
+	if p.Defaults.Decision != DecisionDeny {
+		t.Errorf("defaults.decision: omitted importer field should resolve to the per-file default deny, not inherit base allow; got %q", p.Defaults.Decision)
 	}
 }

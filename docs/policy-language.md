@@ -282,21 +282,31 @@ Behaviour:
 
 Merge precedence at a glance (importing/root file vs. imported/base file):
 
-| Field                                | Rule           | Result when base=X, importer=Y |
-|--------------------------------------|----------------|--------------------------------|
-| `version`                            | importer wins  | `Y` (base `X` if importer omits) |
-| `defaults.decision`                  | importer wins  | `Y` (base `X` if importer omits) |
-| `audit.format`                       | importer wins  | `Y` (base `X` if importer omits) |
-| `tools.<key>` / `groups.<key>`       | importer wins  | merged maps; `Y` on key conflict |
+| Field                                | Rule           | When the importer omits it |
+|--------------------------------------|----------------|----------------------------|
+| `version`                            | importer wins  | inherits the base value (no per-file default) |
+| `defaults.decision`                  | importer wins  | becomes `deny` — see note below; does **not** inherit the base |
+| `audit.format`                       | importer wins  | becomes `jsonl` — see note below; does **not** inherit the base |
+| `tools.<key>` / `groups.<key>`       | importer wins  | inherits base entries; importer wins on key conflict |
 | `redaction.patterns`                 | union          | base patterns then importer patterns |
-| `redaction.enabled`                  | OR             | enabled if **either** is true  |
-| `audit.include_redacted_arguments`   | OR             | enabled if **either** is true  |
-| `taint.enabled`                      | OR             | enabled if **either** is true  |
-| `taint.on_tainted_argument` / `min_length` | importer wins | `Y` (base `X` if importer omits) |
+| `redaction.enabled`                  | OR             | enabled if **either** layer is true |
+| `audit.include_redacted_arguments`   | OR             | enabled if **either** layer is true |
+| `taint.enabled`                      | OR             | enabled if **either** layer is true |
+| `taint.on_tainted_argument` / `min_length` | importer wins | inherits base, unless the importer enables taint (which applies the per-file defaults) |
 
 The OR rule for the security-relevant flags is deliberate: an import can only
 *tighten* posture, never silently disable a base file's redaction or taint
 tracking.
+
+> **Per-file defaults are applied before the merge.** `ParsePolicy` fills
+> `defaults.decision`→`deny` and `audit.format`→`jsonl` on *every* file —
+> including the importing file — before imports are merged. So omitting these
+> in the importing file is equivalent to *setting them to their defaults*: the
+> filled-in value wins over the base, and the base file's value does **not**
+> shine through. To inherit a base file's `defaults.decision`, set it
+> explicitly rather than relying on omission. `version` has no per-file
+> default, so it is the one scalar that truly inherits from the base when the
+> importer omits it.
 
 See [`examples/base-policy.yaml`](../examples/base-policy.yaml) and
 [`examples/project-policy.yaml`](../examples/project-policy.yaml) for a
