@@ -216,6 +216,49 @@ it does **not** catch:
   `proxy`) so modification or deletion of audit events is detectable after
   the fact via `agentfence audit verify --log <file>`.
 
+## Fail-closed invariants
+
+AgentFence is a deny-by-default gate. The following invariants guarantee that
+an evaluation never *silently grants* access when something is unspecified,
+malformed, or unmatched. Each is protected by a dedicated regression test —
+in `internal/engine/failclosed_test.go`, the parser tests in
+`internal/policy`, and (for the audit and approver invariants below) the
+`internal/audit`, `internal/proxy`, and `internal/httpproxy` tests — so it
+fails loudly if a future change weakens it.
+
+- **No matching rule → `defaults.decision`.** A tool with no exact, group, or
+  wildcard match receives the policy's default decision, not a hardcoded value.
+- **Omitted default → deny.** When `defaults.decision` is absent the parser
+  supplies `deny`, so an otherwise-empty policy denies every unmatched call.
+- **Unknown decision is rejected at parse time.** A decision other than
+  `allow`/`deny`/`ask` fails `ParsePolicy`/`validate`, so an invalid decision
+  can never reach the engine. The engine trusts that decisions are validated.
+- **Missing constrained input → deny.** A tool that opts in to a constraint
+  family (`paths`, `args`, `urls`, `command`, `memory_write`) but omits the
+  required argument is denied, never allowed on the missing value.
+- **Unrecognised memory-write scope/sensitivity → deny**, rather than being
+  treated as the narrowest/least-sensitive value.
+- **Glob compile failure → no match.** Glob matching uses `regexp.Compile`
+  (not `MustCompile`); a non-compiling pattern degrades to "no match", so it
+  falls through to the (deny) default instead of panicking or granting.
+- **Path-safety pre-check applies to every matched rule** with a string `path`
+  argument, even when the rule omits `constraints.paths` (see *What MVP does
+  not yet mitigate* for its lexical-only limits).
+- **Audit state advances only after a successful write.** The writer commits
+  its sequence number and hash-chain state *after* the record is durably
+  written, so a failed write never leaves a gap or a chain that references a
+  record that was never persisted (`internal/audit/audit.go` `Write`; tests
+  `TestWriteFailureDoesNotAdvanceSequence`, `TestWriteFailureDoesNotAdvanceChainState`).
+- **Ask decisions default to deny.** When no interactive approver is wired in,
+  proxies fall back to `DenyAllApprover`, which converts every `ask` into a
+  deny rather than silently allowing it (`internal/proxy/proxy.go`,
+  `internal/httpproxy/httpproxy.go`; test `TestHTTPAskDeniedByDefaultApprover`).
+
+These are operational guarantees about the decision path; they do not by
+themselves bound what a *misconfigured* policy can allow (e.g. an explicit
+`defaults.decision: allow`). Keeping `defaults.decision: deny` is the
+recommended posture for a security tool.
+
 ## Audit log integrity
 
 The audit log is a security-critical artifact: investigators rely on it to
@@ -331,3 +374,11 @@ protection, an attacker with filesystem access can rewrite a `deny` to
   single-turn-deny semantics for prompt-injection-via-tool-response are
   not implemented; see *Confused deputy via MCP proxy → Residual risk*.
 - Runtime sandboxing of tool execution is out of scope for this MVP.
+- **Symlink- and case-based path containment.** The filesystem path-safety
+  check is lexical only: it normalizes separators and rejects absolute, UNC,
+  drive-qualified, and `../` paths, but it does not resolve symlinks and its
+  deny/allow matching is case-sensitive. A symlinked directory or a
+  case-variant filename can therefore reach a path a deny pattern was meant to
+  protect on case-insensitive filesystems. See
+  [`docs/policy-language.md`](policy-language.md#path-safety-guarantees-and-non-guarantees);
+  enforce hard filesystem containment with OS permissions or a sandbox.

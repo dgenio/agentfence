@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `failed` flag) independent of `--output`, so CI can surface "what was denied"
   without a second `audit summarize` pass or bespoke `jq`. It is written before
   the `--fail-on` exit, so the artifact exists even when the gate fails. (#150)
+- **Policy-engine contract hardening (tests + docs).** A doc-derived constraint
+  conformance matrix pins every constraint family (`paths`, `args`, `urls`,
+  `command`, `memory_write`) to `docs/policy-language.md` (#139); the import
+  merge precedence (importer-wins scalars, OR-semantics enable flags) gains a
+  worked table and tests (#142); the fail-closed invariants are documented in
+  `docs/threat-model.md` with dedicated regression tests (#155); the path-safety
+  guarantees and non-guarantees (lexical-only, no symlink resolution,
+  case-sensitive matching) are documented and pinned (#170), with a
+  cross-platform Windows-input test matrix (#175); and the YAML parser's
+  empty / whitespace / tab / multi-document / duplicate-key behavior is
+  specified and tested (#178).
+
+### Changed
+- Filesystem path-safety now also rejects Windows **drive-relative** paths
+  (`C:foo`), not only the drive-absolute (`C:\…`) and bare-drive (`C:`) forms.
+  On a non-Windows host such a path was previously treated as an ordinary
+  relative name and allowed through. (#175, #170)
 
 ## [0.7.0] - 2026-06-17
 

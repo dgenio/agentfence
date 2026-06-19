@@ -108,12 +108,31 @@ Behavior:
 
 - Deny path matches always deny.
 - If allow list exists, path must match at least one allow pattern.
-- Absolute paths, UNC paths, and directory traversal (`../`) are always denied
+- Absolute paths, UNC paths, Windows drive-qualified paths (`C:\…`, `C:`, and
+  drive-relative `C:foo`), and directory traversal (`../`) are always denied
   whenever a tool matched a policy rule and the call carries a string `path`
   argument, even if that rule omits `constraints.paths`. Tools that fall
   through to `defaults.decision` (no matching rule) are not gated by this
   pre-check — for a security-tool default, keep `defaults.decision: deny` so
   unmatched calls cannot bypass it.
+
+### Path-safety guarantees and non-guarantees
+
+The path checks operate **purely on the path string** — the engine never
+touches the filesystem during evaluation. This keeps `check`/`explain`
+deterministic and host-independent (backslashes, drive letters, and UNC
+prefixes are rejected the same way on Linux, macOS, and Windows), but it has
+two consequences operators must account for:
+
+- **Symlinks are not resolved.** A lexically-safe relative path such as
+  `data/export.csv` is allowed even if `data` is a symlink pointing outside the
+  project root. AgentFence does not protect against symlink-based escape; rely
+  on filesystem permissions or a sandbox for that.
+- **Matching is case-sensitive.** A deny pattern `.env` does not match `.ENV`,
+  and `**/secrets/**` does not match `**/SECRETS/**`. On case-insensitive
+  filesystems (default on macOS and Windows) a case-variant can therefore reach
+  a file a deny pattern was meant to protect. Add explicit case variants to the
+  deny list if your target filesystem is case-insensitive.
 
 ## Argument value constraints
 
@@ -261,6 +280,34 @@ Behaviour:
 - When two sibling imports define the same tool key, the later import
   wins (consistent with the override pattern).
 
+Merge precedence at a glance (importing/root file vs. imported/base file):
+
+| Field                                | Rule           | When the importer omits it |
+|--------------------------------------|----------------|----------------------------|
+| `version`                            | importer wins  | inherits the base value (no per-file default) |
+| `defaults.decision`                  | importer wins  | becomes `deny` — see note below; does **not** inherit the base |
+| `audit.format`                       | importer wins  | becomes `jsonl` — see note below; does **not** inherit the base |
+| `tools.<key>` / `groups.<key>`       | importer wins  | inherits base entries; importer wins on key conflict |
+| `redaction.patterns`                 | union          | base patterns then importer patterns |
+| `redaction.enabled`                  | OR             | enabled if **either** layer is true |
+| `audit.include_redacted_arguments`   | OR             | enabled if **either** layer is true |
+| `taint.enabled`                      | OR             | enabled if **either** layer is true |
+| `taint.on_tainted_argument` / `min_length` | importer wins | inherits base, unless the importer enables taint (which applies the per-file defaults) |
+
+The OR rule for the security-relevant flags is deliberate: an import can only
+*tighten* posture, never silently disable a base file's redaction or taint
+tracking.
+
+> **Per-file defaults are applied before the merge.** `ParsePolicy` fills
+> `defaults.decision`→`deny` and `audit.format`→`jsonl` on *every* file —
+> including the importing file — before imports are merged. So omitting these
+> in the importing file is equivalent to *setting them to their defaults*: the
+> filled-in value wins over the base, and the base file's value does **not**
+> shine through. To inherit a base file's `defaults.decision`, set it
+> explicitly rather than relying on omission. `version` has no per-file
+> default, so it is the one scalar that truly inherits from the base when the
+> importer omits it.
+
 See [`examples/base-policy.yaml`](../examples/base-policy.yaml) and
 [`examples/project-policy.yaml`](../examples/project-policy.yaml) for a
 worked example.
@@ -364,6 +411,31 @@ agentfence policy validate --policy bad-policy.yaml
 All commands that load a policy reject unknown fields. `validate` also reports
 semantic issues such as invalid decisions and bad regexes before the policy is
 used.
+
+## Parsing edge cases
+
+The YAML parser is strict and its behavior on edge-case inputs is fixed:
+
+| Input                                    | `ParsePolicy` / load        | `validate` |
+|------------------------------------------|-----------------------------|------------|
+| Empty file                               | empty policy, `defaults.decision: deny` | error: `version` required |
+| Whitespace-only (spaces/newlines)        | empty policy, `defaults.decision: deny` | error: `version` required |
+| Comment-only                             | empty policy, `defaults.decision: deny` | error: `version` required |
+| Tab character for indentation            | error (tabs cannot start a YAML token) | error |
+| More than one YAML document (`---`)      | error: must contain a single document | error |
+| Duplicate mapping key (any level)        | error: duplicate key        | error |
+| Unknown field name                       | error: unknown field        | error |
+
+Notes:
+
+- A blank or comment-only file is a *valid empty policy*: it parses, applies
+  the default-deny posture, and gates nothing explicitly. It still fails
+  `validate` because `version` is required, so CI catches an accidentally
+  empty policy.
+- Duplicate keys are rejected rather than last-write-wins, so a copy-paste
+  mistake that redefines a tool cannot silently change a decision.
+- Only one YAML document is permitted; a second document cannot shadow the
+  first.
 
 ## Policy testing
 
