@@ -280,9 +280,11 @@ func evaluatePathSafety(pathArg string, trace *[]string) (bool, string, string) 
 		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg), ""
 	}
 
-	// Detect Windows drive-letter absolute paths (C:/...).
-	if isWindowsAbsPath(normalized) {
-		appendTrace(trace, fmt.Sprintf("path %q is Windows absolute → deny", pathArg))
+	// Detect Windows drive-qualified paths (C:/..., C:, and drive-relative
+	// C:foo). All carry a drive letter that is never a safe project-relative
+	// path on any host.
+	if isWindowsDrivePath(normalized) {
+		appendTrace(trace, fmt.Sprintf("path %q is Windows drive-qualified → deny", pathArg))
 		return true, fmt.Sprintf("path %q is absolute; only relative paths are allowed", pathArg), ""
 	}
 
@@ -469,10 +471,20 @@ func isUNCPath(p string) bool {
 	return strings.HasPrefix(p, "//")
 }
 
-// isWindowsAbsPath reports whether p (backslashes already converted to forward
-// slashes) is a Windows drive-letter absolute path such as C:/ or C:.
-func isWindowsAbsPath(p string) bool {
-	return len(p) >= 2 && p[1] == ':' && (len(p) == 2 || p[2] == '/')
+// isWindowsDrivePath reports whether p (backslashes already converted to
+// forward slashes) carries a Windows drive-letter prefix. This covers the
+// absolute form (C:/Windows), the bare drive root (C:), and the drive-relative
+// form (C:foo, which Windows resolves against the drive's current directory).
+// None of these is a safe project-relative path: on a non-Windows host
+// filepath.Clean would otherwise treat "C:foo" as an ordinary relative name
+// and let it through, so the check is made explicitly and host-independently.
+func isWindowsDrivePath(p string) bool {
+	return len(p) >= 2 && isASCIILetter(p[0]) && p[1] == ':'
+}
+
+// isASCIILetter reports whether b is an ASCII letter (A–Z or a–z).
+func isASCIILetter(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func matchesGlob(pattern, value string) bool {
