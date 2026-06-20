@@ -110,6 +110,10 @@ func TestWritePrometheusContainsExpectedSeries(t *testing.T) {
 	wants := []string{
 		`agentfence_decisions_total{tool="github.delete_repo",decision="deny"} 1`,
 		`agentfence_decisions_total{tool="shell.exec",decision="ask"} 1`,
+		// The reason-code breakdown must be exported too (not only on the JSON
+		// snapshot), matching the HELP text and the documented feature.
+		`agentfence_reason_codes_total{code="path_denied"} 1`,
+		`agentfence_reason_codes_total{code="approval_denied"} 1`,
 		`agentfence_approval_outcomes_total{outcome="approval_denied"} 1`,
 		`agentfence_eval_latency_seconds_count 1`,
 		`agentfence_errors_total{kind="upstream"} 1`,

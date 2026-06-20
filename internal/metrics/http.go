@@ -27,9 +27,9 @@ func Handler(c *Counters) http.Handler {
 	})
 }
 
-// Serve runs an HTTP server that exposes c's metrics on listenAddr at /metrics
-// until ctx is cancelled, then shuts it down. It is started by the proxies when
-// --metrics-listen is set. A root path returns a one-line pointer to /metrics.
+// ServeMux returns an http.ServeMux that serves c's metrics at /metrics (and a
+// one-line pointer to it at /). The proxies mount it on the --metrics-listen
+// server; callers own running and shutting down the http.Server.
 func ServeMux(c *Counters) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", Handler(c))

@@ -23,10 +23,14 @@ all.
 
 `check`, `proxy`, and `proxy-http` accept `--log-format text|json`:
 
-- **`text`** (default) — human-readable stderr diagnostics. Unchanged from
-  earlier releases; the default output is byte-stable.
+- **`text`** (default) — human-readable stderr diagnostics. `check`'s text
+  stderr contract (gate messages, warnings) is preserved byte-for-byte from
+  earlier releases. The proxies now route their diagnostics through the shared
+  logger, so the wording/prefixes of their stderr lines have changed; do not
+  parse proxy text diagnostics — use `json` for stable machine parsing.
 - **`json`** — one structured [`log/slog`](https://pkg.go.dev/log/slog) record
-  per line, for ingestion by a log pipeline.
+  per line, for ingestion by a log pipeline. Recommended whenever stderr is
+  consumed by tooling.
 
 ```console
 $ agentfence proxy-http --policy policy.yaml --upstream https://mcp.example.com --log-format json

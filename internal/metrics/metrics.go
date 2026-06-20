@@ -219,18 +219,28 @@ func (s Snapshot) FormatText(w io.Writer) error {
 }
 
 // WritePrometheus renders s in the Prometheus text-exposition format on w. The
-// metric set is intentionally small and stable: it mirrors the JSON Snapshot so
-// the scrapable endpoint and the on-exit summary report the same numbers. This
-// is a dependency-free emitter — it does not require the Prometheus client
-// library — which keeps the default binary lean.
+// metric set is intentionally small and stable, and covers the same dimensions
+// as the JSON Snapshot (decisions by tool/decision, reason-code breakdown,
+// taint escalations, approval outcomes, latency, errors) so the scrapable
+// endpoint and the on-exit summary report the same numbers. This is a
+// dependency-free emitter — it does not require the Prometheus client library —
+// which keeps the default binary lean.
 func (s Snapshot) WritePrometheus(w io.Writer) error {
 	ew := &errWriter{w: w}
 
-	ew.printf("# HELP agentfence_decisions_total Tool-call decisions by decision and reason code.\n")
+	ew.printf("# HELP agentfence_decisions_total Tool-call decisions by tool and decision.\n")
 	ew.printf("# TYPE agentfence_decisions_total counter\n")
 	for _, td := range sortedToolDecisions(s.byToolDecision) {
 		ew.printf("agentfence_decisions_total{tool=%q,decision=%q} %d\n",
 			td.tool, string(td.decision), s.byToolDecision[td])
+	}
+
+	if len(s.ByReasonCode) > 0 {
+		ew.printf("# HELP agentfence_reason_codes_total Decisions by stable reason code.\n")
+		ew.printf("# TYPE agentfence_reason_codes_total counter\n")
+		for _, code := range sortedKeys(s.ByReasonCode) {
+			ew.printf("agentfence_reason_codes_total{code=%q} %d\n", code, s.ByReasonCode[code])
+		}
 	}
 
 	ew.printf("# HELP agentfence_taint_escalations_total Decisions adjusted by taint tracking.\n")
