@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -36,6 +37,8 @@ import (
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/engine"
 	"github.com/dgenio/agentfence/internal/mcp"
+	"github.com/dgenio/agentfence/internal/metrics"
+	"github.com/dgenio/agentfence/internal/oplog"
 	"github.com/dgenio/agentfence/internal/policy"
 )
 
@@ -101,9 +104,19 @@ type Options struct {
 	Stdout io.Writer
 	Stderr io.Writer
 
-	// Logger receives proxy-internal diagnostics (errors, debug lines).
-	// Defaults to io.Discard so the proxy stays silent unless Debug is on.
-	Logger io.Writer
+	// Logger receives structured proxy-internal diagnostics (warnings,
+	// upstream/approval errors, and — when Debug is on — forwarded frame dumps
+	// at debug level). It is a distinct stream from the audit log (decision
+	// records) and stdout (the JSON-RPC channel). Defaults to a logger that
+	// discards everything, so the proxy stays silent unless a Logger is set.
+	Logger *slog.Logger
+
+	// Metrics, when non-nil, accumulates decision counts (by decision, tool,
+	// and reason code), taint escalations, approval outcomes, evaluation
+	// latency, and operational errors. It is the in-process source for both the
+	// on-shutdown summary and the optional /metrics endpoint. A nil Metrics
+	// disables counting.
+	Metrics *metrics.Counters
 }
 
 // Run spawns command + args as a subprocess and relays JSON-RPC messages
@@ -179,7 +192,7 @@ func applyDefaults(opts Options) Options {
 		opts.Stderr = os.Stderr
 	}
 	if opts.Logger == nil {
-		opts.Logger = io.Discard
+		opts.Logger = oplog.New(nil, oplog.FormatText, false)
 	}
 	if opts.Approver == nil {
 		opts.Approver = DenyAllApprover{}
@@ -240,6 +253,14 @@ func (r *relay) taintEnabled() bool {
 	return r.pending != nil
 }
 
+// recordError increments the proxy's operational error counter when metrics
+// are enabled. A no-op otherwise.
+func (r *relay) recordError(kind string) {
+	if r.opts.Metrics != nil {
+		r.opts.Metrics.RecordError(kind)
+	}
+}
+
 // rememberPending records that a forwarded tools/call with the given request ID
 // is for tool. A no-op when taint tracking is off or the request is a
 // notification (no ID to correlate a response against).
@@ -277,12 +298,14 @@ func (r *relay) relayAgentToSub(ctx context.Context, in io.Reader, subStdin, age
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...) // copy: scanner reuses its buffer
 		if err := r.processAgentLine(ctx, line, subStdin, agentStdout); err != nil {
-			fmt.Fprintln(r.opts.Logger, "proxy: agent->subproc:", err)
+			r.opts.Logger.Error("agent->subproc relay failed", "err", err)
+			r.recordError("relay")
 			return
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(r.opts.Logger, "proxy: scan agent stdin:", err)
+		r.opts.Logger.Error("scan agent stdin failed", "err", err)
+		r.recordError("relay")
 	}
 }
 
@@ -292,7 +315,7 @@ func (r *relay) relaySubToAgent(subStdout io.Reader, agentStdout io.Writer) {
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if r.opts.Debug {
-			fmt.Fprintf(r.opts.Logger, "proxy: subproc->agent: %s\n", line)
+			r.opts.Logger.Debug("subproc->agent frame", "line", string(line))
 		}
 		// Before forwarding, attribute tool results to their originating tool
 		// and feed them to the taint tracker. This is the confused-deputy
@@ -301,12 +324,14 @@ func (r *relay) relaySubToAgent(subStdout io.Reader, agentStdout io.Writer) {
 			r.observeResult(line)
 		}
 		if _, err := writeLine(agentStdout, line); err != nil {
-			fmt.Fprintln(r.opts.Logger, "proxy: subproc->agent:", err)
+			r.opts.Logger.Error("subproc->agent relay failed", "err", err)
+			r.recordError("relay")
 			return
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(r.opts.Logger, "proxy: scan subproc stdout:", err)
+		r.opts.Logger.Error("scan subproc stdout failed", "err", err)
+		r.recordError("relay")
 	}
 }
 
@@ -317,7 +342,7 @@ func (r *relay) relaySubToAgent(subStdout io.Reader, agentStdout io.Writer) {
 // in-memory writers and drive it line by line without needing a subprocess.
 func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, agentStdout io.Writer) error {
 	if r.opts.Debug {
-		fmt.Fprintf(r.opts.Logger, "proxy: agent->subproc: %s\n", line)
+		r.opts.Logger.Debug("agent->subproc frame", "line", string(line))
 	}
 
 	// Passthrough mode: forward everything, no parsing.
@@ -348,8 +373,7 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 		// No audit event in either case because the engine never saw a
 		// valid call.
 		if isNotification {
-			fmt.Fprintln(r.opts.Logger,
-				"proxy: dropping malformed tools/call notification:", perr)
+			r.opts.Logger.Warn("dropping malformed tools/call notification", "err", perr)
 			return nil
 		}
 		return writeResponse(agentStdout, mcp.InvalidParamsError(req.ID, perr.Error()))
@@ -358,7 +382,11 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 	fallback := fmt.Sprintf("call-%d", atomic.AddUint64(&r.callCounter, 1))
 	callID := mcp.CallIDFromRequestID(req.ID, fallback)
 	call := params.ToToolCall(callID)
+	evalStart := time.Now()
 	result, event := r.sess.Evaluate(call)
+	if r.opts.Metrics != nil {
+		r.opts.Metrics.ObserveEvalLatency(time.Since(evalStart))
+	}
 
 	// Resolve an ask decision to a final allow/deny via the approver before we
 	// audit, so the audit event records the outcome the agent actually saw
@@ -381,17 +409,26 @@ func (r *relay) processAgentLine(ctx context.Context, line []byte, subStdin, age
 		}
 		event.Decision = result.Decision
 		event.Reason = result.Reason
+		// Record the approval outcome's stable code so audit summaries and
+		// metrics can group ask resolutions (approved/denied/timeout/...).
+		event.ReasonCode = outcome.Code
 		if outcome.Reason == approval.ReasonApprovalIOError {
 			// Surface the I/O detail to the operator only; the agent sees the
 			// canonical reason, not the internal error text.
-			fmt.Fprintf(r.opts.Logger, "proxy: approval I/O error for [%s] %s: %v\n", call.ID, call.Tool, aerr)
+			r.opts.Logger.Error("approval I/O error", "call_id", call.ID, "tool", call.Tool, "err", aerr)
 		}
+	}
+
+	// Record the final decision for metrics before forwarding.
+	if r.opts.Metrics != nil {
+		r.opts.Metrics.Record(event.Decision, event.Tool, event.ReasonCode)
 	}
 
 	// Audit so the decision is durable even if the forwarding step fails
 	// (e.g. subprocess pipe closed mid-relay).
 	if writeErr := r.opts.AuditWriter.Write(event); writeErr != nil {
-		fmt.Fprintln(r.opts.Logger, "proxy: audit write:", writeErr)
+		r.opts.Logger.Error("audit write failed", "err", writeErr)
+		r.recordError("audit_write")
 	}
 
 	switch result.Decision {

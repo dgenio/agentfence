@@ -8,7 +8,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -25,6 +27,8 @@ import (
 	"github.com/dgenio/agentfence/internal/engine"
 	"github.com/dgenio/agentfence/internal/httpproxy"
 	"github.com/dgenio/agentfence/internal/interop"
+	"github.com/dgenio/agentfence/internal/metrics"
+	"github.com/dgenio/agentfence/internal/oplog"
 	"github.com/dgenio/agentfence/internal/packs"
 	"github.com/dgenio/agentfence/internal/policy"
 	"github.com/dgenio/agentfence/internal/proxy"
@@ -250,6 +254,8 @@ func runCheck(args []string) error {
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	outputMode := fs.String("output", "text", "Output mode: text, json, jsonl")
 	failOn := fs.String("fail-on", "", "Comma-separated decisions to fail on: deny, ask")
+	logFormat := fs.String("log-format", "text", "Operational log format for stderr diagnostics: text (default, unchanged) or json. Distinct from the audit log and the decision output on stdout")
+	emitMetrics := fs.Bool("metrics", false, "Print a decision-metrics summary (counts by decision/tool/reason-code, taint escalations, approval outcomes) to stderr on exit")
 	summaryPath := fs.String("summary", "", "Write a machine-readable JSON gate summary (per-decision counts, top denied tools/reasons) independent of --output. Pass a file path for a clean artifact (written even when --fail-on fails); pass - to write to stderr, which on a gate failure also carries diagnostic lines and is not pure JSON")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
 	dryRun := fs.Bool("dry-run", false, "Evaluate and audit without enforcing: ask decisions are not prompted, and --fail-on does not change the exit code")
@@ -274,6 +280,16 @@ func runCheck(args []string) error {
 	default:
 		return fmt.Errorf("unknown --output mode %q; valid values: text, json, jsonl", *outputMode)
 	}
+
+	logFmt, err := oplog.ParseFormat(*logFormat)
+	if err != nil {
+		return err
+	}
+	// Operational logger for stderr diagnostics. In text mode it stays silent so
+	// the existing byte-for-byte stderr contract is preserved; structured
+	// per-line and gate events are emitted only under --log-format json.
+	oplogger := oplog.New(os.Stderr, logFmt, false)
+	counters := metrics.New()
 
 	// Parse and validate --fail-on before opening files.
 	failOnSet := map[policy.Decision]bool{}
@@ -387,6 +403,10 @@ func runCheck(args []string) error {
 				return err
 			}
 			counts[policy.DecisionDeny]++
+			counters.Record(policy.DecisionDeny, "", policy.ReasonCodeParseError)
+			if logFmt == oplog.FormatJSON {
+				oplogger.Warn("tool-call line failed to parse", "line", lineNum, "err", err.Error())
+			}
 			continue
 		}
 
@@ -427,6 +447,7 @@ func runCheck(args []string) error {
 		}
 
 		counts[res.Decision]++
+		counters.Record(res.Decision, call.Tool, event.ReasonCode)
 		if res.Decision == policy.DecisionDeny {
 			if call.Tool != "" {
 				deniedTools[call.Tool]++
@@ -492,14 +513,30 @@ func runCheck(args []string) error {
 		}
 	}
 
+	// Decision-metrics summary (opt-in) on stderr, before the gate exit so it is
+	// emitted even when --fail-on fails. Stderr keeps it out of a --output
+	// json/jsonl stream on stdout.
+	if *emitMetrics {
+		if err := counters.Snapshot().FormatText(os.Stderr); err != nil {
+			return err
+		}
+	}
+
 	// --fail-on: exit 1 if any call matched a gated decision. In dry-run we
 	// report what would have failed but do not propagate the non-zero exit —
 	// the whole point of dry-run is "evaluate without enforcing."
 	if len(failOnSet) > 0 && matched > 0 {
+		if logFmt == oplog.FormatJSON {
+			oplogger.Warn("fail-on criteria matched", "matched", matched, "fail_on", gated, "dry_run", *dryRun)
+		}
 		if *dryRun {
-			fmt.Fprintf(os.Stderr, "AgentFence: dry-run: %d call(s) would have matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+			if logFmt != oplog.FormatJSON {
+				fmt.Fprintf(os.Stderr, "AgentFence: dry-run: %d call(s) would have matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+			}
 		} else {
-			fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+			if logFmt != oplog.FormatJSON {
+				fmt.Fprintf(os.Stderr, "AgentFence: %d call(s) matched --fail-on criteria (%s)\n", matched, strings.Join(gated, ", "))
+			}
 			return fmt.Errorf("%d call(s) matched --fail-on criteria", matched)
 		}
 	}
@@ -518,11 +555,13 @@ func resolveAsk(approver approval.Approver, call policy.ToolCall, res policy.Eva
 		res.Decision = policy.DecisionDeny
 	}
 	res.Reason = outcome.Reason
+	res.ReasonCode = outcome.Code
 	if outcome.Reason == approval.ReasonApprovalIOError {
 		fmt.Fprintf(os.Stderr, "AgentFence: approval I/O error for [%s] %s: %v\n", call.ID, call.Tool, err)
 	}
 	event.Decision = res.Decision
 	event.Reason = res.Reason
+	event.ReasonCode = res.ReasonCode
 	return res, event
 }
 
@@ -685,12 +724,12 @@ func scaffoldRootPolicy(names, packFiles []string) string {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--fail-on deny|ask|deny,ask] [--summary <file|->] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
+	fmt.Println("  agentfence check   --policy <file> --call <jsonl> [--audit-log <file>] [--output text|json|jsonl] [--log-format text|json] [--metrics] [--fail-on deny|ask|deny,ask] [--summary <file|->] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--dry-run] [--no-interactive] [--approval-timeout <duration>]")
 	fmt.Println("  agentfence explain --policy <file> --tool <name> [--args <json>] [--output text|json]")
 	fmt.Println("  agentfence policy  test     --policy <file> --tests <yaml> [--output text|json] [--verbose]")
 	fmt.Println("  agentfence policy  validate --policy <file>")
-	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug] -- <command> [args...]")
-	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--on-batch reject|evaluate] [--on-unparsed forward|reject] [--auth-token <token>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug]")
+	fmt.Println("  agentfence proxy   --policy <file> [--audit-log <file>] [--log-format text|json] [--metrics-listen <addr>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug] -- <command> [args...]")
+	fmt.Println("  agentfence proxy-http --upstream <url> --policy <file> [--listen <addr>] [--log-format text|json] [--metrics-listen <addr>] [--on-batch reject|evaluate] [--on-unparsed forward|reject] [--auth-token <token>] [--audit-log <file>] [--tamper-evident] [--sign-key <file>] [--audit-max-size <bytes>] [--audit-max-age <dur>] [--audit-keep <n>] [--audit-fsync] [--audit-sink <url>] [--passthrough] [--no-interactive] [--approval-timeout <duration>] [--debug]")
 	fmt.Println("  agentfence validate --policy <file>")
 	fmt.Println("  agentfence audit   verify    --log <file> [--output text|json] [--pubkey <file>] [--anchor <file>] [--anchor-pubkey <file>]")
 	fmt.Println("  agentfence audit   summarize --log <file> [--output text|json] [--top N]")
@@ -1291,6 +1330,27 @@ func (a auditAnchorResult) printText() {
 // The proxy spawns the command, relays JSON-RPC messages in both directions,
 // and intercepts tools/call requests for policy evaluation. See
 // docs/integration-guide.md for end-to-end configuration examples.
+// serveMetrics starts a Prometheus metrics endpoint on addr exposing counters
+// and returns a stop function. The endpoint is local and operator-chosen:
+// nothing is sent anywhere AgentFence picks, consistent with the no-telemetry
+// posture. The returned function (typically deferred) shuts the endpoint down
+// and prints a final text summary of the counters to stderr.
+func serveMetrics(addr string, counters *metrics.Counters, logger *slog.Logger) func() {
+	srv := &http.Server{Addr: addr, Handler: metrics.ServeMux(counters)}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics endpoint failed", "addr", addr, "err", err)
+		}
+	}()
+	logger.Info("metrics endpoint listening", "addr", addr, "path", "/metrics")
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		_ = counters.Snapshot().FormatText(os.Stderr)
+	}
+}
+
 func runProxy(args []string) error {
 	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	policyPath := fs.String("policy", "", "Path to policy YAML (required unless --passthrough)")
@@ -1300,6 +1360,8 @@ func runProxy(args []string) error {
 	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting the operator on the TTY")
 	approvalTimeout := fs.Duration("approval-timeout", 0, "Maximum time to wait for an interactive ask response (e.g. 30s, 2m). 0 waits indefinitely")
 	debug := fs.Bool("debug", false, "Log every forwarded message to stderr")
+	logFormat := fs.String("log-format", "text", "Operational log format for stderr diagnostics: text or json (distinct from the audit log)")
+	metricsListen := fs.String("metrics-listen", "", "Expose Prometheus decision/latency/error metrics at /metrics on this address (e.g. 127.0.0.1:9090); empty disables it")
 	signKey := fs.String("sign-key", "", "Path to an Ed25519 private key (PEM) to sign each audit event; verify with 'agentfence audit verify --pubkey'")
 	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
 	auditMaxAge := fs.Duration("audit-max-age", 0, "Rotate the audit log once it has been open this long, e.g. 24h (0 = no age rotation; requires --audit-log)")
@@ -1309,6 +1371,11 @@ func runProxy(args []string) error {
 	fs.Var(&auditSinks, "audit-sink", "Ship audit events to an external sink; repeatable. Schemes: http(s)://…, syslog://host:port, syslog+tcp://host:port")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
+	}
+
+	logFmt, err := oplog.ParseFormat(*logFormat)
+	if err != nil {
+		return err
 	}
 
 	rest := fs.Args()
@@ -1361,6 +1428,8 @@ func runProxy(args []string) error {
 		approver = a
 	}
 
+	logger := oplog.New(os.Stderr, logFmt, *debug)
+
 	opts := proxy.Options{
 		Engine:          eng,
 		AuditWriter:     aw,
@@ -1369,11 +1438,18 @@ func runProxy(args []string) error {
 		NoInteractive:   *noInteractive,
 		Passthrough:     *passthrough,
 		Debug:           *debug,
-		Logger:          os.Stderr,
+		Logger:          logger,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if *metricsListen != "" {
+		counters := metrics.New()
+		opts.Metrics = counters
+		stopMetrics := serveMetrics(*metricsListen, counters, logger)
+		defer stopMetrics()
+	}
 
 	// Return the proxy.Run error unchanged. When the downstream MCP server
 	// exits non-zero, it is an *exec.ExitError; main() detects that and
@@ -1404,6 +1480,8 @@ func runProxyHTTP(args []string) error {
 	noInteractive := fs.Bool("no-interactive", false, "Auto-deny every ask decision instead of prompting the operator on the TTY")
 	approvalTimeout := fs.Duration("approval-timeout", 0, "Maximum time to wait for an interactive ask response (e.g. 30s, 2m). 0 waits indefinitely")
 	debug := fs.Bool("debug", false, "Log every proxied request to stderr")
+	logFormat := fs.String("log-format", "text", "Operational log format for stderr diagnostics: text or json (distinct from the audit log)")
+	metricsListen := fs.String("metrics-listen", "", "Expose Prometheus decision/latency/error metrics at /metrics on this address (e.g. 127.0.0.1:9090); empty disables it")
 	signKey := fs.String("sign-key", "", "Path to an Ed25519 private key (PEM) to sign each audit event; verify with 'agentfence audit verify --pubkey'")
 	auditMaxSize := fs.Int64("audit-max-size", 0, "Rotate the audit log once it reaches this many bytes (0 = no size rotation; requires --audit-log)")
 	auditMaxAge := fs.Duration("audit-max-age", 0, "Rotate the audit log once it has been open this long, e.g. 24h (0 = no age rotation; requires --audit-log)")
@@ -1413,6 +1491,11 @@ func runProxyHTTP(args []string) error {
 	fs.Var(&auditSinks, "audit-sink", "Ship audit events to an external sink; repeatable. Schemes: http(s)://…, syslog://host:port, syslog+tcp://host:port")
 	if err := fs.Parse(args); err != nil {
 		return handleFlagParseErr(err)
+	}
+
+	logFmt, err := oplog.ParseFormat(*logFormat)
+	if err != nil {
+		return err
 	}
 
 	if *upstream == "" {
@@ -1489,6 +1572,8 @@ func runProxyHTTP(args []string) error {
 		approver = a
 	}
 
+	logger := oplog.New(os.Stderr, logFmt, *debug)
+
 	opts := httpproxy.Options{
 		Engine:          eng,
 		AuditWriter:     aw,
@@ -1498,7 +1583,7 @@ func runProxyHTTP(args []string) error {
 		Upstream:        upstreamURL,
 		Passthrough:     *passthrough,
 		Debug:           *debug,
-		Logger:          os.Stderr,
+		Logger:          logger,
 		OnBatch:         batchPolicy,
 		OnUnparsed:      unparsedPolicy,
 		AuthToken:       authTok,
@@ -1506,6 +1591,13 @@ func runProxyHTTP(args []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if *metricsListen != "" {
+		counters := metrics.New()
+		opts.Metrics = counters
+		stopMetrics := serveMetrics(*metricsListen, counters, logger)
+		defer stopMetrics()
+	}
 
 	return httpproxy.Serve(ctx, *listen, opts)
 }

@@ -25,7 +25,10 @@ import (
 //	      and optional "memory_write" summary for durable-memory-write events.
 //	"3" — added optional "signature" field (base64 Ed25519 signature over the
 //	      event's canonical digest) for writer authentication.
-const CurrentSchemaVersion = "3"
+//	"4" — added optional "reason_code" field (a stable, machine-readable
+//	      classification of the decision; see policy.ReasonCode) so downstream
+//	      tools can group decisions without matching free-text reasons.
+const CurrentSchemaVersion = "4"
 
 // ModeDryRun marks an audit event produced under dry-run evaluation. Events
 // without an explicit Mode are treated as enforced.
@@ -64,19 +67,23 @@ type MemoryWriteSummary struct {
 // TamperEvident=true. They form a hash chain so log tampering can be detected
 // after the fact by VerifyChain.
 type Event struct {
-	SchemaVersion string                 `json:"schema_version"`
-	SessionID     string                 `json:"session_id"`
-	Sequence      uint64                 `json:"seq"`
-	Timestamp     string                 `json:"timestamp"`
-	CallID        string                 `json:"call_id"`
-	Tool          string                 `json:"tool"`
-	Decision      policy.Decision        `json:"decision"`
-	Reason        string                 `json:"reason"`
-	Arguments     map[string]interface{} `json:"arguments,omitempty"`
-	MemoryWrite   *MemoryWriteSummary    `json:"memory_write,omitempty"`
-	Mode          string                 `json:"mode,omitempty"`
-	PrevHash      string                 `json:"prev_hash,omitempty"`
-	Hash          string                 `json:"hash,omitempty"`
+	SchemaVersion string          `json:"schema_version"`
+	SessionID     string          `json:"session_id"`
+	Sequence      uint64          `json:"seq"`
+	Timestamp     string          `json:"timestamp"`
+	CallID        string          `json:"call_id"`
+	Tool          string          `json:"tool"`
+	Decision      policy.Decision `json:"decision"`
+	Reason        string          `json:"reason"`
+	// ReasonCode is the stable, machine-readable classification of the decision
+	// (see policy.ReasonCode). It mirrors the human-readable Reason and lets
+	// audit summarize, metrics, and exporters group decisions reliably.
+	ReasonCode  policy.ReasonCode      `json:"reason_code,omitempty"`
+	Arguments   map[string]interface{} `json:"arguments,omitempty"`
+	MemoryWrite *MemoryWriteSummary    `json:"memory_write,omitempty"`
+	Mode        string                 `json:"mode,omitempty"`
+	PrevHash    string                 `json:"prev_hash,omitempty"`
+	Hash        string                 `json:"hash,omitempty"`
 
 	// Signature is a base64-encoded Ed25519 signature over the event's
 	// canonical digest (the SHA-256 of the JSON encoding with Hash and
@@ -207,11 +214,12 @@ func (w *Writer) SessionID() string {
 // SchemaVersion, SessionID, Sequence, and (if tamper-evident) PrevHash/Hash.
 func NewEvent(call policy.ToolCall, result policy.EvaluationResult, redacted map[string]interface{}, includeArgs bool) Event {
 	e := Event{
-		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-		CallID:    call.ID,
-		Tool:      call.Tool,
-		Decision:  result.Decision,
-		Reason:    result.Reason,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+		CallID:     call.ID,
+		Tool:       call.Tool,
+		Decision:   result.Decision,
+		Reason:     result.Reason,
+		ReasonCode: result.ReasonCode,
 	}
 	if includeArgs {
 		e.Arguments = redacted
@@ -312,11 +320,12 @@ func (w *Writer) Write(event Event) error {
 // NewErrorEvent creates a synthetic deny audit event for a line that failed to parse.
 func NewErrorEvent(line int, reason string) Event {
 	return Event{
-		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-		CallID:    fmt.Sprintf("line-%d", line),
-		Tool:      "",
-		Decision:  policy.DecisionDeny,
-		Reason:    "parse error: " + reason,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+		CallID:     fmt.Sprintf("line-%d", line),
+		Tool:       "",
+		Decision:   policy.DecisionDeny,
+		Reason:     "parse error: " + reason,
+		ReasonCode: policy.ReasonCodeParseError,
 	}
 }
 

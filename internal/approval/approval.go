@@ -76,6 +76,9 @@ type Outcome struct {
 	// Reason is the canonical audit reason for the outcome — one of the
 	// Reason* constants in this package.
 	Reason string
+	// Code is the stable, machine-readable classification of the outcome,
+	// mirroring Reason for metrics and audit grouping.
+	Code policy.ReasonCode
 }
 
 // Resolve runs approver for an ask decision and maps the result to a final
@@ -102,17 +105,17 @@ func Resolve(ctx context.Context, approver Approver, call policy.ToolCall, timeo
 	approved, err := approver.Request(ctx, call)
 	switch {
 	case approved:
-		return Outcome{Approved: true, Reason: ReasonApprovedInteractively}, err
+		return Outcome{Approved: true, Reason: ReasonApprovedInteractively, Code: policy.ReasonCodeApprovalApproved}, err
 	case errors.Is(err, context.DeadlineExceeded):
-		return Outcome{Reason: ReasonApprovalTimeout}, err
+		return Outcome{Reason: ReasonApprovalTimeout, Code: policy.ReasonCodeApprovalTimeout}, err
 	case errors.Is(err, context.Canceled):
-		return Outcome{Reason: ReasonApprovalCancelled}, err
+		return Outcome{Reason: ReasonApprovalCancelled, Code: policy.ReasonCodeApprovalCancelled}, err
 	case err != nil:
-		return Outcome{Reason: ReasonApprovalIOError}, err
+		return Outcome{Reason: ReasonApprovalIOError, Code: policy.ReasonCodeApprovalIOError}, err
 	case noInteractive:
-		return Outcome{Reason: ReasonNonInteractive}, nil
+		return Outcome{Reason: ReasonNonInteractive, Code: policy.ReasonCodeNonInteractive}, nil
 	default:
-		return Outcome{Reason: ReasonDeniedInteractively}, nil
+		return Outcome{Reason: ReasonDeniedInteractively, Code: policy.ReasonCodeApprovalDenied}, nil
 	}
 }
 

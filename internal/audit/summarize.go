@@ -27,6 +27,13 @@ type Summary struct {
 	// Helpful for spotting mixed-version logs after a schema bump.
 	BySchemaVersion map[string]int `json:"by_schema_version,omitempty"`
 
+	// ByReasonCode counts events grouped by their stable reason_code field
+	// (see policy.ReasonCode). Unlike TopReasons, which groups free-text
+	// reasons that may reword over time, this grouping is robust to wording
+	// changes and is the preferred key for alerting. Events without a
+	// reason_code (pre-taxonomy logs) are not counted here.
+	ByReasonCode map[string]int `json:"by_reason_code,omitempty"`
+
 	// TopTools lists the most common tool names. The slice is bounded by the
 	// caller-supplied top-N and sorted by Count descending, Tool ascending
 	// for deterministic ties.
@@ -77,6 +84,7 @@ func Summarize(r io.Reader, topN int) (Summary, error) {
 	s := Summary{
 		ByDecision:      map[string]int{},
 		BySchemaVersion: map[string]int{},
+		ByReasonCode:    map[string]int{},
 	}
 	toolCounts := map[string]int{}
 	deniedTools := map[string]int{}
@@ -109,6 +117,9 @@ func Summarize(r io.Reader, topN int) (Summary, error) {
 			s.ByDecision[string(e.Decision)]++
 			if e.SchemaVersion != "" {
 				s.BySchemaVersion[e.SchemaVersion]++
+			}
+			if e.ReasonCode != "" {
+				s.ByReasonCode[string(e.ReasonCode)]++
 			}
 			if e.Tool != "" {
 				toolCounts[e.Tool]++
@@ -196,6 +207,13 @@ func (s Summary) FormatText(w io.Writer) error {
 			ew.printf(" %s=%d", v, s.BySchemaVersion[v])
 		}
 		ew.printf("\n")
+	}
+
+	if len(s.ByReasonCode) > 0 {
+		ew.printf("\nBy reason code:\n")
+		for _, code := range sortedKeys(s.ByReasonCode) {
+			ew.printf("  %5d  %s\n", s.ByReasonCode[code], code)
+		}
 	}
 
 	writeToolSection(ew, "Top tools (all decisions)", s.TopTools)

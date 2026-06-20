@@ -222,3 +222,6 @@ bin/
 *.test
 *.out
 coverage.out
+
+# Locally built CLI binary (see `make build`)
+/agentfence

@@ -104,15 +104,18 @@ func applyTaintEscalation(res policy.EvaluationResult, event audit.Event, hit ta
 		if res.Decision != policy.DecisionDeny {
 			res.Decision = policy.DecisionDeny
 			res.Reason = "tainted_argument: " + detail + "; denied by taint policy"
+			res.ReasonCode = policy.ReasonCodeTaintDenied
 		}
 	default: // escalate
 		if res.Decision == policy.DecisionAllow {
 			res.Decision = policy.DecisionAsk
 			res.Reason = "tainted_argument: " + detail + "; escalated allow→ask"
+			res.ReasonCode = policy.ReasonCodeTaintEscalated
 		}
 	}
 	event.Decision = res.Decision
 	event.Reason = res.Reason
+	event.ReasonCode = res.ReasonCode
 	return res, event
 }
 
@@ -129,33 +132,35 @@ func (e *Engine) evaluateDecisionCore(call policy.ToolCall, trace *[]string) pol
 	if !found {
 		appendTrace(trace, fmt.Sprintf("no rule found for %q; applying default decision %q", call.Tool, e.policy.Defaults.Decision))
 		return policy.EvaluationResult{
-			Decision: e.policy.Defaults.Decision,
-			Reason:   fmt.Sprintf("no rule for %s; using default decision", call.Tool),
+			Decision:   e.policy.Defaults.Decision,
+			Reason:     fmt.Sprintf("no rule for %s; using default decision", call.Tool),
+			ReasonCode: policy.ReasonCodeDefaultDecision,
 		}
 	}
 
 	appendTrace(trace, fmt.Sprintf("matched rule %q (decision: %s)", matchedKey, rule.Decision))
 
-	if deny, reason := evaluatePathConstraints(rule, call, trace); deny {
-		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	if deny, reason, code := evaluatePathConstraints(rule, call, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason, ReasonCode: code}
 	}
-	if deny, reason := evaluateArgConstraints(rule, call, trace); deny {
-		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	if deny, reason, code := evaluateArgConstraints(rule, call, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason, ReasonCode: code}
 	}
-	if deny, reason := evaluateURLConstraints(rule, call, trace); deny {
-		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	if deny, reason, code := evaluateURLConstraints(rule, call, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason, ReasonCode: code}
 	}
-	if deny, reason := evaluateCommandConstraints(rule, call, trace); deny {
-		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	if deny, reason, code := evaluateCommandConstraints(rule, call, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason, ReasonCode: code}
 	}
-	if deny, reason := evaluateMemoryWriteConstraints(rule, call, e.redactor, trace); deny {
-		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason}
+	if deny, reason, code := evaluateMemoryWriteConstraints(rule, call, e.redactor, trace); deny {
+		return policy.EvaluationResult{Decision: policy.DecisionDeny, Reason: reason, ReasonCode: code}
 	}
 
 	appendTrace(trace, fmt.Sprintf("all constraints passed; decision: %s", rule.Decision))
 	return policy.EvaluationResult{
-		Decision: rule.Decision,
-		Reason:   e.reasonForMatch(call.Tool, matchedKey),
+		Decision:   rule.Decision,
+		Reason:     e.reasonForMatch(call.Tool, matchedKey),
+		ReasonCode: policy.ReasonCodeRuleMatch,
 	}
 }
 
@@ -228,24 +233,24 @@ func appendTrace(trace *[]string, msg string) {
 	}
 }
 
-func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
+func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string, policy.ReasonCode) {
 	paths := rule.Constraints.Paths
 	pathArg, ok := call.Arguments["path"].(string)
 	hasPathConstraints := len(paths.Allow) > 0 || len(paths.Deny) > 0
 	if !ok || pathArg == "" {
 		if !hasPathConstraints {
-			return false, ""
+			return false, "", policy.ReasonCodeUnspecified
 		}
 		appendTrace(trace, "path constraint: missing path argument → deny")
-		return true, "missing required path argument for constrained tool"
+		return true, "missing required path argument for constrained tool", policy.ReasonCodePathMissing
 	}
 
 	deny, reason, cleaned := evaluatePathSafety(pathArg, trace)
 	if deny {
-		return true, reason
+		return true, reason, policy.ReasonCodePathUnsafe
 	}
 	if !hasPathConstraints {
-		return false, ""
+		return false, "", policy.ReasonCodeUnspecified
 	}
 
 	appendTrace(trace, fmt.Sprintf("checking path constraints for %q (normalized: %q)", pathArg, cleaned))
@@ -253,7 +258,7 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall, trace *[]st
 	for _, deny := range paths.Deny {
 		if matchesGlob(deny, cleaned) {
 			appendTrace(trace, fmt.Sprintf("path %q denied by pattern %q", pathArg, deny))
-			return true, fmt.Sprintf("path %q denied by pattern %q", pathArg, deny)
+			return true, fmt.Sprintf("path %q denied by pattern %q", pathArg, deny), policy.ReasonCodePathDenied
 		}
 	}
 
@@ -261,13 +266,13 @@ func evaluatePathConstraints(rule policy.Rule, call policy.ToolCall, trace *[]st
 		for _, allow := range paths.Allow {
 			if matchesGlob(allow, cleaned) {
 				appendTrace(trace, fmt.Sprintf("path %q matched allow pattern %q", pathArg, allow))
-				return false, ""
+				return false, "", policy.ReasonCodeUnspecified
 			}
 		}
 		appendTrace(trace, fmt.Sprintf("path %q not matched by any allow pattern → deny", pathArg))
-		return true, fmt.Sprintf("path %q not in allowed paths", pathArg)
+		return true, fmt.Sprintf("path %q not in allowed paths", pathArg), policy.ReasonCodePathNotAllowed
 	}
-	return false, ""
+	return false, "", policy.ReasonCodeUnspecified
 }
 
 func evaluatePathSafety(pathArg string, trace *[]string) (bool, string, string) {
@@ -308,9 +313,9 @@ func evaluatePathSafety(pathArg string, trace *[]string) (bool, string, string) 
 // evaluateArgConstraints checks constraints.args: per-field allow/deny glob lists.
 // Non-string values are converted to string via fmt.Sprintf("%v", v) before matching.
 // A missing constrained field is denied.
-func evaluateArgConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
+func evaluateArgConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string, policy.ReasonCode) {
 	if len(rule.Constraints.Args) == 0 {
-		return false, ""
+		return false, "", policy.ReasonCodeUnspecified
 	}
 	// Sort field names for deterministic evaluation order.
 	fields := make([]string, 0, len(rule.Constraints.Args))
@@ -324,7 +329,7 @@ func evaluateArgConstraints(rule policy.Rule, call policy.ToolCall, trace *[]str
 		v, ok := call.Arguments[field]
 		if !ok || v == nil {
 			appendTrace(trace, fmt.Sprintf("arg constraint %q: argument missing → deny", field))
-			return true, fmt.Sprintf("missing required argument %q for constrained tool", field)
+			return true, fmt.Sprintf("missing required argument %q for constrained tool", field), policy.ReasonCodeArgMissing
 		}
 
 		var strVal string
@@ -339,7 +344,7 @@ func evaluateArgConstraints(rule policy.Rule, call policy.ToolCall, trace *[]str
 		for _, deny := range constraint.Deny {
 			if matchesGlob(deny, strVal) {
 				appendTrace(trace, fmt.Sprintf("arg %q value %q denied by pattern %q", field, strVal, deny))
-				return true, fmt.Sprintf("argument %q value %q denied by pattern %q", field, strVal, deny)
+				return true, fmt.Sprintf("argument %q value %q denied by pattern %q", field, strVal, deny), policy.ReasonCodeArgDenied
 			}
 		}
 
@@ -354,25 +359,25 @@ func evaluateArgConstraints(rule policy.Rule, call policy.ToolCall, trace *[]str
 			}
 			if !matched {
 				appendTrace(trace, fmt.Sprintf("arg %q value %q not matched by any allow pattern → deny", field, strVal))
-				return true, fmt.Sprintf("argument %q value %q not in allowed values", field, strVal)
+				return true, fmt.Sprintf("argument %q value %q not in allowed values", field, strVal), policy.ReasonCodeArgNotAllowed
 			}
 		}
 	}
-	return false, ""
+	return false, "", policy.ReasonCodeUnspecified
 }
 
 // evaluateURLConstraints checks constraints.urls against the url argument.
 // file:// scheme and bare IP hostnames are always denied regardless of the allow list.
-func evaluateURLConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
+func evaluateURLConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string, policy.ReasonCode) {
 	urls := rule.Constraints.URLs
 	if len(urls.Allow) == 0 && len(urls.Deny) == 0 {
-		return false, ""
+		return false, "", policy.ReasonCodeUnspecified
 	}
 
 	raw, ok := call.Arguments["url"].(string)
 	if !ok || raw == "" {
 		appendTrace(trace, "url constraint: missing url argument → deny")
-		return true, "missing required url argument for constrained tool"
+		return true, "missing required url argument for constrained tool", policy.ReasonCodeURLMissing
 	}
 
 	appendTrace(trace, fmt.Sprintf("checking url constraints for %q", raw))
@@ -380,26 +385,26 @@ func evaluateURLConstraints(rule policy.Rule, call policy.ToolCall, trace *[]str
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" {
 		appendTrace(trace, fmt.Sprintf("url %q is not a valid URL → deny", raw))
-		return true, fmt.Sprintf("url %q is not a valid URL", raw)
+		return true, fmt.Sprintf("url %q is not a valid URL", raw), policy.ReasonCodeURLInvalid
 	}
 
 	// Always deny file:// scheme.
 	if parsed.Scheme == "file" {
 		appendTrace(trace, fmt.Sprintf("url %q uses file:// scheme → deny (always denied)", raw))
-		return true, fmt.Sprintf("url %q uses file:// scheme which is always denied", raw)
+		return true, fmt.Sprintf("url %q uses file:// scheme which is always denied", raw), policy.ReasonCodeURLFileScheme
 	}
 
 	// Always deny bare IP hostnames.
 	host := parsed.Hostname()
 	if net.ParseIP(host) != nil {
 		appendTrace(trace, fmt.Sprintf("url %q has bare IP host %q → deny (always denied)", raw, host))
-		return true, fmt.Sprintf("url %q uses a bare IP address which is always denied", raw)
+		return true, fmt.Sprintf("url %q uses a bare IP address which is always denied", raw), policy.ReasonCodeURLBareIP
 	}
 
 	for _, deny := range urls.Deny {
 		if matchesGlob(deny, raw) {
 			appendTrace(trace, fmt.Sprintf("url %q denied by pattern %q", raw, deny))
-			return true, fmt.Sprintf("url %q denied by pattern %q", raw, deny)
+			return true, fmt.Sprintf("url %q denied by pattern %q", raw, deny), policy.ReasonCodeURLDenied
 		}
 	}
 
@@ -407,13 +412,13 @@ func evaluateURLConstraints(rule policy.Rule, call policy.ToolCall, trace *[]str
 		for _, allow := range urls.Allow {
 			if matchesGlob(allow, raw) {
 				appendTrace(trace, fmt.Sprintf("url %q matched allow pattern %q", raw, allow))
-				return false, ""
+				return false, "", policy.ReasonCodeUnspecified
 			}
 		}
 		appendTrace(trace, fmt.Sprintf("url %q not matched by any allow pattern → deny", raw))
-		return true, fmt.Sprintf("url %q not in allowed URLs", raw)
+		return true, fmt.Sprintf("url %q not in allowed URLs", raw), policy.ReasonCodeURLNotAllowed
 	}
-	return false, ""
+	return false, "", policy.ReasonCodeUnspecified
 }
 
 // evaluateCommandConstraints checks constraints.command for shell/terminal tools.
@@ -422,16 +427,16 @@ func evaluateURLConstraints(rule policy.Rule, call policy.ToolCall, trace *[]str
 //
 // WARNING: This is a best-effort guardrail only. Shell metacharacters (|, ;, &&, $())
 // can bypass these checks. Do not rely on this as a security sandbox.
-func evaluateCommandConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string) {
+func evaluateCommandConstraints(rule policy.Rule, call policy.ToolCall, trace *[]string) (bool, string, policy.ReasonCode) {
 	cmd := rule.Constraints.Command
 	if len(cmd.AllowExecutables) == 0 && len(cmd.DenyPatterns) == 0 {
-		return false, ""
+		return false, "", policy.ReasonCodeUnspecified
 	}
 
 	raw, ok := call.Arguments["command"].(string)
 	if !ok || raw == "" {
 		appendTrace(trace, "command constraint: missing command argument → deny")
-		return true, "missing required command argument for constrained tool"
+		return true, "missing required command argument for constrained tool", policy.ReasonCodeCommandMissing
 	}
 
 	appendTrace(trace, fmt.Sprintf("checking command constraints for %q", raw))
@@ -440,7 +445,7 @@ func evaluateCommandConstraints(rule policy.Rule, call policy.ToolCall, trace *[
 	for _, pattern := range cmd.DenyPatterns {
 		if matchesGlob(pattern, raw) {
 			appendTrace(trace, fmt.Sprintf("command %q denied by pattern %q", raw, pattern))
-			return true, fmt.Sprintf("command %q denied by pattern %q", raw, pattern)
+			return true, fmt.Sprintf("command %q denied by pattern %q", raw, pattern), policy.ReasonCodeCommandDenied
 		}
 	}
 
@@ -449,20 +454,20 @@ func evaluateCommandConstraints(rule policy.Rule, call policy.ToolCall, trace *[
 		fields := strings.Fields(raw)
 		if len(fields) == 0 {
 			appendTrace(trace, "command is empty after splitting → deny")
-			return true, "command is empty"
+			return true, "command is empty", policy.ReasonCodeCommandEmpty
 		}
 		executable := fields[0]
 		for _, allowed := range cmd.AllowExecutables {
 			if allowed == executable {
 				appendTrace(trace, fmt.Sprintf("executable %q is in allow_executables list", executable))
-				return false, ""
+				return false, "", policy.ReasonCodeUnspecified
 			}
 		}
 		appendTrace(trace, fmt.Sprintf("executable %q not in allow_executables list → deny", executable))
-		return true, fmt.Sprintf("executable %q is not in the allowed executables list", executable)
+		return true, fmt.Sprintf("executable %q is not in the allowed executables list", executable), policy.ReasonCodeCommandExecNotAllowed
 	}
 
-	return false, ""
+	return false, "", policy.ReasonCodeUnspecified
 }
 
 // isUNCPath reports whether p (backslashes already converted to forward slashes)
@@ -533,10 +538,10 @@ func normalizePath(p string) string {
 // denied. Scope defaults to "session". Sensitivity is the higher of any
 // explicit "sensitivity" argument and the redactor's classification of the
 // payload (any pattern match → high).
-func evaluateMemoryWriteConstraints(rule policy.Rule, call policy.ToolCall, redactor *redact.Redactor, trace *[]string) (bool, string) {
+func evaluateMemoryWriteConstraints(rule policy.Rule, call policy.ToolCall, redactor *redact.Redactor, trace *[]string) (bool, string, policy.ReasonCode) {
 	mw := rule.Constraints.MemoryWrite
 	if !mw.IsSet() {
-		return false, ""
+		return false, "", policy.ReasonCodeUnspecified
 	}
 
 	appendTrace(trace, "checking memory_write constraints")
@@ -546,12 +551,12 @@ func evaluateMemoryWriteConstraints(rule policy.Rule, call policy.ToolCall, reda
 		callRank := policy.MemoryScopeRank(callScope)
 		if callRank < 0 {
 			appendTrace(trace, fmt.Sprintf("memory_write: unknown scope %q → deny", callScope))
-			return true, fmt.Sprintf("memory write scope %q is not recognised", callScope)
+			return true, fmt.Sprintf("memory write scope %q is not recognised", callScope), policy.ReasonCodeMemoryScopeInvalid
 		}
 		maxRank := policy.MemoryScopeRank(mw.MaxScope)
 		if callRank > maxRank {
 			appendTrace(trace, fmt.Sprintf("memory_write: scope %q exceeds max_scope %q → deny", callScope, mw.MaxScope))
-			return true, fmt.Sprintf("memory write scope %q exceeds max allowed %q", callScope, mw.MaxScope)
+			return true, fmt.Sprintf("memory write scope %q exceeds max allowed %q", callScope, mw.MaxScope), policy.ReasonCodeMemoryScopeExceeded
 		}
 	}
 
@@ -559,34 +564,34 @@ func evaluateMemoryWriteConstraints(rule policy.Rule, call policy.ToolCall, reda
 	if payload == "" {
 		fields := memoryWritePayloadFields(rule)
 		appendTrace(trace, fmt.Sprintf("memory_write: no payload found in fields %v → deny", fields))
-		return true, fmt.Sprintf("memory write requires a non-empty payload in one of %v", fields)
+		return true, fmt.Sprintf("memory write requires a non-empty payload in one of %v", fields), policy.ReasonCodeMemoryPayloadMissing
 	}
 
 	if mw.MaxBytes > 0 && len(payload) > mw.MaxBytes {
 		appendTrace(trace, fmt.Sprintf("memory_write: payload %d bytes exceeds max_bytes %d → deny", len(payload), mw.MaxBytes))
-		return true, fmt.Sprintf("memory write payload %d bytes exceeds max allowed %d", len(payload), mw.MaxBytes)
+		return true, fmt.Sprintf("memory write payload %d bytes exceeds max allowed %d", len(payload), mw.MaxBytes), policy.ReasonCodeMemorySizeExceeded
 	}
 
 	if mw.MaxSensitivity != "" {
 		if explicit, present, valid := memoryWriteExplicitSensitivity(call.Arguments); present && !valid {
 			appendTrace(trace, fmt.Sprintf("memory_write: unknown sensitivity %q → deny", explicit))
-			return true, fmt.Sprintf("memory write sensitivity %q is not recognised", explicit)
+			return true, fmt.Sprintf("memory write sensitivity %q is not recognised", explicit), policy.ReasonCodeMemorySensitivityInvalid
 		}
 		sensitivity := classifyMemoryWriteSensitivity(payload, call.Arguments, redactor)
 		callRank := policy.MemorySensitivityRank(sensitivity)
 		if callRank < 0 {
 			appendTrace(trace, fmt.Sprintf("memory_write: unknown sensitivity %q → deny", sensitivity))
-			return true, fmt.Sprintf("memory write sensitivity %q is not recognised", sensitivity)
+			return true, fmt.Sprintf("memory write sensitivity %q is not recognised", sensitivity), policy.ReasonCodeMemorySensitivityInvalid
 		}
 		maxRank := policy.MemorySensitivityRank(mw.MaxSensitivity)
 		if callRank > maxRank {
 			appendTrace(trace, fmt.Sprintf("memory_write: sensitivity %s exceeds max_sensitivity %s → deny", sensitivity, mw.MaxSensitivity))
-			return true, fmt.Sprintf("memory write sensitivity %q exceeds max allowed %q", sensitivity, mw.MaxSensitivity)
+			return true, fmt.Sprintf("memory write sensitivity %q exceeds max allowed %q", sensitivity, mw.MaxSensitivity), policy.ReasonCodeMemorySensitivityExceeded
 		}
 	}
 
 	appendTrace(trace, fmt.Sprintf("memory_write: scope=%s field=%s size=%d → all constraints passed", callScope, field, len(payload)))
-	return false, ""
+	return false, "", policy.ReasonCodeUnspecified
 }
 
 // summarizeMemoryWrite builds the audit MemoryWriteSummary for a rule that

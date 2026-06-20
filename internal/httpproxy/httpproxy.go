@@ -48,6 +48,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -59,6 +60,8 @@ import (
 	"github.com/dgenio/agentfence/internal/audit"
 	"github.com/dgenio/agentfence/internal/engine"
 	"github.com/dgenio/agentfence/internal/mcp"
+	"github.com/dgenio/agentfence/internal/metrics"
+	"github.com/dgenio/agentfence/internal/oplog"
 	"github.com/dgenio/agentfence/internal/policy"
 )
 
@@ -135,8 +138,14 @@ type Options struct {
 	Passthrough bool
 	// Debug logs every proxied request line to Logger.
 	Debug bool
-	// Logger receives proxy-internal diagnostics. Defaults to io.Discard.
-	Logger io.Writer
+	// Logger receives structured proxy-internal diagnostics, a distinct stream
+	// from the audit log and the proxied HTTP traffic. Defaults to a logger that
+	// discards everything.
+	Logger *slog.Logger
+	// Metrics, when non-nil, accumulates decision counts, taint escalations,
+	// approval outcomes, evaluation latency, and operational errors for the
+	// on-shutdown summary and the optional /metrics endpoint. Nil disables it.
+	Metrics *metrics.Counters
 	// Client is the HTTP client used for upstream requests. Defaults to a
 	// client with no timeout (so streamed/SSE responses are not cut off).
 	Client *http.Client
@@ -195,7 +204,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		return nil, fmt.Errorf("httpproxy: invalid OnUnparsed %q (want %q or %q)", opts.OnUnparsed, UnparsedForward, UnparsedReject)
 	}
 	if opts.Logger == nil {
-		opts.Logger = io.Discard
+		opts.Logger = oplog.New(nil, oplog.FormatText, false)
 	}
 	if opts.Client == nil {
 		// No timeout: SSE responses are long-lived. Cancellation flows through
@@ -221,7 +230,7 @@ func Serve(ctx context.Context, listenAddr string, opts Options) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 
-	fmt.Fprintf(h.opts.Logger, "httpproxy: listening on %s, forwarding to %s\n", listenAddr, opts.Upstream)
+	h.opts.Logger.Info("listening", "addr", listenAddr, "upstream", opts.Upstream.String())
 
 	select {
 	case <-ctx.Done():
@@ -238,13 +247,14 @@ func Serve(ctx context.Context, listenAddr string, opts Options) error {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.opts.Debug {
-		fmt.Fprintf(h.opts.Logger, "httpproxy: %s %s\n", r.Method, r.URL.Path)
+		h.opts.Logger.Debug("request", "method", r.Method, "path", r.URL.Path)
 	}
 
 	// Authenticate first when a token is configured, so an unauthenticated
 	// client can reach neither the policy edge nor the upstream server.
 	if h.opts.AuthToken != "" && !h.authorized(r) {
-		fmt.Fprintf(h.opts.Logger, "httpproxy: rejected unauthenticated %s %s\n", r.Method, r.URL.Path)
+		h.opts.Logger.Warn("rejected unauthenticated request", "method", r.Method, "path", r.URL.Path)
+		h.recordError("unauthenticated")
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "httpproxy: missing or invalid bearer token", http.StatusUnauthorized)
 		return
@@ -259,7 +269,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
-		fmt.Fprintln(h.opts.Logger, "httpproxy: read request body:", err)
+		h.opts.Logger.Error("read request body failed", "err", err)
+		h.recordError("proxy")
 		h.writeJSONRPC(w, mcp.ProxyError(nil, "error reading request body"))
 		return
 	}
@@ -267,7 +278,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Oversize bodies are refused, never forwarded uninspected. Answer with
 		// a JSON-RPC error envelope when the body looked like JSON-RPC so the
 		// agent sees a structured error; otherwise a plain HTTP 413.
-		fmt.Fprintln(h.opts.Logger, "httpproxy: rejecting oversize request body")
+		h.opts.Logger.Warn("rejecting oversize request body", "limit_bytes", maxBodyBytes)
+		h.recordError("oversize")
 		if mcp.LooksLikeJSONRPC(body) {
 			h.writeJSONRPC(w, mcp.RequestRejectedError(nil, "request body exceeds limit"))
 		} else {
@@ -289,7 +301,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Unparseable as JSON-RPC: forward transparently, or refuse if the
 		// operator opted into a fail-closed boundary.
 		if h.opts.OnUnparsed == UnparsedReject {
-			fmt.Fprintln(h.opts.Logger, "httpproxy: rejecting unparseable body:", perr)
+			h.opts.Logger.Warn("rejecting unparseable body", "err", perr)
+			h.recordError("unparsed")
 			if mcp.LooksLikeJSONRPC(body) {
 				h.writeJSONRPC(w, mcp.RequestRejectedError(nil, "request body is not valid JSON-RPC"))
 			} else {
@@ -318,7 +331,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fallback := fmt.Sprintf("call-%d", atomic.AddUint64(&h.callCounter, 1))
 	callID := mcp.CallIDFromRequestID(req.ID, fallback)
 	call := params.ToToolCall(callID)
+	evalStart := time.Now()
 	result, event := h.sess.Evaluate(call)
+	if h.opts.Metrics != nil {
+		h.opts.Metrics.ObserveEvalLatency(time.Since(evalStart))
+	}
 
 	// Resolve an ask decision to a final allow/deny via the approver before we
 	// audit, so the audit event records the outcome the agent actually saw
@@ -340,16 +357,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		event.Decision = result.Decision
 		event.Reason = result.Reason
+		// Record the approval outcome's stable code so audit summaries and
+		// metrics can group ask resolutions.
+		event.ReasonCode = outcome.Code
 		if outcome.Reason == approval.ReasonApprovalIOError {
 			// Surface the I/O detail to the operator only; the agent sees the
 			// canonical reason, not the internal error text.
-			fmt.Fprintf(h.opts.Logger, "httpproxy: approval I/O error for [%s] %s: %v\n", call.ID, call.Tool, aerr)
+			h.opts.Logger.Error("approval I/O error", "call_id", call.ID, "tool", call.Tool, "err", aerr)
 		}
+	}
+
+	// Record the final decision for metrics before forwarding.
+	if h.opts.Metrics != nil {
+		h.opts.Metrics.Record(event.Decision, event.Tool, event.ReasonCode)
 	}
 
 	// Audit so the decision is durable even if forwarding fails.
 	if werr := h.opts.AuditWriter.Write(event); werr != nil {
-		fmt.Fprintln(h.opts.Logger, "httpproxy: audit write:", werr)
+		h.opts.Logger.Error("audit write failed", "err", werr)
+		h.recordError("audit_write")
 	}
 
 	switch result.Decision {
@@ -361,6 +387,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Unknown decision: default-deny so a future decision value cannot
 		// silently widen the allow set.
 		h.writeJSONRPC(w, mcp.BlockedByPolicyError(req.ID, "unknown decision: "+string(result.Decision)))
+	}
+}
+
+// recordError increments the proxy's operational error counter when metrics
+// are enabled. A no-op otherwise.
+func (h *Handler) recordError(kind string) {
+	if h.opts.Metrics != nil {
+		h.opts.Metrics.RecordError(kind)
 	}
 }
 
@@ -379,7 +413,8 @@ func (h *Handler) authorized(r *http.Request) bool {
 // handleBatch applies the configured BatchPolicy to a JSON-RPC batch body.
 func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request, body []byte) {
 	if h.opts.OnBatch == BatchReject {
-		fmt.Fprintln(h.opts.Logger, "httpproxy: rejecting ungated JSON-RPC batch body")
+		h.opts.Logger.Warn("rejecting ungated JSON-RPC batch body")
+		h.recordError("batch")
 		h.writeJSONRPC(w, mcp.BatchNotGatedError(nil, "send one request per body, or run with --on-batch evaluate"))
 		return
 	}
@@ -403,9 +438,15 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request, body []byt
 		}
 		fallback := fmt.Sprintf("call-%d", atomic.AddUint64(&h.callCounter, 1))
 		call := params.ToToolCall(mcp.CallIDFromRequestID(req.ID, fallback))
+		evalStart := time.Now()
 		result, event := h.sess.Evaluate(call)
+		if h.opts.Metrics != nil {
+			h.opts.Metrics.ObserveEvalLatency(time.Since(evalStart))
+			h.opts.Metrics.Record(event.Decision, event.Tool, event.ReasonCode)
+		}
 		if werr := h.opts.AuditWriter.Write(event); werr != nil {
-			fmt.Fprintln(h.opts.Logger, "httpproxy: audit write:", werr)
+			h.opts.Logger.Error("audit write failed", "err", werr)
+			h.recordError("audit_write")
 		}
 		if result.Decision == policy.DecisionAllow {
 			continue
@@ -449,7 +490,8 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 
 	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, reqBody)
 	if err != nil {
-		fmt.Fprintln(h.opts.Logger, "httpproxy: build upstream request:", err)
+		h.opts.Logger.Error("build upstream request failed", "err", err)
+		h.recordError("proxy")
 		if jsonRPC {
 			h.writeJSONRPC(w, mcp.ProxyError(id, "could not build upstream request"))
 		} else {
@@ -477,7 +519,8 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 
 	resp, err := h.client.Do(outReq)
 	if err != nil {
-		fmt.Fprintln(h.opts.Logger, "httpproxy: upstream request failed:", err)
+		h.opts.Logger.Error("upstream request failed", "err", err)
+		h.recordError("upstream")
 		if jsonRPC {
 			h.writeJSONRPC(w, mcp.UpstreamError(id, sanitizedUpstreamReason(err)))
 		} else {
@@ -623,7 +666,8 @@ func (h *Handler) writeJSONRPC(w http.ResponseWriter, resp mcp.JSONRPCResponse) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := writeJSON(w, resp); err != nil {
-		fmt.Fprintln(h.opts.Logger, "httpproxy: write response:", err)
+		h.opts.Logger.Error("write response failed", "err", err)
+		h.recordError("proxy")
 	}
 }
 
