@@ -99,7 +99,7 @@ Metric families:
 | `agentfence_taint_escalations_total` | — | Decisions adjusted by taint tracking. |
 | `agentfence_approval_outcomes_total` | `outcome` | Resolved `ask` outcomes (approved / denied / timeout / …). |
 | `agentfence_eval_latency_seconds_sum` / `_count` | — | Evaluation latency sum and observation count (mean = sum/count). |
-| `agentfence_errors_total` | `kind` | Operational errors (`upstream`, `proxy`, `audit_write`, `unauthenticated`, …). |
+| `agentfence_errors_total` | `kind` | Operational errors. Kinds: `upstream`, `proxy`, `audit_write`, `unauthenticated`, `oversize`, `unparsed`, `batch` (HTTP proxy) and `relay` (stdio proxy). |
 
 The endpoint serves `GET`/`HEAD` only and is dependency-free (no Prometheus
 client library is linked into the binary). When the endpoint is enabled, the

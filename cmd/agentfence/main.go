@@ -1336,9 +1336,18 @@ func (a auditAnchorResult) printText() {
 // posture. The returned function (typically deferred) shuts the endpoint down
 // and prints a final text summary of the counters to stderr.
 func serveMetrics(addr string, counters *metrics.Counters, logger *slog.Logger) func() {
-	srv := &http.Server{Addr: addr, Handler: metrics.ServeMux(counters)}
+	srv := &http.Server{Handler: metrics.ServeMux(counters)}
+	// Bind synchronously so an unusable address (in use, no permission, bad
+	// host) is reported at startup rather than silently in a goroutine. A bind
+	// failure leaves the proxy running without the endpoint — metrics are
+	// best-effort observability and must not take the gate down.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("metrics endpoint disabled: cannot bind", "addr", addr, "err", err)
+		return func() {}
+	}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("metrics endpoint failed", "addr", addr, "err", err)
 		}
 	}()

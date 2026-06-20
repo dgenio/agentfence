@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 )
 
 // Format selects the operational log encoding.
@@ -72,6 +73,11 @@ func New(w io.Writer, format Format, debug bool) *slog.Logger {
 // info/warn, and a "warning: " / "error: " prefix for higher levels so they
 // remain scannable.
 type textHandler struct {
+	// mu serializes writes to w. It is a pointer so handlers derived via
+	// WithAttrs/WithGroup share the same lock, matching slog's stdlib handlers:
+	// the stdio proxy logs from two relay goroutines concurrently, and without a
+	// shared lock their records could interleave on the same stderr writer.
+	mu    *sync.Mutex
 	w     io.Writer
 	level slog.Level
 	attrs []slog.Attr
@@ -79,7 +85,7 @@ type textHandler struct {
 }
 
 func newTextHandler(w io.Writer, level slog.Level) *textHandler {
-	return &textHandler{w: w, level: level}
+	return &textHandler{mu: &sync.Mutex{}, w: w, level: level}
 }
 
 func (h *textHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
@@ -113,7 +119,11 @@ func (h *textHandler) Handle(_ context.Context, r slog.Record) error {
 		return true
 	})
 	b.WriteByte('\n')
+	// The record is fully rendered above; hold the lock only for the write so
+	// concurrent goroutines emit whole, non-interleaved lines.
+	h.mu.Lock()
 	_, err := io.WriteString(h.w, b.String())
+	h.mu.Unlock()
 	return err
 }
 
