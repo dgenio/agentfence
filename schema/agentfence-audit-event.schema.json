@@ -18,8 +18,8 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "description": "Audit event schema version. Current writers emit \"3\".",
-      "examples": ["1", "2", "3"]
+      "description": "Audit event schema version. Current writers emit \"4\".",
+      "examples": ["1", "2", "3", "4"]
     },
     "session_id": {
       "type": "string",
@@ -51,6 +51,11 @@
     "reason": {
       "type": "string",
       "description": "Human-readable explanation for the decision."
+    },
+    "reason_code": {
+      "type": "string",
+      "description": "Stable, machine-readable classification of the decision (e.g. path_denied, url_bare_ip, taint_escalated, approval_timeout). Mirrors `reason` for reliable grouping. Absent on pre-taxonomy (schema < 4) events.",
+      "examples": ["rule_match", "default_decision", "path_denied", "url_bare_ip", "taint_escalated", "approval_timeout"]
     },
     "arguments": {
       "type": "object",

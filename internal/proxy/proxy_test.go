@@ -575,7 +575,6 @@ func TestRunEndToEndAllow(t *testing.T) {
 		Stdin:       agentStdinR,
 		Stdout:      agentStdoutBuf,
 		Stderr:      io.Discard,
-		Logger:      io.Discard,
 	}
 
 	// Run the proxy in a goroutine so we can feed it on agentStdinW.

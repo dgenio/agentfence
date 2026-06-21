@@ -165,6 +165,10 @@ const DefaultTaintMinLength = 12
 type EvaluationResult struct {
 	Decision Decision `json:"decision"`
 	Reason   string   `json:"reason"`
+	// ReasonCode is the stable, machine-readable classification of the decision
+	// (see reasoncode.go). The free-text Reason is for humans; ReasonCode is for
+	// grouping in audit summaries, metrics, and exporters.
+	ReasonCode ReasonCode `json:"reason_code,omitempty"`
 }
 
 const StarterPolicyYAML = `version: "0.1"

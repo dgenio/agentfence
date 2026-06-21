@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Structured decision observability.** A shared observability stack across the
+  CLI and proxies:
+  - **Typed reason codes.** Every decision now carries a stable, machine-readable
+    `reason_code` (e.g. `path_denied`, `url_bare_ip`, `taint_escalated`,
+    `approval_timeout`) alongside the human-readable reason, so summaries,
+    metrics, and exporters can group decisions without matching prose. Audit
+    `schema_version` is bumped to `"4"` and `audit summarize` reports a
+    by-reason-code breakdown. (#136)
+  - **Decision metrics.** `check --metrics` prints a dependency-free summary
+    (counts by decision, tool, and reason code, plus taint escalations and
+    approval outcomes) to stderr on exit. (#169)
+  - **Prometheus metrics endpoint.** `proxy`/`proxy-http` expose the same
+    counters — plus evaluation latency and operational error rates — as an
+    opt-in, dependency-free Prometheus endpoint via `--metrics-listen <addr>`
+    (off by default; local and operator-controlled). (#101)
+  - **Structured operational logging.** `--log-format text|json` on `check`,
+    `proxy`, and `proxy-http` routes stderr diagnostics through `log/slog`;
+    `json` emits one structured record per line for log pipelines, while `text`
+    (default) is unchanged. The operational log stays distinct from the audit
+    log and the decision/JSON-RPC output. (#121, #163)
+
+  See [`docs/observability.md`](docs/observability.md).
 - **Machine-readable output completed across the CLI.** `policy test` and
   `audit verify` now accept `--output text|json`, matching the JSON convention
   already used by `check`, `explain`, and `audit summarize`. `policy test
