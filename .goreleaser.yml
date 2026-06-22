@@ -10,7 +10,9 @@ before:
     - sh -c "go run ./cmd/agentfence completion bash > completions/agentfence.bash"
     - sh -c "go run ./cmd/agentfence completion zsh > completions/agentfence.zsh"
     - sh -c "go run ./cmd/agentfence completion fish > completions/agentfence.fish"
-    - sh -c "go run ./cmd/agentfence man > manpages/agentfence.1"
+    # The man page embeds the version in its .TH header, so stamp it the same
+    # way the release binary is stamped (global hooks are templated by name).
+    - sh -c 'go run -ldflags "-X main.Version={{ .Version }}" ./cmd/agentfence man > manpages/agentfence.1'
 
 builds:
   - id: agentfence
@@ -106,6 +108,9 @@ homebrew_casks:
     homepage: "https://github.com/dgenio/agentfence"
     description: "Local-first policy firewall for MCP tool calls"
     license: "Apache-2.0"
+    # Skip the tap push (which needs the token) when it is not configured, so a
+    # release without the optional secret still succeeds.
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
     binaries:
       - agentfence
     completions:
@@ -124,6 +129,7 @@ scoops:
     homepage: "https://github.com/dgenio/agentfence"
     description: "Local-first policy firewall for MCP tool calls"
     license: "Apache-2.0"
+    skip_upload: '{{ if eq (index .Env "SCOOP_BUCKET_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
 
 # winget manifest submission to microsoft/winget-pkgs via a fork (#120).
 winget:
@@ -132,6 +138,7 @@ winget:
     short_description: "Local-first policy firewall for MCP tool calls"
     license: "Apache-2.0"
     homepage: "https://github.com/dgenio/agentfence"
+    skip_upload: '{{ if eq (index .Env "WINGET_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
     repository:
       owner: dgenio
       name: winget-pkgs

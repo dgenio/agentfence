@@ -124,3 +124,53 @@ func TestRunManRejectsArgs(t *testing.T) {
 		t.Error("man should reject positional arguments")
 	}
 }
+
+// TestZshCompletionDispatch locks in the subcommand-dispatch structure. With
+// the '*::' rest-args spec, zsh rescopes $words so $words[1] is the subcommand
+// (verified empirically: `audit <TAB>` => $words[1]=audit). Switching to
+// $words[2] would break group completion, so guard against that regression.
+func TestZshCompletionDispatch(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeZshCompletion(&buf); err != nil {
+		t.Fatalf("writeZshCompletion error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "case $words[1] in") {
+		t.Errorf("zsh completion must dispatch subcommands on $words[1]; got:\n%s", out)
+	}
+	if strings.Contains(out, "case $words[2] in") {
+		t.Error("zsh completion must not dispatch on $words[2] (empty in the '*::' rest state)")
+	}
+	for name := range subcommandGroups {
+		if !strings.Contains(out, name+") _values") {
+			t.Errorf("zsh completion missing _values dispatch for group %q", name)
+		}
+	}
+}
+
+// TestBashCompletionDispatch confirms bash dispatches subcommands at word 2
+// (COMP_CWORD -eq 2), where COMP_WORDS[1] holds the chosen command.
+func TestBashCompletionDispatch(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeBashCompletion(&buf); err != nil {
+		t.Fatalf("writeBashCompletion error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "COMP_CWORD} -eq 2") || !strings.Contains(out, "${COMP_WORDS[1]}") {
+		t.Errorf("bash completion should dispatch group subcommands on COMP_WORDS[1] at depth 2; got:\n%s", out)
+	}
+}
+
+func TestManEscape(t *testing.T) {
+	cases := map[string]string{
+		"plain text":    "plain text",
+		".leading dot":  `\&.leading dot`,
+		"'leading tick": `\&'leading tick`,
+		`back\slash`:    `back\\slash`,
+	}
+	for in, want := range cases {
+		if got := manEscape(in); got != want {
+			t.Errorf("manEscape(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

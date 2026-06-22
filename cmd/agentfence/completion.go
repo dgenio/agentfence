@@ -130,6 +130,10 @@ func writeZshCompletion(w io.Writer) error {
 	b.WriteString("    case $state in\n")
 	b.WriteString("        command) _describe -t commands 'agentfence command' commands ;;\n")
 	b.WriteString("        args)\n")
+	// In the '*::' (double-colon) rest-args state, zsh rescopes $words so that
+	// $words[1] is the subcommand (verified: `audit <TAB>` => $words[1]=audit,
+	// $words[2] empty). Do not switch this to $words[2].
+	b.WriteString("            # '*::' rescopes $words; $words[1] is the subcommand here.\n")
 	b.WriteString("            case $words[1] in\n")
 	for _, name := range sortedGroupKeys() {
 		fmt.Fprintf(&b, "                %s) _values '%s subcommand' %s ;;\n", name, name, strings.Join(subcommandGroups[name], " "))
@@ -222,6 +226,12 @@ func writeManPage(w io.Writer) error {
 }
 
 func manEscape(s string) string {
-	// Escape the roff control character so summaries render literally.
-	return strings.ReplaceAll(s, `\`, `\\`)
+	// Escape backslashes so summaries render literally, then neutralize a
+	// leading "." or "'" — roff treats those as a control request at the
+	// start of a line — by prefixing the zero-width escape "\&".
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	if strings.HasPrefix(s, ".") || strings.HasPrefix(s, "'") {
+		s = `\&` + s
+	}
+	return s
 }

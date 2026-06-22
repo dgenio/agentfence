@@ -79,10 +79,15 @@ echo "install.sh: downloading ${archive} (${VERSION})"
 download "${base}/${archive}" "${workdir}/${archive}"
 download "${base}/checksums.txt" "${workdir}/checksums.txt"
 
-# Verify the checksum, failing closed on mismatch.
+# Verify the checksum, failing closed on mismatch. Match the filename as an
+# exact field (not a regex) so the dots in the archive name cannot match
+# unintended lines; checksums.txt rows are "<sha256>  <filename>".
 echo "install.sh: verifying checksum"
-expected="$(grep " ${archive}\$" "${workdir}/checksums.txt" | awk '{print $1}')"
+expected="$(awk -v f="${archive}" '$2 == f {print $1}' "${workdir}/checksums.txt")"
 [ -n "${expected}" ] || die "no checksum entry for ${archive} in checksums.txt"
+case "${expected}" in
+*[!0-9a-fA-F]* | "") die "unexpected checksum value for ${archive}" ;;
+esac
 
 if command -v sha256sum >/dev/null 2>&1; then
 	actual="$(sha256sum "${workdir}/${archive}" | awk '{print $1}')"
