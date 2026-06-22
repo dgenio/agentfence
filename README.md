@@ -75,13 +75,57 @@ AgentFence is a practical local control point before execution.
 
 ## Install
 
+### Install script (Linux/macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dgenio/agentfence/main/scripts/install.sh | sh
+```
+
+The script detects your OS/arch, downloads the matching release archive, and
+**verifies it against `checksums.txt` (failing closed on a mismatch)** before
+installing to `~/.local/bin`. Pin a version or change the directory with
+`AGENTFENCE_VERSION` / `AGENTFENCE_INSTALL_DIR`.
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install dgenio/tap/agentfence
+```
+
+Installs the binary plus shell completions and the man page. The tap is updated
+automatically on each release.
+
+### Windows (Scoop / winget)
+
+```powershell
+scoop bucket add dgenio https://github.com/dgenio/scoop-bucket
+scoop install agentfence
+# or
+winget install dgenio.agentfence
+```
+
+### Container image
+
+A minimal, non-root, multi-arch (amd64/arm64) image is published to GHCR:
+
+```bash
+docker run --rm ghcr.io/dgenio/agentfence:latest version
+```
+
+See [`docs/distribution.md`](docs/distribution.md#container-image-104) for
+running the HTTP proxy in a container with a mounted policy and audit-log
+volume.
+
 ### Pre-built binaries
 
 Pre-built binaries for Linux, macOS, and Windows (amd64 and arm64) are
 published on the [GitHub Releases](https://github.com/dgenio/agentfence/releases)
-page for each tagged release. Each release includes a `checksums.txt` for
-verification. Download the archive matching your platform, extract it, and put
-the `agentfence` binary on your `PATH`.
+page for each tagged release. Each release includes a `checksums.txt`, a cosign
+signature, and an SBOM for verification (see
+[`docs/distribution.md`](docs/distribution.md#verifying-a-release-111)).
+Download the archive matching your platform, extract it, and put the
+`agentfence` binary on your `PATH`. Archives also bundle shell completions
+(`completions/`) and the man page (`manpages/agentfence.1`).
 
 ### Build from source
 

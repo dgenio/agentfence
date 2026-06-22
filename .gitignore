@@ -225,3 +225,7 @@ coverage.out
 
 # Locally built CLI binary (see `make build`)
 /agentfence
+
+# Generated CLI artifacts (see `make completions` / `make man`)
+/completions/
+/manpages/

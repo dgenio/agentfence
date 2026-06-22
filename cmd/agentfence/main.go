@@ -39,6 +39,14 @@ import (
 //	go build -ldflags "-X main.Version=0.1.0" ./cmd/agentfence
 var Version = "dev"
 
+// commit and date are optional build-provenance values stamped by the release
+// pipeline (.goreleaser.yml / Dockerfile) via -X main.commit / -X main.date.
+// They default to sentinel values for local `go build`/`make build`.
+var (
+	commit = "none"
+	date   = "unknown"
+)
+
 // DecisionSummary is the JSON-serialisable shape written for --output json/jsonl.
 type DecisionSummary struct {
 	ID       string          `json:"id"`
@@ -188,12 +196,16 @@ func runRoot(args []string) error {
 		err = runAuditSubcmd(args[1:])
 	case "check":
 		err = runCheck(args[1:])
+	case "completion":
+		err = runCompletion(args[1:])
 	case "demo":
 		err = demo.Run(os.Stdout)
 	case "explain":
 		err = runExplain(args[1:])
 	case "init":
 		err = runInit(args[1:])
+	case "man":
+		err = runMan(args[1:])
 	case "policy":
 		err = runPolicySubcmd(args[1:])
 	case "proxy":
@@ -225,6 +237,14 @@ func handleFlagParseErr(err error) error {
 
 func runVersion() {
 	fmt.Printf("agentfence %s %s/%s\n", Version, runtime.GOOS, runtime.GOARCH)
+	// Print build provenance only when the release pipeline stamped it, so a
+	// local `go build` keeps the single-line output.
+	if commit != "none" {
+		fmt.Printf("commit: %s\n", commit)
+	}
+	if date != "unknown" {
+		fmt.Printf("built:  %s\n", date)
+	}
 }
 
 // runVersionCmd is the `version` subcommand. It takes no flags or positional
@@ -739,6 +759,8 @@ func printUsage() {
 	fmt.Println("  agentfence version")
 	fmt.Println("  agentfence demo")
 	fmt.Println("  agentfence init    [--pack filesystem,github,shell]")
+	fmt.Println("  agentfence completion <bash|zsh|fish>")
+	fmt.Println("  agentfence man")
 	fmt.Println("")
 	fmt.Println("See docs/modes.md for detection / prevention / audit-only / dry-run mode definitions.")
 }

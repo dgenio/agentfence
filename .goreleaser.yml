@@ -4,6 +4,15 @@ version: 2
 before:
   hooks:
     - go mod tidy
+    # Generate shell completions and the man page from the CLI itself (#107)
+    # so the artifacts shipped in archives can never drift from the binary.
+    - mkdir -p completions manpages
+    - sh -c "go run ./cmd/agentfence completion bash > completions/agentfence.bash"
+    - sh -c "go run ./cmd/agentfence completion zsh > completions/agentfence.zsh"
+    - sh -c "go run ./cmd/agentfence completion fish > completions/agentfence.fish"
+    # The man page embeds the version in its .TH header, so stamp it the same
+    # way the release binary is stamped (global hooks are templated by name).
+    - sh -c 'go run -ldflags "-X main.Version={{ .Version }}" ./cmd/agentfence man > manpages/agentfence.1'
 
 builds:
   - id: agentfence
@@ -27,12 +36,121 @@ builds:
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Ship completions and the man page alongside the binary (#107).
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - completions/*
+      - manpages/*
     format_overrides:
       - goos: windows
         formats: [zip]
 
 checksum:
   name_template: "checksums.txt"
+
+# Software Bill of Materials per archive (#111). Uses Syft by default.
+sboms:
+  - artifacts: archive
+
+# Cosign keyless signing of the checksums file (#111). Fulcio/Rekor via GitHub
+# OIDC — no long-lived key. Requires `id-token: write` in the release workflow.
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+# Multi-arch container image published to GHCR (#104). dockers_v2 builds for
+# every listed platform from the prebuilt binary (see Dockerfile.goreleaser) and
+# assembles the multi-arch manifest in one entry.
+dockers_v2:
+  - id: agentfence
+    dockerfile: Dockerfile.goreleaser
+    images:
+      - "ghcr.io/dgenio/agentfence"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - "linux/amd64"
+      - "linux/arm64"
+    labels:
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+
+# Sign the published image manifests with cosign keyless (#111).
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    output: true
+    args:
+      - sign
+      - "${artifact}@${digest}"
+      - --yes
+
+# Homebrew tap (#105). Publishes a cask to dgenio/homebrew-tap on release.
+homebrew_casks:
+  - name: agentfence
+    repository:
+      owner: dgenio
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/dgenio/agentfence"
+    description: "Local-first policy firewall for MCP tool calls"
+    license: "Apache-2.0"
+    # Skip the tap push (which needs the token) when it is not configured, so a
+    # release without the optional secret still succeeds.
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
+    binaries:
+      - agentfence
+    completions:
+      bash: completions/agentfence.bash
+      zsh: completions/agentfence.zsh
+      fish: completions/agentfence.fish
+    manpages:
+      - manpages/agentfence.1
+
+# Scoop manifest for Windows (#120). Publishes to a dgenio/scoop-bucket repo.
+scoops:
+  - repository:
+      owner: dgenio
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    homepage: "https://github.com/dgenio/agentfence"
+    description: "Local-first policy firewall for MCP tool calls"
+    license: "Apache-2.0"
+    skip_upload: '{{ if eq (index .Env "SCOOP_BUCKET_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
+
+# winget manifest submission to microsoft/winget-pkgs via a fork (#120).
+winget:
+  - name: agentfence
+    publisher: dgenio
+    short_description: "Local-first policy firewall for MCP tool calls"
+    license: "Apache-2.0"
+    homepage: "https://github.com/dgenio/agentfence"
+    skip_upload: '{{ if eq (index .Env "WINGET_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
+    repository:
+      owner: dgenio
+      name: winget-pkgs
+      branch: "agentfence-{{ .Version }}"
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        draft: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
 
 changelog:
   sort: asc

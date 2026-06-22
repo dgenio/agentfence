@@ -80,3 +80,119 @@ the prerequisite ships.
 The output half of the interop story is already done: see
 [`interop.md`](interop.md) for weaver-spec-aligned trace export
 (`agentfence audit export`).
+
+## Installation channels
+
+The release pipeline (`.goreleaser.yml` + `.github/workflows/release.yml`)
+produces all of the following on each tagged release.
+
+### Install script (#105)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dgenio/agentfence/main/scripts/install.sh | sh
+```
+
+[`scripts/install.sh`](../scripts/install.sh) detects OS/arch, downloads the
+matching archive, verifies it against `checksums.txt`, and **fails closed on a
+mismatch**. Override with `AGENTFENCE_VERSION` (e.g. `v0.7.0`) and
+`AGENTFENCE_INSTALL_DIR`.
+
+### Homebrew (#105)
+
+```bash
+brew install dgenio/tap/agentfence
+```
+
+GoReleaser publishes a Homebrew **cask** to `dgenio/homebrew-tap` that installs
+the binary, the bash/zsh/fish completions, and the man page.
+
+### Scoop and winget (#120)
+
+```powershell
+scoop bucket add dgenio https://github.com/dgenio/scoop-bucket
+scoop install agentfence
+# or
+winget install dgenio.agentfence
+```
+
+GoReleaser publishes a Scoop manifest to `dgenio/scoop-bucket` and opens a
+winget manifest PR against `microsoft/winget-pkgs`.
+
+### Container image (#104)
+
+A minimal, non-root, multi-arch (linux/amd64 + linux/arm64) image is published
+to `ghcr.io/dgenio/agentfence` (tagged per release and `latest`), built from
+[`Dockerfile.goreleaser`](../Dockerfile.goreleaser) on a distroless static base.
+
+```bash
+# Smoke test
+docker run --rm ghcr.io/dgenio/agentfence:latest version
+
+# Run the HTTP proxy with a mounted policy and an audit-log volume
+docker run --rm -p 8787:8787 \
+  -v "$PWD/policy.yaml:/policy/policy.yaml:ro" \
+  -v "$PWD/audit:/audit" \
+  ghcr.io/dgenio/agentfence:latest \
+  proxy-http --upstream http://upstream:9000 \
+    --policy /policy/policy.yaml --listen 0.0.0.0:8787 \
+    --audit-log /audit/audit.jsonl
+```
+
+For a from-source build, the top-level [`Dockerfile`](../Dockerfile) (used by
+`make docker`) compiles the binary itself. **Security note:** bind the HTTP
+proxy to a trusted network and terminate TLS at a trusted layer — see
+[`threat-model.md`](threat-model.md).
+
+### Shell completions and man page (#107)
+
+The binary generates its own completions and man page, so release archives can
+never drift from the CLI:
+
+```bash
+agentfence completion bash > /etc/bash_completion.d/agentfence
+agentfence completion zsh  > "${fpath[1]}/_agentfence"
+agentfence completion fish > ~/.config/fish/completions/agentfence.fish
+agentfence man             > /usr/local/share/man/man1/agentfence.1
+```
+
+Release archives bundle them under `completions/` and `manpages/`; the Homebrew
+cask installs them automatically. Regenerate locally with `make completions`
+and `make man`.
+
+## Verifying a release (#111)
+
+Each release is cosign-signed (keyless, via GitHub OIDC) and ships an SBOM.
+
+```bash
+# Verify the checksums signature (keyless / Fulcio + Rekor):
+cosign verify-blob \
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  --certificate-identity-regexp 'https://github.com/dgenio/agentfence/.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  checksums.txt
+
+# Then verify your archive against the signed checksums:
+sha256sum --check --ignore-missing checksums.txt
+
+# Verify the container image signature:
+cosign verify ghcr.io/dgenio/agentfence:latest \
+  --certificate-identity-regexp 'https://github.com/dgenio/agentfence/.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+```
+
+The per-archive SBOM (CycloneDX/SPDX via Syft) is attached to the release.
+
+### Release prerequisites (external — needs a maintainer)
+
+The publish steps require repository-admin setup that cannot be done from a PR:
+
+- [ ] Create the `dgenio/homebrew-tap` repository and a
+  `HOMEBREW_TAP_GITHUB_TOKEN` secret with write access to it (#105).
+- [ ] Create the `dgenio/scoop-bucket` repository and a
+  `SCOOP_BUCKET_GITHUB_TOKEN` secret (#120).
+- [ ] Create a `dgenio/winget-pkgs` fork and a `WINGET_GITHUB_TOKEN` secret for
+  the winget manifest PR (#120).
+- [ ] No secret is needed for GHCR (uses the workflow `GITHUB_TOKEN` with
+  `packages: write`) or for cosign signing (uses OIDC `id-token: write`); both
+  permissions are already set in `release.yml` (#104, #111).

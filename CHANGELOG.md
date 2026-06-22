@@ -53,6 +53,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-platform Windows-input test matrix (#175); and the YAML parser's
   empty / whitespace / tab / multi-document / duplicate-key behavior is
   specified and tested (#178).
+- **Distribution, packaging & release hardening.** A coherent set of new ways to
+  install and verify AgentFence:
+  - **Shell completions and man page.** `agentfence completion <bash|zsh|fish>`
+    and `agentfence man` generate their artifacts from the CLI itself; `make
+    completions` / `make man` regenerate them and release archives bundle them
+    under `completions/` and `manpages/`. (#107)
+  - **Container image.** A from-source [`Dockerfile`](Dockerfile) (`make
+    docker`) and a release [`Dockerfile.goreleaser`](Dockerfile.goreleaser) on a
+    distroless static, non-root base; the release pipeline publishes a
+    multi-arch (amd64/arm64) image to `ghcr.io/dgenio/agentfence`, and CI builds
+    and smoke-tests the image on every push. (#149, #104)
+  - **Install script and package managers.** A checksum-verifying
+    [`scripts/install.sh`](scripts/install.sh) (`curl … | sh`, fails closed on
+    mismatch), a Homebrew cask, and Scoop + winget manifests, all wired through
+    GoReleaser. (#105, #120)
+  - **Supply-chain provenance.** Release checksums are cosign-signed (keyless,
+    GitHub OIDC) and each archive ships an SBOM; the published image manifest is
+    cosign-signed. `agentfence version` now prints the stamped commit/build
+    date. (#111)
+
+  See [`docs/distribution.md`](docs/distribution.md). Some publish targets
+  (Homebrew tap, Scoop bucket, winget fork) require maintainer-provisioned
+  repositories/secrets, documented there.
 
 ### Changed
 - Filesystem path-safety now also rejects Windows **drive-relative** paths

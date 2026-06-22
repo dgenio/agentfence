@@ -12,7 +12,11 @@ LDFLAGS    ?= -X main.Version=$(VERSION)
 
 FUZZTIME   ?= 30s
 
-.PHONY: all build test test-race vet fmt fmt-check lint demo ci cover release-check clean help fuzz
+.PHONY: all build test test-race vet fmt fmt-check lint demo ci cover release-check clean help fuzz completions man docker
+
+# Container image coordinates (issues #104/#149).
+IMAGE      ?= ghcr.io/dgenio/agentfence
+IMAGE_TAG  ?= $(VERSION)
 
 all: ci
 
@@ -30,6 +34,9 @@ help:
 	@echo "  ci            Run the full pre-push gate: fmt-check, vet, test-race."
 	@echo "  cover         Run test-race and open an HTML coverage report."
 	@echo "  fuzz          Run each fuzz target for FUZZTIME (default $(FUZZTIME))."
+	@echo "  completions   Generate bash/zsh/fish completions into ./completions."
+	@echo "  man           Generate the agentfence(1) man page into ./manpages."
+	@echo "  docker        Build the container image ($(IMAGE):$(IMAGE_TAG))."
 	@echo "  release-check Validate .goreleaser.yml (requires 'goreleaser' on PATH)."
 	@echo "  clean         Remove built artifacts."
 
@@ -87,10 +94,29 @@ fuzz:
 	$(GO) test -run=- -fuzz=FuzzMatchesGlob   -fuzztime=$(FUZZTIME) ./internal/engine
 	$(GO) test -run=- -fuzz=FuzzRedactArguments -fuzztime=$(FUZZTIME) ./internal/redact
 
+## completions: Generate shell completion scripts from the CLI into ./completions.
+completions:
+	@mkdir -p completions
+	$(GO) run $(PKG) completion bash > completions/$(BINARY).bash
+	$(GO) run $(PKG) completion zsh  > completions/$(BINARY).zsh
+	$(GO) run $(PKG) completion fish > completions/$(BINARY).fish
+
+## man: Generate the agentfence(1) man page from the CLI into ./manpages.
+man:
+	@mkdir -p manpages
+	$(GO) run $(PKG) man > manpages/$(BINARY).1
+
+## docker: Build the container image from the source Dockerfile.
+docker:
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		-t $(IMAGE):$(IMAGE_TAG) .
+
 ## release-check: Validate .goreleaser.yml without producing a release.
 release-check:
 	goreleaser check
 
-## clean: Remove built binaries and coverage artifacts.
+## clean: Remove built binaries, coverage, and generated artifacts.
 clean:
 	rm -f $(BINARY) $(COVERAGE)
+	rm -rf completions manpages
