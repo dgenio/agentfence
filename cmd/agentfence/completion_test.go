@@ -38,6 +38,71 @@ func TestTopLevelCommandsMatchDispatch(t *testing.T) {
 	}
 }
 
+// TestSubcommandGroupsMatchDispatch extends the drift guard to the second
+// level: every group in subcommandGroups must list exactly the subcommands its
+// dispatcher routes (runAuditSubcmd / runPolicySubcmd switches, and the
+// completion shells). Without this, adding e.g. a new `audit` subcommand would
+// silently drop it from completions with no failing test.
+func TestSubcommandGroupsMatchDispatch(t *testing.T) {
+	// Authoritative subcommand sets, mirroring the dispatch switches in main.go
+	// (runAuditSubcmd, runPolicySubcmd) and the completion shell list.
+	want := map[string][]string{
+		"audit":      {"verify", "summarize", "export", "keygen", "anchor"},
+		"policy":     {"test", "validate"},
+		"completion": supportedShells,
+	}
+	if len(subcommandGroups) != len(want) {
+		t.Errorf("subcommandGroups has %d groups, want %d (%v vs %v)",
+			len(subcommandGroups), len(want), groupKeys(subcommandGroups), groupKeys(want))
+	}
+	for group, wantSubs := range want {
+		gotSubs, ok := subcommandGroups[group]
+		if !ok {
+			t.Errorf("subcommandGroups is missing group %q (dispatch routes it but completions would omit it)", group)
+			continue
+		}
+		if !equalStringSets(gotSubs, wantSubs) {
+			t.Errorf("subcommandGroups[%q] = %v, want %v (dispatch and completions have drifted)", group, gotSubs, wantSubs)
+		}
+	}
+	for group := range subcommandGroups {
+		if _, ok := want[group]; !ok {
+			t.Errorf("subcommandGroups lists group %q which no dispatcher routes", group)
+		}
+	}
+}
+
+// groupKeys returns the keys of a subcommand-group map, for diagnostics.
+func groupKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// equalStringSets reports whether a and b contain the same elements, ignoring
+// order (subcommandGroups is order-significant for output, but drift detection
+// is about membership).
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, s := range a {
+		seen[s]++
+	}
+	for _, s := range b {
+		seen[s]--
+	}
+	for _, n := range seen {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func TestWriteCompletionContainsCommands(t *testing.T) {
 	for _, shell := range supportedShells {
 		shell := shell
