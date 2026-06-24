@@ -101,7 +101,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          # Pin to a fixed, recent version (not 'stable') so a new Go release
+          # can't break this job unannounced, and not go.mod's 1.22 minimum
+          # because `go install`-ing the latest gosec/govulncheck needs a newer
+          # toolchain than the module's floor.
+          go-version: '1.24'
           cache: true
 
       - name: Install gosec

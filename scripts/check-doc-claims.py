@@ -99,9 +99,10 @@ def selftest() -> int:
     """Prove each check catches a deliberate violation in a throwaway fixture."""
     with tempfile.TemporaryDirectory() as d:
         bad = os.path.join(d, "bad.md")
-        open(bad, "w").write(
-            "See [missing](./does-not-exist.md).\n\nRun `agentfence frobnicate`.\n"
-        )
+        with open(bad, "w", encoding="utf-8") as fh:
+            fh.write(
+                "See [missing](./does-not-exist.md).\n\nRun `agentfence frobnicate`.\n"
+            )
         link_errs = check_links([bad])
         cmd_errs = check_commands([bad], {"check", "validate"})
     ok = bool(link_errs) and bool(cmd_errs)

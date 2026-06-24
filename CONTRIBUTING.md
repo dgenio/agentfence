@@ -98,7 +98,11 @@ or wire your editor to format on save.
 works locally:
 
 ```bash
-# golangci-lint v2 (see https://golangci-lint.run/welcome/install/)
+# golangci-lint v2 — prefer the official installer (see
+# https://golangci-lint.run/welcome/install/), e.g.:
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+  | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
+# gosec:
 go install github.com/securego/gosec/v2/cmd/gosec@latest
 ```
 
@@ -145,10 +149,13 @@ Before opening a pull request, run:
 make ci
 ```
 
-This is the same command the cross-platform `test` job runs. It performs
-`fmt-check`, `vet`, and `test-race` with coverage. CI additionally runs the
-`lint`, `security`, `examples`, and `docs` checks above on Linux and the
-`test` job on a Linux/macOS/Windows matrix.
+`make ci` performs `fmt-check`, `vet`, and `test-race` with coverage — the same
+gate the project has always used locally. In CI the cross-platform `test` job
+runs `go test -race ./...` directly (Go-native so it works on the Windows
+runner; coverage is collected on Linux), and the `fmt-check` half runs in the
+`lint` job. CI additionally runs the `lint`, `security`, `examples`, and `docs`
+checks above on Linux and the `test` job on a Linux/macOS/Windows matrix. If
+`make ci` is green locally, the `test` matrix should pass.
 
 ## Release artifacts
 
