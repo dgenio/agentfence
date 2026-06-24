@@ -101,11 +101,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          # Pin to a fixed, recent version (not 'stable') so a new Go release
-          # can't break this job unannounced, and not go.mod's 1.22 minimum
-          # because `go install`-ing the latest gosec/govulncheck needs a newer
-          # toolchain than the module's floor.
-          go-version: '1.24'
+          # Intentionally 'stable', not a pin: govulncheck reports standard-
+          # library CVEs against the *toolchain it runs on*, so an older pinned
+          # Go (e.g. 1.24.x) flags stdlib vulns already fixed upstream. Running
+          # on the latest stable keeps stdlib findings meaningful (a real, un-
+          # patched CVE still fails the job and signals "bump the toolchain").
+          # Contrast the lint job, which must be pinned because golangci-lint
+          # panics on a *newer* toolchain than it was built against.
+          go-version: 'stable'
           cache: true
 
       - name: Install gosec
