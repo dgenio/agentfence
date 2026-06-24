@@ -245,7 +245,7 @@ func loadResolved(path string, stack map[string]bool, depth int) (Policy, error)
 		return Policy{}, fmt.Errorf("circular import detected at %q", path)
 	}
 
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- policy file path is supplied by the operator running this local tool
 	if err != nil {
 		return Policy{}, err
 	}
@@ -713,7 +713,7 @@ func validateFileStrict(path string, stack map[string]bool, depth int) []Validat
 		return []ValidationError{{Path: path, Message: "circular import detected"}}
 	}
 
-	b, err := os.ReadFile(canon)
+	b, err := os.ReadFile(canon) // #nosec G304 -- imported policy path is supplied by the operator running this local tool
 	if err != nil {
 		return []ValidationError{{Path: canon, Message: err.Error()}}
 	}

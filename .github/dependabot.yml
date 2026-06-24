@@ -1,0 +1,24 @@
+# Automated dependency and GitHub Actions updates (#177).
+# Keeps the deliberately small Go dependency set and the pinned Actions patched
+# without manual tracking. Updates are grouped to keep review load low.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"

@@ -1,0 +1,49 @@
+# Path -> label map for actions/labeler (#188). Uses only labels that already
+# exist in the repo's taxonomy; maps to the top-level package layout under
+# cmd/ and internal/. Cross-cutting PRs may get several labels — acceptable.
+"area:cli":
+  - changed-files:
+      - any-glob-to-any-file: ["cmd/**"]
+
+"area:policy":
+  - changed-files:
+      - any-glob-to-any-file: ["internal/policy/**", "internal/packs/**"]
+
+"area:engine":
+  - changed-files:
+      - any-glob-to-any-file: ["internal/engine/**"]
+
+"area:mcp":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/mcp/**"
+          - "internal/proxy/**"
+          - "internal/httpproxy/**"
+          - "internal/taint/**"
+          - "internal/approval/**"
+
+"area:audit":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/audit/**"
+          - "internal/redact/**"
+          - "internal/oplog/**"
+          - "internal/interop/**"
+
+"area:dx":
+  - changed-files:
+      - any-glob-to-any-file: ["internal/metrics/**"]
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ["**/*.md", "docs/**"]
+
+developer-experience:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "scripts/**"
+          - "Makefile"
+          - ".golangci.yml"
+          - "Dockerfile*"
+          - ".goreleaser.yml"

@@ -1,0 +1,38 @@
+name: pr-triage
+
+# Auto-label PRs by changed path and flag non-Conventional-Commit titles (#188).
+# Uses pull_request_target so labeling works on fork PRs; this workflow never
+# checks out or runs PR-authored code, so that is safe here.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply area labels from changed paths
+        uses: actions/labeler@v5
+        with:
+          # Additive only: never strip labels a human applied manually.
+          sync-labels: false
+
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Conventional Commit title (advisory)
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|chore|test|refactor|build|ci|perf|style|revert)(\([^)]+\))?!?: .+'
+          if printf '%s' "$TITLE" | grep -Eq "$pattern"; then
+            echo "PR title follows Conventional Commits: $TITLE"
+          else
+            # Advisory only (does not fail the workflow) — agent branches can be
+            # noisy; surface a warning rather than block the PR.
+            echo "::warning title=PR title::Not a Conventional Commit (feat|fix|docs|chore|test|...): $TITLE"
+          fi

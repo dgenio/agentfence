@@ -12,7 +12,13 @@ LDFLAGS    ?= -X main.Version=$(VERSION)
 
 FUZZTIME   ?= 30s
 
-.PHONY: all build test test-race vet fmt fmt-check lint demo ci cover release-check clean help fuzz completions man docker
+# Static-analysis / security tooling (#110, #177). Overridable so CI or a
+# contributor can point at a pinned binary. Install hints are in CONTRIBUTING.md.
+GOLANGCI    ?= golangci-lint
+GOSEC       ?= gosec
+GOVULNCHECK ?= govulncheck
+
+.PHONY: all build test test-race vet fmt fmt-check lint golangci sec vuln examples doc-check demo ci cover release-check clean help fuzz completions man docker
 
 # Container image coordinates (issues #104/#149).
 IMAGE      ?= ghcr.io/dgenio/agentfence
@@ -29,7 +35,12 @@ help:
 	@echo "  vet           Run go vet on all packages."
 	@echo "  fmt           Format all Go files in place with gofmt."
 	@echo "  fmt-check     Fail if any Go files need formatting (used in CI)."
-	@echo "  lint          Run vet + fmt-check."
+	@echo "  lint          Run fmt-check, vet, golangci-lint, and gosec."
+	@echo "  golangci      Run golangci-lint ($(GOLANGCI))."
+	@echo "  sec           Run gosec security analysis ($(GOSEC))."
+	@echo "  vuln          Run govulncheck dependency vulnerability scan ($(GOVULNCHECK))."
+	@echo "  examples      Build and validate every file under examples/."
+	@echo "  doc-check     Verify documented commands exist and doc links resolve."
 	@echo "  demo          Build and run 'agentfence demo'."
 	@echo "  ci            Run the full pre-push gate: fmt-check, vet, test-race."
 	@echo "  cover         Run test-race and open an HTML coverage report."
@@ -70,8 +81,30 @@ fmt-check:
 		exit 1; \
 	fi
 
-## lint: Run vet and fmt-check.
-lint: vet fmt-check
+## lint: Run fmt-check, vet, golangci-lint, and gosec (the full static gate).
+##       golangci-lint and gosec must be on PATH (see CONTRIBUTING.md).
+lint: fmt-check vet golangci sec
+
+## golangci: Run golangci-lint with the committed .golangci.yml config.
+golangci:
+	$(GOLANGCI) run ./...
+
+## sec: Run gosec security analysis. Intentional findings are annotated inline
+##      with `// #nosec <rule> -- <reason>`; new findings fail.
+sec:
+	$(GOSEC) -quiet ./...
+
+## vuln: Run govulncheck against the module's dependencies.
+vuln:
+	$(GOVULNCHECK) ./...
+
+## examples: Build the binary and validate every file under examples/ (#181).
+examples: build
+	AGENTFENCE=./$(BINARY) bash scripts/check-examples.sh
+
+## doc-check: Verify documented commands exist and internal doc links resolve (#165).
+doc-check: build
+	python3 scripts/check-doc-claims.py --binary ./$(BINARY)
 
 ## demo: Build the binary and run the demo command.
 demo: build

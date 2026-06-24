@@ -160,7 +160,7 @@ func MarshalPublicKeyPEM(pub ed25519.PublicKey) ([]byte, error) {
 
 // LoadPrivateKey reads and parses a PKCS#8 PEM Ed25519 private key from path.
 func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- key path is supplied by the operator running this local tool
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +181,7 @@ func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
 
 // LoadPublicKey reads and parses a PKIX PEM Ed25519 public key from path.
 func LoadPublicKey(path string) (ed25519.PublicKey, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- key path is supplied by the operator running this local tool
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +220,7 @@ func WriteKeyPairFiles(privPath, pubPath string, pub ed25519.PublicKey, priv ed2
 	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
+	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil { // #nosec G306 -- an Ed25519 *public* key is non-secret and intentionally world-readable (0o644)
 		return err
 	}
 	return nil

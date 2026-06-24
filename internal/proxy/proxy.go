@@ -142,7 +142,7 @@ func Run(ctx context.Context, command string, args []string, opts Options) error
 	}
 	opts = applyDefaults(opts)
 
-	cmd := exec.CommandContext(ctx, command, args...)
+	cmd := exec.CommandContext(ctx, command, args...) // #nosec G204 -- the proxy intentionally launches the operator-specified MCP server command
 	subIn, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("proxy: stdin pipe: %w", err)

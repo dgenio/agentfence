@@ -1,0 +1,45 @@
+# golangci-lint configuration for AgentFence (#110).
+#
+# Pragmatic, not-overbearing: the standard correctness linters plus misspell.
+# `make lint` runs this locally; the `lint` CI job runs the same set. Security
+# checks (gosec) run as a separate gate so their findings are triaged with
+# inline `// #nosec <rule> -- <reason>` annotations at the call site.
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+  settings:
+    staticcheck:
+      # Disable the opinionated "quickfix" refactoring hints (QFxxxx): they are
+      # style suggestions, not bugs, and some conflict with intent-revealing
+      # explicit type declarations we keep on purpose.
+      checks:
+        - all
+        - -QF1008
+        - -QF1011
+        - -QF1007
+        # ST1000 (package-comment required) is a documentation-style nag, not a
+        # correctness check; keep the linter set pragmatic per the issue.
+        - -ST1000
+    errcheck:
+      # Console writes and best-effort Close on already-read handles cannot be
+      # meaningfully handled; ignoring them is intentional and conventional.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+        - (*os.File).Close
+  exclusions:
+    rules:
+      # Tests routinely ignore Close/teardown errors; do not gate test files on
+      # errcheck noise.
+      - path: _test\.go
+        linters:
+          - errcheck

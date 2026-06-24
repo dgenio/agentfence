@@ -83,13 +83,50 @@ them as regression fixtures alongside the fix.
 ## Lint
 
 ```bash
-make lint            # vet + gofmt -l check
+make lint            # fmt-check + vet + golangci-lint + gosec (the full gate)
 make fmt             # apply gofmt in place
 make fmt-check       # fail if anything needs reformatting (used in CI)
+make golangci        # golangci-lint only (config: .golangci.yml)
+make sec             # gosec security analysis only
 ```
 
 CI rejects any code that is not `gofmt`-clean. Run `make fmt` before committing
 or wire your editor to format on save.
+
+`make lint` also runs [`golangci-lint`](https://golangci-lint.run) (v2) and
+[`gosec`](https://github.com/securego/gosec); install both once so the target
+works locally:
+
+```bash
+# golangci-lint v2 (see https://golangci-lint.run/welcome/install/)
+go install github.com/securego/gosec/v2/cmd/gosec@latest
+```
+
+The lint configuration lives in `.golangci.yml`. Security findings that are
+intentional for a tool that launches operator-specified commands and reads
+operator-specified files are annotated inline with
+`// #nosec <rule> -- <reason>` at the call site rather than disabled globally,
+so genuinely new findings still fail the build.
+
+## Dependency and vulnerability hygiene
+
+```bash
+make vuln            # govulncheck against the module's dependencies
+```
+
+Dependencies and pinned GitHub Actions are updated automatically by Dependabot
+(`.github/dependabot.yml`), and CI runs `govulncheck` on every change. See
+`SECURITY.md` for the supply-chain posture.
+
+## Examples and docs checks
+
+```bash
+make examples        # run every file under examples/ through the binary (#181)
+make doc-check       # documented commands exist + internal doc links resolve (#165)
+```
+
+Both run in CI, so a drifted example or a broken doc link fails the build. Keep
+`examples/` and the README/`docs/` in sync with the CLI.
 
 ## Demo
 
@@ -108,8 +145,10 @@ Before opening a pull request, run:
 make ci
 ```
 
-This is the same command CI runs. It performs `fmt-check`, `vet`, and
-`test-race` with coverage. If `make ci` is green, your PR should pass CI.
+This is the same command the cross-platform `test` job runs. It performs
+`fmt-check`, `vet`, and `test-race` with coverage. CI additionally runs the
+`lint`, `security`, `examples`, and `docs` checks above on Linux and the
+`test` job on a Linux/macOS/Windows matrix.
 
 ## Release artifacts
 
@@ -150,6 +189,17 @@ chore(ci): add coverage summary step
 
 The `^docs:`, `^test:`, and `^chore:` prefixes are excluded from auto-generated
 release changelogs (see `.goreleaser.yml`).
+
+A non-blocking PR-title check (`.github/workflows/pull-request-triage.yml`)
+flags titles that do not follow Conventional Commits. Automated tooling (and AI
+agents) should set the branch prefix above and a Conventional-Commit title.
+
+### Auto-labeling
+
+New PRs are labeled automatically by changed path using the existing `area:*`
+and `documentation`/`developer-experience` taxonomy
+(`.github/labeler.yml`) — e.g. touching `internal/policy/**` adds
+`area:policy`. Labels are additive; add or adjust labels manually as needed.
 
 ### PR scope
 

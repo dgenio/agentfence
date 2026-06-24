@@ -225,7 +225,9 @@ func Serve(ctx context.Context, listenAddr string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Addr: listenAddr, Handler: h}
+	// ReadHeaderTimeout bounds how long a client may take to send request
+	// headers, closing the Slowloris hole gosec G112 flags on an unbounded server.
+	srv := &http.Server{Addr: listenAddr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -488,7 +490,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 		reqBody = r.Body
 	}
 
-	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, reqBody)
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, reqBody) // #nosec G704 -- AgentFence is a reverse proxy; building a request to the operator-configured upstream is its purpose
 	if err != nil {
 		h.opts.Logger.Error("build upstream request failed", "err", err)
 		h.recordError("proxy")
@@ -517,7 +519,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 		outReq.ContentLength = int64(len(body))
 	}
 
-	resp, err := h.client.Do(outReq)
+	resp, err := h.client.Do(outReq) // #nosec G704 -- AgentFence is a reverse proxy; forwarding to the operator-configured upstream is its purpose
 	if err != nil {
 		h.opts.Logger.Error("upstream request failed", "err", err)
 		h.recordError("upstream")

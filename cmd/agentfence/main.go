@@ -141,7 +141,7 @@ func writeGateSummary(path string, gs checkGateSummary) error {
 		}
 		return nil
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil { // #nosec G306 -- the non-secret CI gate summary is intentionally world-readable (0o644)
 		return fmt.Errorf("check: write gate summary: %w", err)
 	}
 	return nil
@@ -376,7 +376,7 @@ func runCheck(args []string) error {
 		if err != nil {
 			return fmt.Errorf("approval: %w", err)
 		}
-		defer tty.Close()
+		defer func() { _ = tty.Close() }()
 		approver = tty
 	}
 
@@ -652,7 +652,7 @@ func runInit(args []string) error {
 	if _, err := os.Stat(fileName); err == nil {
 		return fmt.Errorf("%s already exists", fileName)
 	}
-	if err := os.WriteFile(fileName, []byte(policy.StarterPolicyYAML), 0o644); err != nil {
+	if err := os.WriteFile(fileName, []byte(policy.StarterPolicyYAML), 0o644); err != nil { // #nosec G306 -- the generated starter policy is non-secret config, intentionally world-readable (0o644)
 		return err
 	}
 	fmt.Printf("Created %s\n", fileName)
@@ -685,14 +685,14 @@ func runInitFromPacks(packList string) error {
 	}
 
 	for i, name := range names {
-		body, _ := packs.Policy(name) // existence already checked by parsePackList
-		if err := os.WriteFile(packFiles[i], body, 0o644); err != nil {
+		body, _ := packs.Policy(name)                                   // existence already checked by parsePackList
+		if err := os.WriteFile(packFiles[i], body, 0o644); err != nil { // #nosec G306 -- generated pack policy files are non-secret config, intentionally world-readable (0o644)
 			return err
 		}
 		fmt.Printf("Created %s\n", packFiles[i])
 	}
 
-	if err := os.WriteFile(rootFile, []byte(scaffoldRootPolicy(names, packFiles)), 0o644); err != nil {
+	if err := os.WriteFile(rootFile, []byte(scaffoldRootPolicy(names, packFiles)), 0o644); err != nil { // #nosec G306 -- the generated root policy is non-secret config, intentionally world-readable (0o644)
 		return err
 	}
 	fmt.Printf("Created %s\n", rootFile)
@@ -945,7 +945,7 @@ func runAuditAnchor(args []string) error {
 		fmt.Fprintf(os.Stderr, "anchored %d event(s); commit this anchor somewhere you do not control to detect later deletion\n", anchor.EventCount)
 		return nil
 	}
-	if err := os.WriteFile(*out, append(b, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(*out, append(b, '\n'), 0o644); err != nil { // #nosec G306 -- an exported audit trace is non-secret and intentionally world-readable (0o644)
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "wrote anchor for %d event(s) to %s\n", anchor.EventCount, *out)
@@ -1154,7 +1154,7 @@ func runAuditVerify(args []string) error {
 // computeChainResult runs the hash-chain check and maps it onto a structured
 // result plus the gating error (nil for ok / no_chain, non-nil otherwise).
 func computeChainResult(logPath string) (auditChainResult, error) {
-	f, err := os.Open(logPath)
+	f, err := os.Open(logPath) // #nosec G304 -- audit-log path is supplied by the operator running this local tool
 	if err != nil {
 		return auditChainResult{Status: "error", Detail: err.Error()}, err
 	}
@@ -1228,7 +1228,7 @@ func computeSignatureResult(logPath, pubKeyPath string) (auditSignatureResult, e
 	if err != nil {
 		return auditSignatureResult{Status: "error", Detail: err.Error()}, err
 	}
-	f, err := os.Open(logPath)
+	f, err := os.Open(logPath) // #nosec G304 -- audit-log path is supplied by the operator running this local tool
 	if err != nil {
 		return auditSignatureResult{Status: "error", Detail: err.Error()}, err
 	}
@@ -1267,7 +1267,7 @@ func (s auditSignatureResult) printText() {
 // event. The anchor key is separate from the event-signing key (--pubkey): a
 // log may sign its events, its anchor, both, or neither, with distinct keys.
 func computeAnchorResult(logPath, anchorPath, anchorPubKeyPath string) (auditAnchorResult, error) {
-	ab, err := os.ReadFile(anchorPath)
+	ab, err := os.ReadFile(anchorPath) // #nosec G304 -- anchor path is supplied by the operator running this local tool
 	if err != nil {
 		return auditAnchorResult{Status: "error", Detail: err.Error()}, err
 	}
@@ -1299,7 +1299,7 @@ func computeAnchorResult(logPath, anchorPath, anchorPubKeyPath string) (auditAnc
 		res.SignatureStatus = "not_checked"
 	}
 
-	f, err := os.Open(logPath)
+	f, err := os.Open(logPath) // #nosec G304 -- audit-log path is supplied by the operator running this local tool
 	if err != nil {
 		return res, err
 	}
@@ -1358,7 +1358,9 @@ func (a auditAnchorResult) printText() {
 // posture. The returned function (typically deferred) shuts the endpoint down
 // and prints a final text summary of the counters to stderr.
 func serveMetrics(addr string, counters *metrics.Counters, logger *slog.Logger) func() {
-	srv := &http.Server{Handler: metrics.ServeMux(counters)}
+	// ReadHeaderTimeout bounds slow-header clients (gosec G112) on the
+	// best-effort metrics endpoint.
+	srv := &http.Server{Handler: metrics.ServeMux(counters), ReadHeaderTimeout: 10 * time.Second}
 	// Bind synchronously so an unusable address (in use, no permission, bad
 	// host) is reported at startup rather than silently in a goroutine. A bind
 	// failure leaves the proxy running without the endpoint — metrics are
