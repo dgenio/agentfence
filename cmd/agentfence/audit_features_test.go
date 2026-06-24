@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -42,8 +43,13 @@ func TestAuditKeygenCreatesUsableKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat private key: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("private key mode = %o, want 600", got)
+	// Windows has no POSIX permission bits; os.Stat reports 0666 for any
+	// writable file regardless of the 0600 passed to WriteFile, so the mode
+	// assertion is only meaningful on Unix.
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("private key mode = %o, want 600", got)
+		}
 	}
 	if _, err := audit.LoadPublicKey(pub); err != nil {
 		t.Errorf("generated public key did not load: %v", err)

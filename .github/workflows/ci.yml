@@ -36,7 +36,10 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          # 1.24, not the module's 1.22 minimum: Go 1.22's linker omits the
+          # macOS LC_UUID load command, so `-race` binaries abort under the
+          # current macos-latest dyld. 1.24 builds run on all three runners.
+          go-version: '1.24'
           cache: true
 
       # Use a Go-native invocation (not `make ci`) so the job does not depend on
@@ -72,7 +75,10 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          # Pin to 1.24: golangci-lint v2.5.0 is built with Go 1.25 and panics
+          # type-checking packages loaded by a newer toolchain ("file requires
+          # newer Go version"). 1.24 <= the linter's bundled go/types version.
+          go-version: '1.24'
           cache: true
 
       - name: gofmt check
