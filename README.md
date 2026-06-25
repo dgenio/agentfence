@@ -4,6 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/dgenio/agentfence?sort=semver)](https://github.com/dgenio/agentfence/releases)
 [![Go version](https://img.shields.io/github/go-mod/go-version/dgenio/agentfence)](go.mod)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Read the Weaver Stack overview on Towards AI](https://img.shields.io/badge/Read_the_overview-Towards_AI-black?logo=medium&logoColor=white)](https://pub.towardsai.net/the-weaver-stack-one-contract-layer-for-safe-llm-agents-7f733cad5eac)
 
 ## An open, local MCP policy firewall you fully control — no cloud, no telemetry, auditable by design
 
