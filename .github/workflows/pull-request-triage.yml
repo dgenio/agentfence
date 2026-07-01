@@ -7,13 +7,18 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited]
 
+# Least privilege: only the label job needs pull-requests: write; the advisory
+# title job just emits a ::warning and reads only PR metadata already in the
+# event payload, so it keeps the read-only default.
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   label:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Apply area labels from changed paths
         uses: actions/labeler@v5

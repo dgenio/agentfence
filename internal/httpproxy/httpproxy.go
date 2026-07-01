@@ -490,7 +490,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 		reqBody = r.Body
 	}
 
-	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, reqBody) // #nosec G704 -- AgentFence is a reverse proxy; building a request to the operator-configured upstream is its purpose
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, reqBody) // #nosec G107 -- AgentFence is a reverse proxy; building a request to the operator-configured upstream URL is its purpose
 	if err != nil {
 		h.opts.Logger.Error("build upstream request failed", "err", err)
 		h.recordError("proxy")
@@ -519,7 +519,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, o
 		outReq.ContentLength = int64(len(body))
 	}
 
-	resp, err := h.client.Do(outReq) // #nosec G704 -- AgentFence is a reverse proxy; forwarding to the operator-configured upstream is its purpose
+	resp, err := h.client.Do(outReq)
 	if err != nil {
 		h.opts.Logger.Error("upstream request failed", "err", err)
 		h.recordError("upstream")
