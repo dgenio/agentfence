@@ -19,6 +19,11 @@ Unlike the wave of hosted agent-security gateways, AgentFence gives you a trust 
 
 **Who it's for:** security and platform operators who need to gate agents they didn't write, with a policy they fully control and an audit trail they own.
 
+> **New here?** Follow the [10-minute Quickstart](docs/quickstart.md) — from
+> install to a policy-gated MCP setup with an observed allow and deny. Then see
+> the [Daily Driver guide](docs/daily-driver.md) for day-to-day operation and
+> [CLAIMS](docs/claims.md) for what AgentFence does and does not promise.
+
 ## Current status
 
 AgentFence is in active development. The table below distinguishes what works
@@ -397,6 +402,11 @@ audit-log integrity), [`docs/architecture.md`](docs/architecture.md) for the
 evaluation flow, and [`docs/modes.md`](docs/modes.md) for the
 detection/prevention/audit-only/dry-run mode taxonomy.
 
+See the confused-deputy guard in action with the runnable, hermetic
+[`examples/taint-scenario/`](examples/taint-scenario/): an allowed read returns
+untrusted text, and a later write reusing that text is blocked because its
+argument was derived from untrusted output.
+
 AgentFence is not a sandbox. It enforces policy *before* a tool call executes;
 it does not contain a tool call that has already been forwarded. Pair it with
 OS-level isolation for defense in depth.
@@ -447,11 +457,21 @@ policy boundary. If you only need one, pick AgentFence when the policy author
 is not the application author, and pick `agent-kernel` when you are building
 an agent application and want safety guarantees compiled in.
 
+For a worked, side-by-side comparison of the same policy intent at each
+integration point, see
+[`docs/edge-proxy-vs-kernel.md`](docs/edge-proxy-vs-kernel.md). For a supervisor
+gating many workers through AgentFence, see
+[`docs/puppetmaster-integration.md`](docs/puppetmaster-integration.md).
+
 ## Roadmap
 
-- signed audit logs
-- additional policy packs (browser, database)
-- VS Code / Claude Code / Copilot CLI integration examples
+The initial phased roadmap (harden the MVP → policy language → MCP proxy →
+trustworthy audit logs) is complete, along with signed audit logs and a signed
+multi-channel release. Current direction — response-side policy, more policy
+packs, and broader client-config recipes — lives in
+[`ROADMAP.md`](ROADMAP.md), which tracks the
+[`roadmap`](https://github.com/dgenio/agentfence/labels/roadmap)-labeled issues
+so this list can't drift.
 
 ## Non-goals
 
@@ -469,6 +489,10 @@ make ci
 ```
 
 before opening a pull request. CI runs the same command.
+
+Most contributions here come from AI coding agents. If that's you, read
+[`AGENTS.md`](AGENTS.md) first (a thin pointer to the `make ci` gate,
+high-churn files, and the conventions in `CONTRIBUTING.md`).
 
 By participating you agree to abide by our
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Release history is tracked in

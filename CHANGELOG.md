@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Onboarding & adoption documentation and runnable examples.** A coherent set
+  of docs and hermetic example scripts aimed at getting a new adopter from
+  install to a gated agent, and at giving contributors (human and AI) clear
+  guidance:
+  - **Quickstart** ([`docs/quickstart.md`](docs/quickstart.md)) — a linear
+    10-minute path from install to an observed allow + deny in the audit log.
+    (#179)
+  - **Daily Driver guide** ([`docs/daily-driver.md`](docs/daily-driver.md)) —
+    the day-to-day operating loop, dry-run-first rollout, decision triage, CI
+    defaults, and audit-log rotation. (#88)
+  - **CLAIMS** ([`docs/claims.md`](docs/claims.md)) — each trust claim
+    (local/no-telemetry, deny-by-default, redaction, tamper-evidence, …) with a
+    runnable reproducer, plus explicit non-claims. (#90)
+  - **Worked mode examples** in [`docs/modes.md`](docs/modes.md) — a runnable
+    command, output, and audit `mode` field per enforcement mode. (#176)
+  - **MCP client recipes** — Cursor and Claude Desktop config added to
+    [`docs/integration-guide.md`](docs/integration-guide.md), each with a
+    "confirm gating is working" step; the stale proxy flag table is corrected
+    and completed. (#103)
+  - **Runnable proxy examples** — [`examples/stub-mcp-server`](examples/stub-mcp-server)
+    (a dependency-free stdio MCP stub), [`examples/proxy-smoke.sh`](examples/proxy-smoke.sh)
+    (allowed read + denied write through the live proxy, #141), and
+    [`examples/taint-scenario/`](examples/taint-scenario/) (the confused-deputy
+    guard blocking a write derived from untrusted output, #153).
+  - **Edge-proxy-vs-kernel** ([`docs/edge-proxy-vs-kernel.md`](docs/edge-proxy-vs-kernel.md), #85)
+    and **Puppetmaster integration pattern**
+    ([`docs/puppetmaster-integration.md`](docs/puppetmaster-integration.md), #92).
+  - **`ROADMAP.md`** — a single, dated, directional roadmap tracking the
+    `roadmap`-labeled issues; the README links to it instead of restating items.
+    (#159)
+  - **`AGENTS.md` + `CLAUDE.md`** — repo-specific rules for AI coding agents
+    (the `make ci` gate, high-churn files, conventions), thin pointers to
+    `CONTRIBUTING.md`/`Makefile`. (#185)
 - **Structured decision observability.** A shared observability stack across the
   CLI and proxies:
   - **Typed reason codes.** Every decision now carries a stable, machine-readable

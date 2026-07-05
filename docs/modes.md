@@ -85,6 +85,96 @@ All modes listed above are implemented on `main`.
 already-produced audit log for tamper-evident chain integrity. It is listed
 here so the table is exhaustive.
 
+## Worked examples
+
+Each block below is runnable against files bundled in this repo
+(`examples/policy.yaml`, `examples/tool-calls.jsonl`) so you can see the exact
+flags, output, and audit `mode` field for each mode.
+
+### Prevention — block in real time
+
+Wrap an MCP server and enforce decisions live. The bundled smoke example
+(hermetic — no network) shows an allowed read and a denied write:
+
+```console
+$ ./examples/proxy-smoke.sh
++ agentfence proxy (prevention mode) wrapping the stub MCP server
+…
+{"jsonrpc":"2.0","id":2,"result":{…}}                 # read forwarded
+{"jsonrpc":"2.0","id":3,"error":{"code":-32001,…}}    # write blocked (BlockedByPolicy)
+…
+PASS: read forwarded, write blocked by policy (BlockedByPolicy -32001).
+```
+
+The denied call gets a JSON-RPC `-32001` error and the tool server never sees
+it. Audit events carry no `mode` field (an absent `mode` means an enforcing
+mode).
+
+### Audit-only — evaluate a captured trace
+
+Evaluate a recorded JSONL stream. Decisions are reported and audited; there is
+no live call to block:
+
+```console
+$ agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl \
+    --output text --no-interactive
+call_001 filesystem.read -> allow (tool filesystem.read matched explicit policy rule)
+call_002 filesystem.write -> deny (path ".env" denied by pattern ".env")
+call_003 github.create_issue -> deny (non-interactive: ask auto-denied)
+call_004 github.delete_repo -> deny (tool github.delete_repo matched explicit policy rule)
+
+4 call(s) processed, 0 parse error(s): allow=1 deny=3 ask=0
+```
+
+Audit events have no `mode` field. Add `--fail-on deny` (or `deny,ask`) to turn
+it into a CI gate — the exit code becomes non-zero when a matching decision
+occurs:
+
+```console
+$ agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl \
+    --no-interactive --fail-on deny
+…
+AgentFence: 3 call(s) matched --fail-on criteria (deny)
+error: 3 call(s) matched --fail-on criteria
+$ echo $?
+1
+```
+
+### Dry-run — preview without enforcing
+
+Same evaluation, but every event is marked `"mode": "dry_run"`, `ask` is
+recorded verbatim (not converted), and `--fail-on` never changes the exit code:
+
+```console
+$ agentfence check --policy examples/policy.yaml --call examples/tool-calls.jsonl \
+    --output text --dry-run --no-interactive
+call_001 filesystem.read -> allow (…) [dry-run]
+call_002 filesystem.write -> deny (…) [dry-run]
+call_003 github.create_issue -> ask (…) [dry-run]
+call_004 github.delete_repo -> deny (…) [dry-run]
+
+4 call(s) processed, 0 parse error(s): allow=1 deny=2 ask=1
+```
+
+Note `ask=1` here versus `ask=0` in the audit-only run above: dry-run preserves
+the `ask` decision instead of resolving it. The audit line carries the marker:
+
+```jsonl
+{"schema_version":"4",…,"decision":"allow",…,"mode":"dry_run"}
+```
+
+### Detection — observe live traffic
+
+> **Note (behaviour caveat):** the `--passthrough` proxy flag currently
+> **forwards every message without evaluating policy and without writing audit
+> events** — it is a relay/skeleton mode for validating the transport, not a
+> detection mode. A true detection mode (evaluate every live call and emit audit
+> events, but never block or prompt) is not yet exposed as a distinct proxy
+> flag. Reworking this into an explicit no-enforcement label is tracked in
+> [issue #174](https://github.com/dgenio/agentfence/issues/174). To *observe*
+> what a policy would decide today without enforcing, run the captured stream
+> through `check --dry-run` (above).
+
 ## Choosing a mode
 
 | If you want to …                                      | Use         |

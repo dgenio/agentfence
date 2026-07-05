@@ -1,0 +1,23 @@
+# Taint-scenario policy: statically, both filesystem.read and filesystem.write
+# are allowed. Taint tracking is what catches the confused-deputy pattern — a
+# write whose argument was lifted verbatim from earlier untrusted tool output
+# is escalated (and, non-interactively, denied) even though the static rule
+# would allow it. See examples/taint-scenario/run.sh and docs/threat-model.md.
+version: "0.1"
+
+defaults:
+  decision: deny
+
+tools:
+  filesystem.read:
+    decision: allow
+  filesystem.write:
+    decision: allow
+
+taint:
+  enabled: true
+  # escalate: an otherwise-allowed call with a tainted argument becomes an
+  # ask decision (resolved to deny here because run.sh passes --no-interactive).
+  on_tainted_argument: escalate
+  # Ignore fragments shorter than 8 runes to limit false positives.
+  min_length: 8
