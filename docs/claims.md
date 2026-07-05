@@ -91,8 +91,8 @@ $ agentfence check --policy examples/policy.yaml --call examples/tool-calls.json
 $ agentfence audit verify --log te.jsonl
 OK: 4 event(s) verified
 
-# Flip a decision in the file, then re-verify:
-$ sed -i 's/"decision":"deny","reason":"tool github.delete_repo/"decision":"allow","reason":"tool github.delete_repo/' te.jsonl
+# Flip a decision in the file, then re-verify (sed -i'' works on GNU and BSD/macOS):
+$ sed -i'' 's/"decision":"deny","reason":"tool github.delete_repo/"decision":"allow","reason":"tool github.delete_repo/' te.jsonl
 $ agentfence audit verify --log te.jsonl
 FAILED: integrity check failed at event 4 (possible tampering)
 error: audit verify: audit: event 4: hash mismatch: …

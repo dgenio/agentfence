@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -10,14 +12,18 @@ import (
 )
 
 // decodeResponses parses every newline-delimited JSON-RPC response the stub
-// wrote to out.
+// wrote to out, decoding successive top-level values until EOF.
 func decodeResponses(t *testing.T, out []byte) []mcp.JSONRPCResponse {
 	t.Helper()
 	var resps []mcp.JSONRPCResponse
 	dec := json.NewDecoder(bytes.NewReader(out))
-	for dec.More() {
+	for {
 		var r mcp.JSONRPCResponse
-		if err := dec.Decode(&r); err != nil {
+		err := dec.Decode(&r)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
 		resps = append(resps, r)

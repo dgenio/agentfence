@@ -2,10 +2,13 @@
 
 This is the shortest linear path from install to a working, policy-gated setup.
 By the end you will have scaffolded a policy, seen an **allowed** call and a
-**denied** call, and read the decisions back out of a tamper-evident audit log.
+**denied** call, and read the decisions back out of the audit log. (For a
+_tamper-evident_ audit log and how to verify it, see [CLAIMS](claims.md).)
 
-Every command below is copy-pasteable and runs against files you create here or
-files bundled in this repo — no external services.
+Every command below is copy-pasteable. The evaluation steps (2–6, with the
+bundled stub) run entirely offline against files you create here or files
+bundled in this repo; only installing the binary (step 1) and the optional
+real MCP server (step 6, via `npx`) reach the network.
 
 For the conceptual tour (why AgentFence exists, the four enforcement modes, the
 threat model), start at the [README](../README.md). For day-to-day operation
