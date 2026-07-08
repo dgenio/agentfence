@@ -64,7 +64,8 @@ def doc_files() -> list[str]:
 def check_commands(files: list[str], valid: set[str]) -> list[str]:
     errors = []
     for path in files:
-        text = open(path, encoding="utf-8").read()
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
         for token in set(CMD_RE.findall(code_regions(text))):
             if token not in valid:
                 errors.append(
@@ -79,7 +80,8 @@ def check_links(files: list[str]) -> list[str]:
     errors = []
     for path in files:
         base = os.path.dirname(path)
-        text = open(path, encoding="utf-8").read()
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
         for target in LINK_RE.findall(text):
             target = target.strip()
             if target.startswith(("http://", "https://", "mailto:", "#")):
@@ -124,7 +126,15 @@ def main() -> int:
     files = doc_files()
     errors = check_links(files)
     if os.path.exists(args.binary):
-        errors += check_commands(files, valid_commands(args.binary))
+        valid = valid_commands(args.binary)
+        if not valid:
+            print(
+                f"error: parsed no commands from `{args.binary} --help`; the help "
+                "output format may have changed (refusing to flag every documented "
+                "command as invalid)"
+            )
+            return 1
+        errors += check_commands(files, valid)
     else:
         print(f"warning: binary {args.binary} not found; skipping command check")
 
