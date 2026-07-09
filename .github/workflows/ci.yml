@@ -1,14 +1,131 @@
 name: ci
 
+# Trigger once per change, not twice (#187): branch CI comes from pull_request;
+# push is scoped to main so post-merge is still covered without a duplicate run
+# on every PR-branch push.
 on:
   push:
+    branches: [main]
   pull_request:
+
+# Cancel superseded in-progress runs for the same ref so rapid pushes (common
+# when iterating on review feedback) don't pile up (#187).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  # Unit tests with the race detector across the platforms we ship binaries for
+  # (#109). The engine has Windows-specific path-safety logic that only this
+  # matrix exercises on Windows. Coverage is produced from a single canonical
+  # platform (Linux) to avoid duplicate/clobbered artifacts.
   test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # 1.24, not the module's 1.22 minimum: Go 1.22's linker omits the
+          # macOS LC_UUID load command, so `-race` binaries abort under the
+          # current macos-latest dyld. 1.24 builds run on all three runners.
+          go-version: '1.24'
+          cache: true
+
+      # Use a Go-native invocation (not `make ci`) so the job does not depend on
+      # GNU make / a POSIX shell being present on the Windows runner.
+      - name: Test (race detector)
+        if: runner.os != 'Linux'
+        run: go test -race ./...
+
+      - name: Test (race detector + coverage)
+        if: runner.os == 'Linux'
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Print coverage summary
+        if: runner.os == 'Linux'
+        run: go tool cover -func=coverage.out
+
+      - name: Upload coverage profile
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: error
+
+  # Formatting + static analysis (#110). golangci-lint config lives in
+  # .golangci.yml; `make lint` runs the same set locally.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Pin to 1.24: golangci-lint v2.5.0 is built with Go 1.25 and panics
+          # type-checking packages loaded by a newer toolchain ("file requires
+          # newer Go version"). 1.24 <= the linter's bundled go/types version.
+          go-version: '1.24'
+          cache: true
+
+      - name: gofmt check
+        run: make fmt-check
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
+
+  # Security-focused static analysis and dependency vulnerability scanning
+  # (#110 gosec, #177 govulncheck). Intentional findings are annotated inline
+  # with `// #nosec <rule> -- <reason>`; new findings fail the build.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Intentionally 'stable', not a pin: govulncheck reports standard-
+          # library CVEs against the *toolchain it runs on*, so an older pinned
+          # Go (e.g. 1.24.x) flags stdlib vulns already fixed upstream. Running
+          # on the latest stable keeps stdlib findings meaningful (a real, un-
+          # patched CVE still fails the job and signals "bump the toolchain").
+          # Contrast the lint job, which must be pinned because golangci-lint
+          # panics on a *newer* toolchain than it was built against.
+          go-version: 'stable'
+          cache: true
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: gosec
+        run: gosec -quiet ./...
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck
+        run: govulncheck ./...
+
+  # Exercise every bundled example against the built binary so examples/ can
+  # never silently drift from the current CLI/schema (#181). Hermetic.
+  examples:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,18 +137,27 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Run pre-push gate (fmt-check, vet, test-race + coverage)
-        run: make ci
+      - name: Validate bundled examples
+        run: make examples
 
-      - name: Print coverage summary
-        run: go tool cover -func=coverage.out
+  # Verify documented commands exist and internal doc links resolve (#165).
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Upload coverage profile
-        uses: actions/upload-artifact@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          name: coverage
-          path: coverage.out
-          if-no-files-found: error
+          go-version: '1.22'
+          cache: true
+
+      - name: Doc-claim self-test
+        run: python3 scripts/check-doc-claims.py --selftest
+
+      - name: Check doc claims and links
+        run: make doc-check
 
   goreleaser-check:
     runs-on: ubuntu-latest

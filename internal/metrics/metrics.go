@@ -171,7 +171,7 @@ func (s Snapshot) MeanEvalLatency() time.Duration {
 	if s.EvalCount == 0 {
 		return 0
 	}
-	return time.Duration(s.EvalLatencyNanos / int64(s.EvalCount))
+	return time.Duration(s.EvalLatencyNanos / int64(s.EvalCount)) // #nosec G115 -- EvalCount is a monotonic in-process counter, guarded != 0 above; it cannot realistically overflow int64
 }
 
 // FormatText renders s as a compact, deterministic human-readable summary on w.

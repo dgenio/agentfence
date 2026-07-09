@@ -36,6 +36,21 @@ Where possible, include:
 - **Coordinated disclosure:** we will agree a disclosure timeline with you and
   credit reporters who wish to be named.
 
+## Supply-chain hygiene
+
+AgentFence keeps a deliberately small dependency footprint and automates the
+rest:
+
+- **Dependency and Action updates** are proposed automatically by Dependabot
+  (`.github/dependabot.yml`) for both the Go module and pinned GitHub Actions.
+- **Vulnerability scanning** runs `govulncheck` in CI on every change (and
+  `make vuln` locally).
+- **Static analysis** runs `gosec` and `golangci-lint` in CI (`make lint`).
+  Intentional `gosec` findings are annotated inline with
+  `// #nosec <rule> -- <reason>` rather than disabled globally.
+- **Release artifacts** are signed with cosign and ship an SBOM (see
+  [`docs/distribution.md`](docs/distribution.md)).
+
 ## Scope
 
 AgentFence enforces policy *before* a tool call executes; it is **not a
