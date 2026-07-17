@@ -71,16 +71,20 @@ cat "$audit"
 # Assertions: the read is allowed (a result for id 2), and the write is blocked
 # with the BlockedByPolicy error code (-32001) for id 3.
 echo
-if ! grep -q '"id":2' "$out"; then
-  echo "FAIL: no response for the allowed read (id 2)" >&2
+if ! grep -q '"id":2.*"result"' "$out"; then
+  echo "FAIL: the read (id 2) should have been allowed and returned a result" >&2
   exit 1
 fi
-if ! grep -q '"code":-32001' "$out"; then
-  echo "FAIL: expected a BlockedByPolicy error (-32001) for the denied write" >&2
+if ! grep -q '"id":3.*"code":-32001' "$out"; then
+  echo "FAIL: expected a BlockedByPolicy error (-32001) for the denied write (id 3)" >&2
   exit 1
 fi
-if ! grep -q '"decision":"deny"' "$audit"; then
-  echo "FAIL: expected a deny decision in the audit log" >&2
+if ! grep -q '"call_id":"2".*"decision":"allow"' "$audit"; then
+  echo "FAIL: expected an allow decision for the read (call_id 2) in the audit log" >&2
+  exit 1
+fi
+if ! grep -q '"call_id":"3".*"decision":"deny"' "$audit"; then
+  echo "FAIL: expected a deny decision for the write (call_id 3) in the audit log" >&2
   exit 1
 fi
 

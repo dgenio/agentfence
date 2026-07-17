@@ -19,7 +19,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 
@@ -74,7 +73,9 @@ func serve(in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+	// bufio.Scanner.Err() reports nil at end of input (never io.EOF), so any
+	// non-nil error here is a real read failure worth surfacing.
+	if err := scanner.Err(); err != nil {
 		return err
 	}
 	return nil
