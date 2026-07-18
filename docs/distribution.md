@@ -15,6 +15,17 @@ prompt-injected calls (a secret-bearing `.env` write and a `github.delete_repo`)
 and shows the blocked decisions plus a redacted, hash-chained, verified audit
 trail.
 
+Two further hermetic, runnable demos back this up (no network or npm — they wrap
+the bundled [`examples/stub-mcp-server`](../examples/stub-mcp-server)):
+
+- [`examples/proxy-smoke.sh`](../examples/proxy-smoke.sh) — the live stdio proxy
+  forwarding an allowed read and blocking a denied write.
+- [`examples/taint-scenario/`](../examples/taint-scenario/) — the confused-deputy
+  guard blocking a write whose argument came from untrusted tool output.
+
+These are the reproducible artifacts a screen recording would capture; recording
+and committing the binary GIF/asciinema asset remains the one manual step below.
+
 To record the README GIF/asciinema:
 
 ```bash

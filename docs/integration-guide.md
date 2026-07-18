@@ -67,9 +67,38 @@ Useful flags:
 | `--policy <file>`     | Required unless `--passthrough`. Policy YAML to load. |
 | `--audit-log <file>`  | Append JSONL audit events to this file. New files are created owner-readable on Unix (`0600`). If omitted, audit events are discarded (the proxy never mixes audit JSONL into the agent's stdout — that channel is reserved for JSON-RPC). |
 | `--tamper-evident`    | Hash-chain audit events. Verify later with `agentfence audit verify --log <file>`. |
+| `--sign-key <file>`   | Sign each audit event with an Ed25519 private key (PEM). Verify with `agentfence audit verify --pubkey <file>`. |
+| `--audit-max-size <bytes>` / `--audit-max-age <dur>` / `--audit-keep <n>` | Rotate the audit log by size and/or age, keeping at most `n` rotated segments (requires `--audit-log`). |
+| `--audit-fsync`       | `fsync` the audit log after every event so a decision survives a crash (slower; requires `--audit-log`). |
+| `--audit-sink <url>`  | Also ship audit events to an external sink; repeatable. Schemes: `http(s)://…`, `syslog://host:port`, `syslog+tcp://host:port`. |
+| `--no-interactive`    | Auto-deny every `ask` decision instead of prompting on the TTY (see [Approval](#approval)). |
+| `--approval-timeout <dur>` | Bound how long an interactive `ask` waits before falling back to deny (e.g. `30s`). `0` waits indefinitely. |
+| `--log-format text\|json` | Operational (stderr) log format; distinct from the audit log. `json` emits one structured record per line. |
+| `--metrics-listen <addr>` | Expose Prometheus decision/latency/error metrics at `/metrics` on this address (off by default; keep it on loopback). |
 | `--passthrough`       | Skeleton mode: forward every message without policy evaluation. Useful for validating the relay; do **not** use in production. |
-| `--no-interactive`    | Reserved. Today every `ask` decision is denied (see [Approval today](#approval-today)). |
 | `--debug`             | Log every forwarded JSON-RPC message to stderr. Off by default because MCP messages routinely contain user content. |
+
+## Try the proxy in 60 seconds
+
+Before wiring a real client, prove the gate end to end with the bundled,
+hermetic smoke example. It runs `agentfence proxy` in front of a tiny stub MCP
+server (no network, no npm) and shows an allowed read plus a denied write:
+
+```console
+$ ./examples/proxy-smoke.sh
++ agentfence proxy (prevention mode) wrapping the stub MCP server
+…
+{"jsonrpc":"2.0","id":2,"result":{…}}                 # read forwarded
+{"jsonrpc":"2.0","id":3,"error":{"code":-32001,…}}    # write blocked (BlockedByPolicy)
+…
+PASS: read forwarded, write blocked by policy (BlockedByPolicy -32001).
+```
+
+The denied write comes back as a JSON-RPC `-32001` (`BlockedByPolicy`) error the
+tool server never sees, and both decisions land in the audit log. For the
+confused-deputy (taint) guard, see
+[`examples/taint-scenario/`](../examples/taint-scenario/). The rest of this guide
+shows how to point real MCP clients at the proxy.
 
 ## Wrapping a remote MCP server over HTTP
 
@@ -211,6 +240,81 @@ invocation:
 
 `${userHome}` and `${workspaceFolder}` are VS Code variable substitutions —
 AgentFence itself does not resolve them.
+
+## Cursor
+
+Cursor reads MCP servers from `~/.cursor/mcp.json` (global, every project) or
+`.cursor/mcp.json` in a project root (that project only). Both use the same
+`mcpServers` shape — wrap the server command with `agentfence proxy`:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "agentfence",
+      "args": [
+        "proxy",
+        "--policy", "/Users/you/.config/agentfence/policy.yaml",
+        "--audit-log", "/Users/you/.local/share/agentfence/audit.jsonl",
+        "--",
+        "npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/you/work"
+      ]
+    }
+  }
+}
+```
+
+Use an absolute path for `command` if `agentfence` is not on the PATH Cursor
+launches with. Restart Cursor (or toggle the server) after editing the file.
+
+## Claude Desktop
+
+Claude Desktop's config lives at
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows), using the same
+`mcpServers` map as Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "agentfence",
+      "args": [
+        "proxy",
+        "--policy", "/Users/you/.config/agentfence/policy.yaml",
+        "--audit-log", "/Users/you/.local/share/agentfence/audit.jsonl",
+        "--",
+        "npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/you/work"
+      ]
+    }
+  }
+}
+```
+
+Use absolute paths throughout (Claude Desktop does not expand `~`), then fully
+quit and reopen Claude Desktop.
+
+## Confirm gating is working
+
+Whichever client you wired, verify AgentFence is actually in the path — don't
+assume. The audit log is the receipt: it only gets written when the proxy
+evaluates a call.
+
+1. Point `--audit-log` at a known path (as in the recipes above).
+2. In the client, trigger a tool call the policy **denies** — e.g. ask the agent
+   to read `.env` under the `filesystem` pack, which denies it.
+3. Tail the audit log and look for the deny:
+
+   ```bash
+   tail -n 5 /Users/you/.local/share/agentfence/audit.jsonl
+   # …"tool":"filesystem.read","decision":"deny","reason":"path \".env\" denied…"…
+   ```
+
+If a denied call shows up as a `deny` event (and the client reports the tool was
+blocked), the proxy is in the path. If the audit log stays empty, the client is
+still talking to the server directly — re-check the `command`/`args` wiring and
+that the client was fully restarted. See [Troubleshooting](#troubleshooting)
+below for the common failure modes.
 
 ## Writing your first policy
 

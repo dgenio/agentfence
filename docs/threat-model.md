@@ -154,6 +154,10 @@ adversarial input rather than the operator's intent.
 <a id="confused-deputy--taint-tracking"></a>
 #### Confused-deputy / taint tracking (scope and limits)
 
+> See it in action: [`examples/taint-scenario/`](../examples/taint-scenario/) is
+> a hermetic, runnable scenario where an allowed read returns untrusted text and
+> a later write reusing that text is escalated and blocked.
+
 Taint tracking is a deliberately simple, explainable heuristic — string
 provenance, not a full information-flow analysis. It is honest about what
 it does **not** catch:
