@@ -21,7 +21,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Apply area labels from changed paths
-        uses: actions/labeler@v5
+        uses: actions/labeler@v7
         with:
           # Additive only: never strip labels a human applied manually.
           sync-labels: false
