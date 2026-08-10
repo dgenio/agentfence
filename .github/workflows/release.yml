@@ -28,13 +28,13 @@ jobs:
 
       # Multi-arch container image builds (#104).
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ca925cc78487e1e49e59ac6c9a4fb3c3cb96b86f # v4
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@09e4493aee4ae00cbdca5871a56c88a35d27d859 # v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@9dbf633a141e6b44048aa5cbd79853837c13b90a # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
