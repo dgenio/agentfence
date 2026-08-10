@@ -1,24 +1,87 @@
-# Automated dependency and GitHub Actions updates (#177).
-# Keeps the deliberately small Go dependency set and the pinned Actions patched
-# without manual tracking. Updates are grouped to keep review load low.
+# Automated dependency and GitHub Actions updates.
+# Routine compatible updates are grouped to reduce review noise; unrelated
+# breaking upgrades remain separate so maintainers can assess them deliberately.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
-      go-dependencies:
+      go-nonmajor:
+        applies-to: version-updates
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
+      go-security-nonmajor:
+        applies-to: security-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
-      github-actions:
+      docker-actions:
+        applies-to: version-updates
+        patterns:
+          - "docker/*"
+      release-actions-nonmajor:
+        applies-to: version-updates
+        patterns:
+          - "goreleaser/*"
+          - "anchore/*"
+          - "sigstore/*"
+        update-types:
+          - minor
+          - patch
+      lint-actions-nonmajor:
+        applies-to: version-updates
+        patterns:
+          - "golangci/*"
+        update-types:
+          - minor
+          - patch
+      actions-nonmajor:
+        applies-to: version-updates
         patterns:
           - "*"
+        exclude-patterns:
+          - "docker/*"
+          - "goreleaser/*"
+          - "anchore/*"
+          - "sigstore/*"
+          - "golangci/*"
+        update-types:
+          - minor
+          - patch
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(ci)"
