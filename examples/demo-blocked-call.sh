@@ -28,16 +28,21 @@ stub="$workdir/stub-mcp-server"
 go build -o "$stub" ./examples/stub-mcp-server
 
 out="$workdir/agent-stdout.jsonl"
+stderr="$workdir/proxy-stderr.log"
 audit="$workdir/audit.jsonl"
 receipt="$workdir/receipt.txt"
 
-"$AGENTFENCE" proxy \
+if ! "$AGENTFENCE" proxy \
   --policy examples/hero-policy.yaml \
   --audit-log "$audit" \
   --tamper-evident \
   --no-interactive \
   -- \
-  "$stub" <examples/hero-requests.jsonl >"$out" 2>/dev/null
+  "$stub" <examples/hero-requests.jsonl >"$out" 2>"$stderr"; then
+  echo "FAIL: AgentFence proxy exited unexpectedly" >&2
+  sed 's/^/  | /' "$stderr" >&2
+  exit 1
+fi
 
 # Prove the useful call was forwarded and the sensitive call was intercepted at
 # the policy boundary. The JSON-RPC error is produced by AgentFence, not the MCP
