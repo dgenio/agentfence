@@ -1,0 +1,5 @@
+AgentFence MCP firewall demo
+ALLOW filesystem.read README.md -> forwarded to MCP server
+DENY filesystem.write .env -> blocked before MCP server (BlockedByPolicy -32001)
+AUDIT allow + deny recorded; fake secret redacted; hash chain verified
+PASS: useful call allowed, sensitive call stopped before the side effect.
