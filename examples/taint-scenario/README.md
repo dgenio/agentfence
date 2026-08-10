@@ -3,7 +3,8 @@
 A hermetic, runnable demonstration of AgentFence's taint guard catching the
 **confused-deputy** pattern: an agent is tricked, by instructions hidden in
 untrusted tool output, into making a *later* tool call whose arguments the
-static policy would allow on their own.
+static policy would allow on their own. The fixture uses the stateless MCP
+`2026-07-28` request shape; client metadata travels in each request.
 
 - [`policy.yaml`](policy.yaml) — allows `filesystem.read` and `filesystem.write`
   statically, but enables taint tracking in `escalate` mode.

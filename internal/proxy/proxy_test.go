@@ -156,12 +156,20 @@ func helperRequest(t *testing.T, id, name, arguments string) []byte {
 
 func TestProcessAgentLineAllowForwards(t *testing.T) {
 	r, agent, sub, audit := newTestRelay(t, DenyAllApprover{}, false /*passthrough*/)
-	line := helperRequest(t, `1`, "filesystem.read", `{"path":"README.md"}`)
+	// MCP 2026-07-28 is stateless: client identity/capabilities travel in
+	// request _meta instead of an initialize handshake. The proxy evaluates the
+	// typed tool fields but must forward the complete original request intact.
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"filesystem.read","arguments":{"path":"README.md"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"proxy-test","version":"1"}}}}`)
 	if err := r.processAgentLine(context.Background(), line, sub, agent); err != nil {
 		t.Fatalf("processAgentLine: %v", err)
 	}
 	if !bytes.Contains(sub.Bytes(), []byte(`"method":"tools/call"`)) {
 		t.Errorf("allow path must forward the request to subprocess; sub=%q", sub.String())
+	}
+	if !bytes.Contains(sub.Bytes(), []byte(`"io.modelcontextprotocol/protocolVersion":"2026-07-28"`)) ||
+		!bytes.Contains(sub.Bytes(), []byte(`"io.modelcontextprotocol/clientCapabilities":{}`)) ||
+		!bytes.Contains(sub.Bytes(), []byte(`"io.modelcontextprotocol/clientInfo"`)) {
+		t.Errorf("allow path must preserve stateless MCP request metadata; sub=%q", sub.String())
 	}
 	if agent.Len() != 0 {
 		t.Errorf("allow path must not write to agent stdout; got %q", agent.String())

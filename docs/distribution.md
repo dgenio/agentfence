@@ -10,10 +10,23 @@ an external account, or a sibling repository). It is the in-repo half of issues
 ## Demo (#74)
 
 [`examples/demo-blocked-call.sh`](../examples/demo-blocked-call.sh) is the
-recordable demo: it runs AgentFence in prevention mode against a set of
-prompt-injected calls (a secret-bearing `.env` write and a `github.delete_repo`)
-and shows the blocked decisions plus a redacted, hash-chained, verified audit
-trail.
+recordable flagship demo. It runs the real AgentFence stdio proxy in front of
+the bundled MCP stub, allows a bounded read that returns prompt-injected text,
+and then denies the injected secret-bearing `.env` write before the stub sees
+it. A diagnostic request to the stub proves only `filesystem.read` crossed the
+boundary. The redacted, hash-chained runtime events must match the committed
+[`hero-expected-audit-receipt.jsonl`](../examples/hero-expected-audit-receipt.jsonl)
+or the demo and CI fail.
+
+The complete maintained evidence set is the
+[`hero policy`](../examples/hero-policy.yaml),
+[`request fixture`](../examples/hero-requests.jsonl),
+[`expected terminal summary`](../examples/hero-expected.txt),
+[`expected audit receipt`](../examples/hero-expected-audit-receipt.jsonl), and
+[`boundary explanation`](../examples/hero-demo.md).
+The bounded release, article, and technical-community copy lives in the
+[`launch brief`](launch-brief.md); it must not be published before the exact
+merged demo and CI are green.
 
 Two further hermetic, runnable demos back this up (no network or npm — they wrap
 the bundled [`examples/stub-mcp-server`](../examples/stub-mcp-server)):
@@ -23,8 +36,8 @@ the bundled [`examples/stub-mcp-server`](../examples/stub-mcp-server)):
 - [`examples/taint-scenario/`](../examples/taint-scenario/) — the confused-deputy
   guard blocking a write whose argument came from untrusted tool output.
 
-These are the reproducible artifacts a screen recording would capture; recording
-and committing the binary GIF/asciinema asset remains the one manual step below.
+These are supporting examples; `demo-blocked-call.sh` is the canonical launch
+path and the only one that should appear in the README hero.
 
 To record the README GIF/asciinema:
 
@@ -34,9 +47,9 @@ asciinema rec demo.cast -c './examples/demo-blocked-call.sh'
 agg demo.cast docs/img/demo.gif      # https://github.com/asciinema/agg
 ```
 
-Embed the resulting GIF at the top of the README. (Recording and committing the
-binary asset is a manual step; the script that drives it lives in the repo so
-the demo stays reproducible.)
+The recording must show the complete `PASS` result and must be regenerated from
+the script rather than edited into a stronger claim. The text representation in
+the README remains the accessible, copy/pasteable source of truth.
 
 ### Listing copy (for registry / awesome-list submissions)
 
@@ -51,7 +64,12 @@ the demo stays reproducible.)
 These require pushing to other repositories or registry accounts and cannot be
 done from this repo's CI:
 
-- [ ] Official MCP registry entry.
+- [x] Official MCP Registry eligibility reviewed (2026-08-10): **N/A**. The
+      [official registry](https://modelcontextprotocol.io/registry/about) is a
+      metadata catalog for publicly installable or accessible MCP *servers*.
+      AgentFence is a policy proxy around a server chosen by the operator, not
+      a standalone server product. Do not manufacture a server wrapper only to
+      obtain a listing.
 - [ ] `awesome-mcp-servers` (and other prominent awesome-MCP lists).
 - [ ] An MCP-security / agent-security curated list.
 - [ ] `awesome-ai-agents`.

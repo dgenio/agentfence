@@ -32,8 +32,9 @@ The proxy is a long-running process that:
    request (`allow`), responds with a `BlockedByPolicy` JSON-RPC error
    (`deny`), or calls the configured approver (`ask`).
 5. Writes one audit event per evaluated call to the JSONL audit log.
-6. Forwards everything else (initialize, ping, notifications, server
-   responses) untouched.
+6. Preserves the complete allowed request, including MCP `2026-07-28` `_meta`,
+   and forwards non-tool methods untouched. Older `initialize` handshakes also
+   pass through for clients targeting earlier protocol versions.
 
 ## Prerequisites
 
@@ -88,8 +89,8 @@ server (no network, no npm) and shows an allowed read plus a denied write:
 $ ./examples/proxy-smoke.sh
 + agentfence proxy (prevention mode) wrapping the stub MCP server
 …
-{"jsonrpc":"2.0","id":2,"result":{…}}                 # read forwarded
-{"jsonrpc":"2.0","id":3,"error":{"code":-32001,…}}    # write blocked (BlockedByPolicy)
+{"jsonrpc":"2.0","id":1,"result":{…}}                 # read forwarded
+{"jsonrpc":"2.0","id":2,"error":{"code":-32001,…}}    # write blocked (BlockedByPolicy)
 …
 PASS: read forwarded, write blocked by policy (BlockedByPolicy -32001).
 ```
@@ -119,6 +120,11 @@ Then point your MCP client at `http://127.0.0.1:8787`. Requests that are not
 a single `tools/call` (initialize, ping, notifications, the SSE GET channel)
 are forwarded transparently, and streamed `text/event-stream` responses are
 relayed incrementally.
+
+For stateless MCP `2026-07-28`, AgentFence preserves the required
+`MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` request headers while it
+evaluates the JSON-RPC body. Upstream remains responsible for rejecting a
+header/body mismatch; AgentFence never rewrites these routing headers.
 
 Useful flags mirror `proxy`, plus:
 

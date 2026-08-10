@@ -37,8 +37,10 @@ configuration examples.
 - The proxy spawns the MCP server as a subprocess and relays newline-
   delimited JSON-RPC messages in both directions.
 - Every `tools/call` request is parsed (`internal/mcp`) and converted to a
-  `policy.ToolCall`, then evaluated by the engine. Non-`tools/call`
-  messages (initialize, ping, notifications) are forwarded untouched.
+  `policy.ToolCall`, then evaluated by the engine. The original allowed frame,
+  including stateless MCP `2026-07-28` `_meta`, is forwarded untouched.
+  Non-`tools/call` messages are also transparent; this includes legacy
+  `initialize` handshakes from earlier MCP protocol versions.
 - On `allow` the original request is forwarded to the subprocess.
 - On `deny` the proxy answers the agent with a JSON-RPC error response
   (code `-32001`, "blocked by AgentFence policy: <reason>") and the
@@ -62,7 +64,9 @@ MCP server. It parses each POST body, evaluates a single `tools/call` exactly
 as the stdio path does, and relays the upstream response — including streamed
 `text/event-stream` bodies, copied with a flush per chunk. Non-`tools/call`
 requests, GETs (the SSE channel), and anything that is not a JSON-RPC request
-are forwarded transparently. JSON-RPC *batch* bodies are forwarded ungated.
+are forwarded transparently. MCP `2026-07-28` routing/version headers are
+preserved end to end. JSON-RPC batch bodies are rejected by default or gated
+all-or-nothing with `--on-batch evaluate`.
 See [`threat-model.md`](threat-model.md#streamable-http-proxy-surface) for the
 HTTP-specific surface.
 

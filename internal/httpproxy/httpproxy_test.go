@@ -71,7 +71,7 @@ func toolsCallBody(id, name, args string) string {
 	if args == "" {
 		args = "{}"
 	}
-	return `{"jsonrpc":"2.0","id":` + id + `,"method":"tools/call","params":{"name":"` + name + `","arguments":` + args + `}}`
+	return `{"jsonrpc":"2.0","id":` + id + `,"method":"tools/call","params":{"name":"` + name + `","arguments":` + args + `,"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"httpproxy-test","version":"1"}}}}`
 }
 
 func postJSONRPC(t *testing.T, h http.Handler, body string) *http.Response {
@@ -135,6 +135,11 @@ func TestForwardStripsHopByHopHeaders(t *testing.T) {
 	req.Header.Set("X-Hop", "secret")
 	req.Header.Set("Connection", "X-Hop, Upgrade")
 	req.Header.Set("X-Keep", "kept")
+	// MCP 2026-07-28 requires these end-to-end routing/version headers for
+	// Streamable HTTP. They must survive the policy boundary unchanged.
+	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	req.Header.Set("Mcp-Method", "tools/call")
+	req.Header.Set("Mcp-Name", "filesystem.read")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	resp := rec.Result()
@@ -150,6 +155,15 @@ func TestForwardStripsHopByHopHeaders(t *testing.T) {
 	}
 	if got.Get("X-Keep") != "kept" {
 		t.Errorf("end-to-end header X-Keep not forwarded; got %q", got.Get("X-Keep"))
+	}
+	for k, want := range map[string]string{
+		"MCP-Protocol-Version": "2026-07-28",
+		"Mcp-Method":           "tools/call",
+		"Mcp-Name":             "filesystem.read",
+	} {
+		if value := got.Get(k); value != want {
+			t.Errorf("MCP header %s = %q, want %q", k, value, want)
+		}
 	}
 	for _, k := range []string{"Connection", "Upgrade"} {
 		if v := resp.Header.Get(k); v != "" {

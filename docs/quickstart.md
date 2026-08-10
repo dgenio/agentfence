@@ -14,6 +14,34 @@ For the conceptual tour (why AgentFence exists, the four enforcement modes, the
 threat model), start at the [README](../README.md). For day-to-day operation
 after this, see the [Daily Driver guide](daily-driver.md).
 
+## First, see the boundary in under a minute
+
+From a source checkout, run the maintained flagship scenario:
+
+```bash
+./examples/demo-blocked-call.sh
+```
+
+It wraps the bundled MCP stub with the real AgentFence stdio proxy. A bounded
+read succeeds and returns prompt-injected text; the resulting secret-bearing
+`.env` write is denied before the stub receives it. The script compares the
+runtime audit events with a committed expected receipt, verifies the hash
+chain, and exits non-zero on any drift. It needs no network, npm, LLM, or real
+secret.
+
+```text
+AgentFence flagship MCP demo
+ALLOW filesystem.read path=project-notes.txt -> upstream
+DENY filesystem.write path=.env -> BlockedByPolicy before upstream
+PROOF upstream received tools: ["filesystem.read"]
+PASS safe read executed; injected .env write blocked before side effect.
+```
+
+The full output then prints the normalized redacted receipt and verifies its
+hash chain.
+
+The remainder of this guide helps you create and operate your own policy.
+
 ## 1. Install
 
 Pick one (full options in the [README](../README.md#install)):
@@ -123,8 +151,8 @@ allowed read plus a denied write:
 ```
 + agentfence proxy (prevention mode) wrapping the stub MCP server
 …
-{"jsonrpc":"2.0","id":2,"result":{…}}                 # read forwarded
-{"jsonrpc":"2.0","id":3,"error":{"code":-32001,…}}    # write blocked by policy
+{"jsonrpc":"2.0","id":1,"result":{…}}                 # read forwarded
+{"jsonrpc":"2.0","id":2,"error":{"code":-32001,…}}    # write blocked by policy
 …
 PASS: read forwarded, write blocked by policy (BlockedByPolicy -32001).
 ```

@@ -4,21 +4,62 @@
 [![Latest release](https://img.shields.io/github/v/release/dgenio/agentfence?sort=semver)](https://github.com/dgenio/agentfence/releases)
 [![Go version](https://img.shields.io/github/go-mod/go-version/dgenio/agentfence)](go.mod)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Read the Weaver Stack overview on Towards AI](https://img.shields.io/badge/Read_the_overview-Towards_AI-black?logo=medium&logoColor=white)](https://pub.towardsai.net/the-weaver-stack-one-contract-layer-for-safe-llm-agents-7f733cad5eac)
 
-## An open, local MCP policy firewall you fully control — no cloud, no telemetry, auditable by design
+## Stop unsafe agent tool calls before they reach your MCP server
 
-AI coding agents are getting access to your filesystem, GitHub, browser, databases, and internal APIs. AgentFence is the policy gate that sits in front of those tool calls and decides what is **allowed, denied, or sent for approval** — before anything executes.
+AgentFence is a local tool-call firewall. It evaluates the exact MCP tool and
+arguments, decides **allow / deny / ask** before forwarding, and writes a
+redacted audit receipt you can verify offline.
 
-Unlike the wave of hosted agent-security gateways, AgentFence gives you a trust moat the funded players can't match:
+```mermaid
+flowchart LR
+    A["Agent tool call"] --> B{"AgentFence policy"}
+    B -->|ALLOW| C["MCP server"]
+    B -->|DENY / ASK| D["Stop before side effect"]
+    B --> E["Redacted receipt"]
+```
 
-- **Open and local-first** — a single Go binary you run yourself. No SaaS, no account, nothing leaves your machine.
-- **Vendor-neutral** — an MCP stdio proxy in front of *any* MCP server, and a CLI gate for any tool-call pipeline.
-- **No telemetry** — it never phones home.
-- **Deny-by-default** — safe defaults; you opt calls in, not out.
-- **Tamper-evident audit you own** — hash-chained decision logs you can verify offline.
+### See the boundary in under a minute
 
-**Who it's for:** security and platform operators who need to gate agents they didn't write, with a policy they fully control and an audit trail they own.
+The maintained, offline demo runs AgentFence in front of a real MCP stdio
+session. An allowed read returns prompt-injected text; the resulting `.env`
+write is denied before the upstream server sees it.
+
+```bash
+git clone https://github.com/dgenio/agentfence.git
+cd agentfence
+./examples/demo-blocked-call.sh
+```
+
+```text
+AgentFence flagship MCP demo
+ALLOW filesystem.read path=project-notes.txt -> upstream
+DENY filesystem.write path=.env -> BlockedByPolicy before upstream
+PROOF upstream received tools: ["filesystem.read"]
+PASS safe read executed; injected .env write blocked before side effect.
+```
+
+The demo's [tiny policy](examples/hero-policy.yaml),
+[exact MCP requests](examples/hero-requests.jsonl), and
+[expected audit receipt](examples/hero-expected-audit-receipt.jsonl)
+are committed and exercised in CI. The full command also prints the normalized
+receipt and verifies its hash chain. The [scenario explanation](examples/hero-demo.md)
+shows how the proof works.
+
+> **Security boundary:** AgentFence governs tool calls that pass through its
+> configured CLI/proxy boundary. It is not a sandbox and does not prevent prompt
+> injection; it limits what a successful injection can cause at mediated tool
+> boundaries. Calls that bypass AgentFence are outside its control, and `ask`
+> requires a trustworthy approval path. See [CLAIMS](docs/claims.md) and
+> [when not to use AgentFence](docs/daily-driver.md#when-not-to-use-agentfence).
+
+AgentFence is a single, local Go binary with no account or built-in telemetry.
+It can wrap an MCP stdio server, gate a streamable-HTTP server, or evaluate
+recorded tool calls in CI. Policies are deny-by-default; audit logs can be
+hash-chained and signed.
+
+**Who it's for:** security and platform operators who need to gate agents they
+did not write, with a policy and audit trail they control.
 
 > **New here?** Follow the [10-minute Quickstart](docs/quickstart.md) — from
 > install to a policy-gated MCP setup with an observed allow and deny. Then see
@@ -49,6 +90,7 @@ today from what is planned. Do not assume planned features are usable yet.
 | Dry-run evaluation mode                             | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
 | MCP stdio proxy (`agentfence proxy`)                | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md), [`docs/architecture.md`](docs/architecture.md) |
 | Policy enforcement on intercepted `tools/call`      | Implemented    | [`docs/integration-guide.md`](docs/integration-guide.md) |
+| Stateless MCP `2026-07-28` tool-call shape/headers  | Tested         | [`examples/hero-requests.jsonl`](examples/hero-requests.jsonl), [`internal/httpproxy`](internal/httpproxy) |
 | Tamper-evident hash-chained audit logs              | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | Ed25519-signed audit events (`--sign-key`)          | Implemented    | [`docs/audit-event-schema.md`](docs/audit-event-schema.md), [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
 | Audit anchors (`audit anchor` / `verify --anchor`)  | Implemented    | [`docs/threat-model.md`](docs/threat-model.md#audit-log-integrity) |
@@ -476,9 +518,11 @@ so this list can't drift.
 
 ## Non-goals
 
-- Executing real tool calls
-- Claiming full MCP proxy compatibility before it ships
-- Replacing runtime sandboxing or OS-level isolation
+- Detecting or preventing prompt injection inside the model.
+- Sandboxing an MCP server or containing code after a call is forwarded.
+- Governing tool paths that bypass the configured AgentFence proxy or gate.
+- Proving that an operator-authored policy is correct or sufficiently strict.
+- Replacing host, container, or network isolation.
 
 ## Contributing
 
