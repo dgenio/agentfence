@@ -1,0 +1,37 @@
+version: "0.1"
+
+defaults:
+  decision: deny
+
+tools:
+  # A normal read is useful and should work.
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allow:
+          - "README.md"
+
+  # Writes are not blanket-blocked: this rule demonstrates a precise boundary.
+  # A prompt-injected attempt to write credentials to .env is denied before the
+  # wrapped MCP server sees the call.
+  filesystem.write:
+    decision: allow
+    constraints:
+      paths:
+        allow:
+          - "./**"
+        deny:
+          - ".env"
+          - "**/.env"
+          - "**/secrets/**"
+
+redaction:
+  enabled: true
+  patterns:
+    - name: openai_api_key
+      regex: "sk-[A-Za-z0-9_-]{20,}"
+
+audit:
+  format: jsonl
+  include_redacted_arguments: true
