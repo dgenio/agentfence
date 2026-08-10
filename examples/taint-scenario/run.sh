@@ -62,17 +62,13 @@ await_id() {
   return 1
 }
 
-echo "+ 1. initialize"
-send '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+echo "+ 1. filesystem.read (allowed) — returns untrusted text containing $marker"
+send '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"filesystem.read","arguments":{"path":"notes.txt"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"agentfence-taint-demo","version":"1"}}}}'
 await_id 1
 
-echo "+ 2. filesystem.read (allowed) — returns untrusted text containing $marker"
-send '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"filesystem.read","arguments":{"path":"notes.txt"}}}'
+echo "+ 2. filesystem.write to the injected path (static policy would allow it)"
+send "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"filesystem.write\",\"arguments\":{\"path\":\"$marker\",\"content\":\"exfiltrated\"},\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{},\"io.modelcontextprotocol/clientInfo\":{\"name\":\"agentfence-taint-demo\",\"version\":\"1\"}}}}"
 await_id 2
-
-echo "+ 3. filesystem.write to the injected path (static policy would allow it)"
-send "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"filesystem.write\",\"arguments\":{\"path\":\"$marker\",\"content\":\"exfiltrated\"}}}"
-await_id 3
 
 # Close the proxy's stdin so it drains and exits.
 eval "exec ${PROXY[1]}>&-"
@@ -87,15 +83,15 @@ echo "+ audit trail:"
 cat "$audit"
 
 echo
-if ! grep -q '"id":2.*"result"' "$out"; then
-  echo "FAIL: the read (id 2) should have been allowed and returned a result" >&2
+if ! grep -q '"id":1.*"result"' "$out"; then
+  echo "FAIL: the read (id 1) should have been allowed and returned a result" >&2
   exit 1
 fi
-if ! grep -q '"id":3.*"code":-32001' "$out"; then
-  echo "FAIL: the tainted write (id 3) should have been blocked (-32001)" >&2
+if ! grep -q '"id":2.*"code":-32001' "$out"; then
+  echo "FAIL: the tainted write (id 2) should have been blocked (-32001)" >&2
   exit 1
 fi
-if ! grep -q '"call_id":"3".*"decision":"deny"' "$audit"; then
+if ! grep -q '"call_id":"2".*"decision":"deny"' "$audit"; then
   echo "FAIL: expected a deny decision for the tainted write in the audit log" >&2
   exit 1
 fi

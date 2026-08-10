@@ -1,0 +1,5 @@
+AgentFence flagship MCP demo
+ALLOW filesystem.read path=project-notes.txt -> upstream
+DENY filesystem.write path=.env -> BlockedByPolicy before upstream
+PROOF upstream received tools: ["filesystem.read"]
+PASS safe read executed; injected .env write blocked before side effect.

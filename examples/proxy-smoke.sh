@@ -40,13 +40,13 @@ tools:
     decision: deny
 YAML
 
-# Three JSON-RPC lines an MCP client would send: the initialize handshake, an
-# allowed read, and a write the policy denies.
+# Two stateless MCP 2026-07-28 tools/call requests: an allowed read and a write
+# the policy denies. Client metadata travels in each request; there is no
+# initialize handshake in this protocol version.
 requests="$workdir/requests.jsonl"
 cat >"$requests" <<'JSONL'
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"filesystem.read","arguments":{"path":"README.md"}}}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"filesystem.write","arguments":{"path":"secret.txt","content":"data"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"filesystem.read","arguments":{"path":"README.md"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"agentfence-proxy-smoke","version":"1"}}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"filesystem.write","arguments":{"path":"secret.txt","content":"data"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"agentfence-proxy-smoke","version":"1"}}}}
 JSONL
 
 out="$workdir/agent-stdout.jsonl"
@@ -68,23 +68,23 @@ echo
 echo "+ audit trail:"
 cat "$audit"
 
-# Assertions: the read is allowed (a result for id 2), and the write is blocked
-# with the BlockedByPolicy error code (-32001) for id 3.
+# Assertions: the read is allowed (a result for id 1), and the write is blocked
+# with the BlockedByPolicy error code (-32001) for id 2.
 echo
-if ! grep -q '"id":2.*"result"' "$out"; then
-  echo "FAIL: the read (id 2) should have been allowed and returned a result" >&2
+if ! grep -q '"id":1.*"result"' "$out"; then
+  echo "FAIL: the read (id 1) should have been allowed and returned a result" >&2
   exit 1
 fi
-if ! grep -q '"id":3.*"code":-32001' "$out"; then
-  echo "FAIL: expected a BlockedByPolicy error (-32001) for the denied write (id 3)" >&2
+if ! grep -q '"id":2.*"code":-32001' "$out"; then
+  echo "FAIL: expected a BlockedByPolicy error (-32001) for the denied write (id 2)" >&2
   exit 1
 fi
-if ! grep -q '"call_id":"2".*"decision":"allow"' "$audit"; then
-  echo "FAIL: expected an allow decision for the read (call_id 2) in the audit log" >&2
+if ! grep -q '"call_id":"1".*"decision":"allow"' "$audit"; then
+  echo "FAIL: expected an allow decision for the read (call_id 1) in the audit log" >&2
   exit 1
 fi
-if ! grep -q '"call_id":"3".*"decision":"deny"' "$audit"; then
-  echo "FAIL: expected a deny decision for the write (call_id 3) in the audit log" >&2
+if ! grep -q '"call_id":"2".*"decision":"deny"' "$audit"; then
+  echo "FAIL: expected a deny decision for the write (call_id 2) in the audit log" >&2
   exit 1
 fi
 

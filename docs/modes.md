@@ -100,8 +100,8 @@ Wrap an MCP server and enforce decisions live. The bundled smoke example
 $ ./examples/proxy-smoke.sh
 + agentfence proxy (prevention mode) wrapping the stub MCP server
 …
-{"jsonrpc":"2.0","id":2,"result":{…}}                 # read forwarded
-{"jsonrpc":"2.0","id":3,"error":{"code":-32001,…}}    # write blocked (BlockedByPolicy)
+{"jsonrpc":"2.0","id":1,"result":{…}}                 # read forwarded
+{"jsonrpc":"2.0","id":2,"error":{"code":-32001,…}}    # write blocked (BlockedByPolicy)
 …
 PASS: read forwarded, write blocked by policy (BlockedByPolicy -32001).
 ```

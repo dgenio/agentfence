@@ -1,0 +1,36 @@
+# The complete policy used by examples/demo-blocked-call.sh.
+#
+# Reads are bounded to the demo input. Writes are allowed only under workspace/
+# and explicitly denied for .env, so the injected request is rejected because
+# of its arguments — AgentFence does not simply block every write.
+version: "0.1"
+
+defaults:
+  decision: deny
+
+tools:
+  filesystem.read:
+    decision: allow
+    constraints:
+      paths:
+        allow:
+          - project-notes.txt
+
+  filesystem.write:
+    decision: allow
+    constraints:
+      paths:
+        allow:
+          - workspace/**
+        deny:
+          - .env
+
+redaction:
+  enabled: true
+  patterns:
+    - name: generic_secret_assignment
+      regex: "(?i)(api_key|token|secret|password)\\s*[:=]\\s*[^\\s]+"
+
+audit:
+  format: jsonl
+  include_redacted_arguments: true
