@@ -33,7 +33,7 @@ run() { # run "<description>" cmd...
 }
 
 echo "+ validate every example policy"
-for p in policy base-policy project-policy unsafe-policy; do
+for p in policy base-policy project-policy unsafe-policy hero-policy; do
   run "validate examples/$p.yaml" "$AGENTFENCE" validate --policy "examples/$p.yaml"
 done
 
@@ -51,7 +51,7 @@ run "audit summarize (audit-log.jsonl)" "$AGENTFENCE" audit summarize --log exam
 run "audit verify (audit-log.jsonl)"    "$AGENTFENCE" audit verify    --log examples/audit-log.jsonl
 run "audit export weaver-trace"          "$AGENTFENCE" audit export    --log examples/audit-log.jsonl --format weaver-trace
 
-echo "+ end-to-end demo (build + check + tamper-evident verify)"
+echo "+ flagship MCP firewall proof (real proxy + allow/deny + redaction + hash-chain verify)"
 run "examples/demo-blocked-call.sh" env AGENTFENCE="$AGENTFENCE" bash examples/demo-blocked-call.sh
 
 if [ "$fail" -ne 0 ]; then
