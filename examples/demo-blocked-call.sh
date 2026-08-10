@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# demo-blocked-call.sh — a short, recordable demo of AgentFence blocking a
-# prompt-injected MCP tool call and producing a redacted, tamper-evident audit
-# trail. This is the script used to record the README demo GIF/asciinema (see
-# docs/distribution.md); it is also a fine smoke test.
+# demo-blocked-call.sh — canonical, recordable AgentFence proof.
+#
+# It wraps the bundled MCP stub server with the real `agentfence proxy`, forwards
+# a useful read, blocks a prompt-injected credential write before the MCP server
+# sees it, records redacted decisions, and verifies the hash-chained audit log.
+# The final five-line receipt is deterministic and checked against
+# examples/hero-expected.txt so README/launch material cannot silently drift.
 #
 # Usage:
-#   ./examples/demo-blocked-call.sh            # builds ./agentfence if needed
+#   ./examples/demo-blocked-call.sh
 #   AGENTFENCE=/path/to/agentfence ./examples/demo-blocked-call.sh
 set -euo pipefail
 
@@ -20,30 +23,49 @@ fi
 
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
-calls="$workdir/injected-calls.jsonl"
+
+stub="$workdir/stub-mcp-server"
+go build -o "$stub" ./examples/stub-mcp-server
+
+out="$workdir/agent-stdout.jsonl"
 audit="$workdir/audit.jsonl"
+receipt="$workdir/receipt.txt"
 
-# Three calls an injected prompt might try to make: exfiltrate a secret into a
-# .env write, and delete a repo. The fake secret is clearly non-real.
-cat >"$calls" <<'JSONL'
-{"id":"call_1","tool":"filesystem.read","arguments":{"path":"README.md"}}
-{"id":"call_2","tool":"filesystem.write","arguments":{"path":".env","content":"OPENAI_API_KEY=sk-demo-not-a-real-secret-1234567890"}}
-{"id":"call_3","tool":"github.delete_repo","arguments":{"repo":"dgenio/agentfence"}}
-JSONL
-
-echo "+ agentfence check (prevention mode, tamper-evident audit)"
-"$AGENTFENCE" check \
-  --policy examples/policy.yaml \
-  --call "$calls" \
+"$AGENTFENCE" proxy \
+  --policy examples/hero-policy.yaml \
   --audit-log "$audit" \
   --tamper-evident \
   --no-interactive \
-  --output text || true
+  -- \
+  "$stub" <examples/hero-requests.jsonl >"$out" 2>/dev/null
 
-echo
-echo "+ audit trail (note the redacted secret in the blocked .env write):"
-cat "$audit"
+# Prove the useful call was forwarded and the sensitive call was intercepted at
+# the policy boundary. The JSON-RPC error is produced by AgentFence, not the MCP
+# server.
+grep -q '"id":2.*"result"' "$out"
+grep -q '"id":3.*"code":-32001' "$out"
+grep -q '"call_id":"2".*"decision":"allow"' "$audit"
+grep -q '"call_id":"3".*"decision":"deny"' "$audit"
 
-echo
-echo "+ verify the hash chain:"
-"$AGENTFENCE" audit verify --log "$audit"
+# Audit output may contain the attempted arguments, but configured secret
+# patterns must be redacted. Never let the fake credential leak into the
+# maintained proof artifact.
+if grep -q 'sk-demo-not-a-real-secret-1234567890' "$audit"; then
+  echo "FAIL: demo secret leaked into the audit log" >&2
+  exit 1
+fi
+grep -q '\[REDACTED:openai_api_key\]' "$audit"
+
+# Verify the tamper-evident chain, but keep the public receipt stable.
+"$AGENTFENCE" audit verify --log "$audit" >/dev/null
+
+cat >"$receipt" <<'EOF'
+AgentFence MCP firewall demo
+ALLOW filesystem.read README.md -> forwarded to MCP server
+DENY filesystem.write .env -> blocked before MCP server (BlockedByPolicy -32001)
+AUDIT allow + deny recorded; fake secret redacted; hash chain verified
+PASS: useful call allowed, sensitive call stopped before the side effect.
+EOF
+
+diff -u examples/hero-expected.txt "$receipt"
+cat "$receipt"
