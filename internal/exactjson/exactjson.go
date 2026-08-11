@@ -1,10 +1,10 @@
 // Package exactjson canonicalizes JSON while preserving the exact lexical
 // representation of JSON numbers.
 //
-// This is intentionally not RFC 8785 / JCS. AgentFence needs to distinguish
-// authorization inputs such as 9007199254740992 and 9007199254740993 without
-// forcing them through IEEE-754, and it also deliberately treats 1, 1.0, and
-// 1.00 as distinct exact request representations.
+// This is intentionally not RFC 8785 / JCS. The authorization boundary needs
+// to distinguish inputs such as 9007199254740992 and 9007199254740993 without
+// forcing them through IEEE-754, and it deliberately treats 1, 1.0, and 1.00
+// as distinct exact request representations.
 package exactjson
 
 import (
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"unicode/utf8"
 )
 
 // Algorithm identifies the current canonical byte contract. It is deliberately
@@ -23,6 +24,8 @@ const Algorithm = "exact-json-v1"
 // Canonicalize parses exactly one JSON value and emits deterministic bytes.
 //
 // Properties:
+//   - input bytes must be valid UTF-8;
+//   - duplicate object keys are rejected at every nesting level;
 //   - object keys are sorted lexicographically;
 //   - array order is preserved;
 //   - insignificant whitespace is removed;
@@ -33,14 +36,18 @@ const Algorithm = "exact-json-v1"
 // Consequently, semantically different JSON types remain different and
 // lexically different numeric tokens such as 1 and 1.0 remain different.
 func Canonicalize(data []byte) ([]byte, error) {
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("exactjson: input is not valid UTF-8")
+	}
+
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 
-	var value interface{}
-	if err := dec.Decode(&value); err != nil {
+	value, err := decodeValue(dec)
+	if err != nil {
 		return nil, fmt.Errorf("exactjson: decode: %w", err)
 	}
-	if err := requireEOF(dec); err != nil {
+	if err := requireTokenEOF(dec); err != nil {
 		return nil, fmt.Errorf("exactjson: %w", err)
 	}
 
@@ -51,9 +58,74 @@ func Canonicalize(data []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func requireEOF(dec *json.Decoder) error {
-	var extra interface{}
-	if err := dec.Decode(&extra); err != nil {
+func decodeValue(dec *json.Decoder) (interface{}, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+
+	switch v := tok.(type) {
+	case nil, bool, string, json.Number:
+		return v, nil
+	case json.Delim:
+		switch v {
+		case '{':
+			obj := make(map[string]interface{})
+			for dec.More() {
+				keyToken, err := dec.Token()
+				if err != nil {
+					return nil, err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return nil, fmt.Errorf("object key has unexpected token type %T", keyToken)
+				}
+				if _, exists := obj[key]; exists {
+					return nil, fmt.Errorf("duplicate object key %q", key)
+				}
+				value, err := decodeValue(dec)
+				if err != nil {
+					return nil, err
+				}
+				obj[key] = value
+			}
+			end, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			if end != json.Delim('}') {
+				return nil, fmt.Errorf("object ended with unexpected token %v", end)
+			}
+			return obj, nil
+
+		case '[':
+			var arr []interface{}
+			for dec.More() {
+				value, err := decodeValue(dec)
+				if err != nil {
+					return nil, err
+				}
+				arr = append(arr, value)
+			}
+			end, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			if end != json.Delim(']') {
+				return nil, fmt.Errorf("array ended with unexpected token %v", end)
+			}
+			return arr, nil
+
+		default:
+			return nil, fmt.Errorf("unexpected delimiter %q", rune(v))
+		}
+	default:
+		return nil, fmt.Errorf("unexpected token type %T", tok)
+	}
+}
+
+func requireTokenEOF(dec *json.Decoder) error {
+	if _, err := dec.Token(); err != nil {
 		if err == io.EOF {
 			return nil
 		}
