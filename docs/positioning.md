@@ -74,7 +74,7 @@ For opaque shell programs in particular, AgentFence should prefer structured req
 
 AgentFence can evaluate the policy it is given. It cannot prove that an operator authored the right policy for an environment.
 
-Deployment guidance and `agentfence doctor` should help surface risky configuration, but the policy/configuration itself must be protected from the agent it is intended to constrain.
+Deployment guidance and the planned preflight/doctor work in [#89](https://github.com/dgenio/agentfence/issues/89) should help surface risky configuration, but the policy/configuration itself must be protected from the agent it is intended to constrain.
 
 ## How adjacent controls compose
 
@@ -113,7 +113,7 @@ The long-term authorization claim depends on more than a tool-name string. The r
 
 - [#221](https://github.com/dgenio/agentfence/issues/221): bind authorization to MCP server/tool identity and descriptor drift;
 - [#222](https://github.com/dgenio/agentfence/issues/222): bind effective policy and approvals to the exact authorized action;
-- [#89](https://github.com/dgenio/agentfence/issues/89): add a preflight/doctor command so operators can verify that the boundary they think is active is actually configured.
+- [#89](https://github.com/dgenio/agentfence/issues/89): add a preflight/doctor capability so operators can verify that the boundary they think is active is actually configured.
 
 Until those contracts ship, documentation and launch material should not imply stronger guarantees than the current implementation provides.
 
