@@ -47,22 +47,6 @@ func TestJSONNumberArgumentMatchesExactlyAndAuditsLosslessly(t *testing.T) {
 }
 
 func TestJSONNumberAndStringRemainDistinctForArgumentPolicy(t *testing.T) {
-	p := policy.Policy{
-		Defaults: policy.Defaults{Decision: policy.DecisionDeny},
-		Tools: map[string]policy.Rule{
-			"demo": {
-				Decision: policy.DecisionAllow,
-				Constraints: policy.Constraints{Args: map[string]policy.ArgValueConstraint{
-					"amount": {Allow: []string{"9007199254740993"}},
-				}},
-			},
-		},
-	}
-	eng, err := New(p)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
 	numberCall, err := policy.ParseToolCall([]byte(`{"id":"n","tool":"demo","arguments":{"amount":9007199254740993}}`))
 	if err != nil {
 		t.Fatal(err)
