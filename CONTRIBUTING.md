@@ -4,14 +4,50 @@ Thanks for your interest in AgentFence. This document covers everything you
 need to build, test, and submit changes.
 
 AgentFence is a security tool. Changes that affect policy evaluation, audit
-logging, or redaction receive extra scrutiny.
+logging, approval, proxy mediation, identity assumptions, or redaction receive
+extra scrutiny.
+
+## Before you start: claim substantial issue work
+
+AgentFence is developed quickly, including with maintainer-run coding agents.
+That should not make external contribution a race against maintainer automation.
+
+If you plan more than a tiny drive-by fix, **comment on the issue before you
+start** with the scope you intend to implement. For issues carrying `help
+wanted` or `good first issue`, the maintainer will acknowledge the claim and
+reserve the work for a bounded window (normally about 14 days, adjusted for
+scope).
+
+While an issue is reserved:
+
+- maintainer-run coding agents should not implement or bundle that issue into a
+  sweep PR;
+- the contributor should post a short progress update if the work needs more
+  time;
+- an active reservation can be extended reasonably when progress is visible;
+- if the reservation expires without progress, the issue becomes available
+  again;
+- a security emergency or release-blocking fix may override a reservation, but
+  the maintainer should explain why and, where practical, offer another
+  suitable issue.
+
+This policy is meant to prevent duplicated/obsolete contributor work, not to
+reserve speculative issues indefinitely. Design-heavy work labeled
+`needs-design` should normally be resolved at the issue/design level before an
+implementation is claimed.
+
+If you opened a PR without claiming an issue first, it is still welcome, but
+there is a higher risk that the same area changed in parallel.
+
+See [#224](https://github.com/dgenio/agentfence/issues/224) for the contributor-
+experience rationale and follow-up work.
 
 ## Prerequisites
 
 - **Go**: 1.22 or newer (the module declares `go 1.22`; newer toolchains work).
 - **make**: any reasonably recent GNU make.
 - No other runtime dependencies. The project uses the Go standard library plus
-  `gopkg.in/yaml.v3` and nothing else.
+  `gopkg.in/yaml.v3` and `github.com/google/uuid`.
 
 Verify:
 
@@ -23,7 +59,7 @@ make help    # lists available targets
 ## Build
 
 ```bash
-make build           # produces ./agentfence
+make build
 ./agentfence version
 ```
 
@@ -32,15 +68,14 @@ To embed a release version at build time:
 ```bash
 make build VERSION=0.1.0
 ./agentfence version
-# agentfence 0.1.0 linux/amd64
 ```
 
 ## Test
 
 ```bash
-make test            # plain go test ./...
-make test-race       # go test -race with coverage profile (used in CI)
-make cover           # runs test-race then opens an HTML coverage report
+make test
+make test-race
+make cover
 ```
 
 To run a single package or test:
@@ -52,85 +87,63 @@ go test ./internal/policy -run TestParsePolicy
 
 ### Test style
 
-- Use the standard library `testing` package only — no testify, no helper
-  libraries.
-- Prefer table-driven tests for branching logic (see
-  `internal/engine/engine_test.go` for examples).
-- Tests must fail without the change and pass with it.
+- Use the standard library `testing` package unless an existing package already
+  requires something else.
+- Prefer table-driven tests for branching logic.
+- Tests for behavior changes should fail without the change and pass with it.
 - Do **not** use real credentials, even in fixtures. Use clearly fake values
   such as `sk-demo-secret` or `ghp_fake_token_for_tests`.
+- Security claims need negative/adversarial cases, not only happy paths.
 
 ### Fuzz tests
 
-Go native fuzz targets cover the security-critical parsers — policy YAML,
-tool-call JSONL, the glob matcher, and the redactor. They are kept under the
-same `_test.go` files (`internal/{policy,engine,redact}/fuzz_test.go`).
-
-The seed corpora run as part of `go test ./...` (and therefore `make ci`).
-To actually fuzz, use the `fuzz` target:
+Go native fuzz targets cover security-critical parsers and matchers. The seed
+corpora run as part of ordinary tests; to fuzz actively:
 
 ```bash
-make fuzz                 # 30s per target (default)
-make fuzz FUZZTIME=2s     # quick smoke
-make fuzz FUZZTIME=5m     # overnight-ish
+make fuzz
+make fuzz FUZZTIME=2s
+make fuzz FUZZTIME=5m
 ```
 
-Go's native fuzzer only fuzzes one target per `go test` invocation, so `make
-fuzz` iterates them sequentially. Any newly discovered failing inputs are
-written to `testdata/fuzz/<TargetName>/…` under the affected package; commit
-them as regression fixtures alongside the fix.
+Commit newly discovered failing inputs as regression fixtures alongside the
+fix.
 
 ## Lint
 
 ```bash
-make lint            # fmt-check + vet + golangci-lint + gosec (the full gate)
-make fmt             # apply gofmt in place
-make fmt-check       # fail if anything needs reformatting (used in CI)
-make golangci        # golangci-lint only (config: .golangci.yml)
-make sec             # gosec security analysis only
+make lint
+make fmt
+make fmt-check
+make golangci
+make sec
 ```
 
-CI rejects any code that is not `gofmt`-clean. Run `make fmt` before committing
-or wire your editor to format on save.
-
-`make lint` also runs [`golangci-lint`](https://golangci-lint.run) (v2) and
-[`gosec`](https://github.com/securego/gosec); install both once so the target
-works locally:
-
-```bash
-# golangci-lint v2 — prefer the official installer (see
-# https://golangci-lint.run/welcome/install/), e.g.:
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-  | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
-# gosec:
-go install github.com/securego/gosec/v2/cmd/gosec@latest
-```
-
-The lint configuration lives in `.golangci.yml`. Security findings that are
-intentional for a tool that launches operator-specified commands and reads
-operator-specified files are annotated inline with
-`// #nosec <rule> -- <reason>` at the call site rather than disabled globally,
-so genuinely new findings still fail the build.
+CI rejects code that is not `gofmt`-clean. `make lint` also runs
+`golangci-lint` and `gosec`. Intentional security-tool behavior is annotated at
+the call site rather than disabled globally so new findings still fail the
+build.
 
 ## Dependency and vulnerability hygiene
 
 ```bash
-make vuln            # govulncheck against the module's dependencies
+make vuln
 ```
 
-Dependencies and pinned GitHub Actions are updated automatically by Dependabot
-(`.github/dependabot.yml`), and CI runs `govulncheck` on every change. See
-`SECURITY.md` for the supply-chain posture.
+Dependencies and pinned GitHub Actions are updated automatically by Dependabot,
+and CI runs vulnerability/security checks. See `SECURITY.md` for the
+supply-chain posture.
 
 ## Examples and docs checks
 
 ```bash
-make examples        # run every file under examples/ through the binary (#181)
-make doc-check       # documented commands exist + internal doc links resolve (#165)
+make examples
+make doc-check
 ```
 
-Both run in CI, so a drifted example or a broken doc link fails the build. Keep
-`examples/` and the README/`docs/` in sync with the CLI.
+Both run in CI. Keep `examples/`, README, and `docs/` synchronized with actual
+CLI behavior. Security examples must distinguish what the demo proves from what
+it does not prove.
 
 ## Demo
 
@@ -138,8 +151,8 @@ Both run in CI, so a drifted example or a broken doc link fails the build. Keep
 make demo
 ```
 
-Expected output is shown in the README under **Demo output**. If you change
-the demo, update the README to match.
+The maintained MCP boundary proof is also exercised by the examples CI. If a
+change affects its claims, update the expected receipt/docs in the same PR.
 
 ## Pre-push gate
 
@@ -149,25 +162,20 @@ Before opening a pull request, run:
 make ci
 ```
 
-`make ci` performs `fmt-check`, `vet`, and `test-race` with coverage — the same
-gate the project has always used locally. In CI the cross-platform `test` job
-runs `go test -race ./...` directly (Go-native so it works on the Windows
-runner; coverage is collected on Linux), and the `fmt-check` half runs in the
-`lint` job. CI additionally runs the `lint`, `security`, `examples`, and `docs`
-checks above on Linux and the `test` job on a Linux/macOS/Windows matrix. If
-`make ci` is green locally, the `test` matrix should pass.
+CI additionally exercises lint/security/examples/docs checks and a
+Linux/macOS/Windows test matrix. A green local `make ci` is the minimum pre-push
+signal, not a substitute for the hosted checks.
 
 ## Release artifacts
 
-We use [GoReleaser](https://goreleaser.com) for cross-platform release
-artifacts. To validate the configuration locally without producing a release:
+We use GoReleaser for cross-platform release artifacts. Validate release
+configuration locally with:
 
 ```bash
-# Install goreleaser once (see https://goreleaser.com/install/)
 make release-check
 ```
 
-CI also runs `goreleaser check` on every PR.
+CI also runs the release-configuration checks.
 
 ## PR guidelines
 
@@ -181,94 +189,111 @@ Use a short prefix that describes the change:
 - `chore/` — tooling, CI, deps, refactors
 - `test/` — tests only
 
-Example: `feat/policy-imports`, `fix/redact-nested-arrays`.
+Examples: `feat/policy-imports`, `fix/redact-nested-arrays`.
 
 ### Commit and PR titles
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-```
+```text
 feat: add policy imports for reusable packs
 fix(engine): handle empty path argument
 docs(threat-model): add MCP proxy attack surface
 chore(ci): add coverage summary step
 ```
 
-The `^docs:`, `^test:`, and `^chore:` prefixes are excluded from auto-generated
-release changelogs (see `.goreleaser.yml`).
-
-A non-blocking PR-title check (`.github/workflows/pull-request-triage.yml`)
-flags titles that do not follow Conventional Commits. Automated tooling (and AI
-agents) should set the branch prefix above and a Conventional-Commit title.
+The repository has an advisory PR-title check for this convention.
 
 ### Auto-labeling
 
-New PRs are labeled automatically by changed path using the existing `area:*`
-and `documentation`/`developer-experience` taxonomy
-(`.github/labeler.yml`) — e.g. touching `internal/policy/**` adds
-`area:policy`. Labels are additive; add or adjust labels manually as needed.
+PRs are labeled automatically by changed path using the existing `area:*` and
+documentation/developer-experience taxonomy. Labels are additive and can be
+adjusted manually.
 
 ### PR scope
 
 - One PR = one concern. Smaller PRs ship faster and review better.
-- If you find an unrelated bug while working on something else, open a
-  separate issue rather than bundling fixes.
-- Use the [PR template](.github/PULL_REQUEST_TEMPLATE.md). Every PR must
-  reference the issue it addresses with `Fixes #N` or `Refs #N`.
+- If you find an unrelated bug, open a separate issue rather than bundling it.
+- Use the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
+- Reference the issue with `Fixes #N` or `Refs #N`.
+- If the issue was reserved to you, keep the issue updated if the scope or
+  expected timing changes materially.
 
 ### Required checks
 
 Every PR must:
 
-- [ ] Pass `make ci` locally before push.
-- [ ] Update or add tests for any behavior change.
-- [ ] Update README, `docs/`, or inline documentation if user-visible behavior
-  changes.
+- [ ] Pass `make ci` locally before push when the local environment supports it.
+- [ ] Update/add tests for behavior changes.
+- [ ] Update README/docs/inline documentation for user-visible behavior.
 - [ ] Reference an issue number.
+- [ ] State security-boundary changes explicitly when applicable.
+
+## Maintainer-agent contribution rule
+
+Maintainer-run agents are welcome for implementation, review, testing, and
+maintenance, but they must not make human contribution futile.
+
+When selecting work for automated/agentic implementation:
+
+1. exclude issues currently claimed/reserved by an external contributor;
+2. avoid bundling `good first issue` / `help wanted` work that has been
+   intentionally left as an entry point;
+3. prefer backlog items labeled `agent-ready` only when design is settled;
+4. do not treat issue count or closure velocity as the primary OSS-health
+   metric;
+5. when an external PR overlaps newly landed maintainer work, explain the
+   overlap clearly and salvage/rebase the contribution where reasonable rather
+   than silently closing it.
+
+The desired outcome is more useful outside work landing successfully, not
+maximum maintainer throughput.
 
 ## Adding a new package
 
-- Packages live under `internal/` unless they are intentionally part of the
-  public Go API (none are today).
-- Each package keeps its tests next to the code (`foo.go` + `foo_test.go`).
-- Avoid cross-package import cycles. If two packages need each other, extract
-  the shared types into a third package.
+- Packages live under `internal/` unless intentionally part of a public Go API.
+- Keep tests next to code.
+- Avoid import cycles; extract shared types deliberately when necessary.
 
 ## Policy schema changes
 
-The policy schema (`internal/policy/policy.go`) is user-facing. Any change to
-it must:
+The policy schema is user-facing. Changes must:
 
-1. Be backward-compatible with existing policies where possible, or include a
-   clear deprecation path.
-2. Update `docs/policy-language.md`.
-3. Update `examples/policy.yaml` to demonstrate the new field where useful.
-4. Add cases to `internal/policy/policy_test.go` covering valid, invalid, and
-   omitted forms.
-5. If the change affects the audit event format, bump the audit schema
-   version (see issue #31 once implemented).
+1. preserve compatibility where practical or document migration/deprecation;
+2. update `docs/policy-language.md`;
+3. update examples where useful;
+4. add valid, invalid, omitted, and adversarial cases;
+5. update any public schema/contract representation in lockstep;
+6. update the audit schema/version when the serialized audit contract changes.
+
+Authorization semantics should remain explicit and deterministic. Generic
+reference policies are examples, not proof that an environment is safe.
 
 ## Security-sensitive changes
 
-If your change touches `internal/policy`, `internal/engine`, `internal/audit`,
-or `internal/redact`:
+If your change touches the policy engine, MCP/HTTP proxy boundary, approval,
+audit, redaction, server/tool identity, or policy binding:
 
-- Call it out in the PR description.
-- Add explicit test cases for the security-critical behavior (e.g., deny
-  precedence, redaction of nested structures, escape attempts).
-- Do not relax existing default-deny behavior without explicit discussion in
-  an issue first.
+- call it out prominently in the PR description;
+- add explicit adversarial tests (bypass, malformed input, replay/drift, deny
+  precedence, secret redaction, etc. as relevant);
+- do not relax default-deny/fail-closed behavior without explicit issue/design
+  discussion;
+- distinguish current guarantees from aspirational design in docs;
+- do not add broad security claims merely because a test/example passes;
+- consider whether the change belongs in the scope of the independent security
+  review tracked by [#223](https://github.com/dgenio/agentfence/issues/223).
 
 ## Reporting bugs
 
 Use the [bug report issue template](.github/ISSUE_TEMPLATE/bug_report.md).
-Include the AgentFence version (`./agentfence version`), Go version, OS, and
-a minimal policy + tool-call input that reproduces the problem.
+Include the AgentFence version, Go version, OS, and a minimal policy + tool-call
+input that reproduces the problem.
 
 ## Reporting vulnerabilities
 
-Do **not** open a public issue for security vulnerabilities. See the project
-README for current contact channels.
+Do **not** open a public issue for security vulnerabilities. Follow
+`SECURITY.md` and GitHub's private vulnerability-reporting path.
 
 ## License
 
