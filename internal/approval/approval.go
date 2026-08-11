@@ -132,10 +132,11 @@ type TTYApprover struct {
 	// reader is created once and reused across calls so bytes buffered by one
 	// prompt are not discarded when the next prompt begins.
 	reader *bufio.Reader
-	// pending holds an in-flight read goroutine's result. When a Request times
-	// out, its read goroutine stays parked on the terminal; the next Request
-	// adopts this channel instead of spawning a second reader on the same fd,
-	// so a late keystroke is delivered to one prompt rather than raced for.
+	// pending holds a read goroutine that outlived the Request that started it
+	// (normally because that approval timed out or was cancelled). Its eventual
+	// result belongs to that old call. The next Request drains and discards it
+	// before showing a new prompt so a late keystroke can never authorize a
+	// different tool call.
 	pending chan readResult
 }
 
@@ -193,6 +194,31 @@ func (a *TTYApprover) Close() error {
 	return nil
 }
 
+// discardStalePending prevents a response to a timed-out/cancelled approval
+// from being applied to a later call. A blocking terminal read cannot be
+// cancelled portably, so the next Request waits for that old read to finish,
+// discards its result, and only then shows the new prompt. The caller's context
+// bounds this fail-closed drain.
+func (a *TTYApprover) discardStalePending(ctx context.Context, call policy.ToolCall) error {
+	if a.pending == nil {
+		return nil
+	}
+
+	if _, err := fmt.Fprintf(a.out,
+		"AgentFence: discarding a late response from a previous timed-out approval before prompting for [%s] %s; press Enter if needed\n",
+		call.ID, call.Tool); err != nil {
+		return fmt.Errorf("approval: write stale-response notice: %w", err)
+	}
+
+	select {
+	case <-a.pending:
+		a.pending = nil
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Request prompts the operator and waits for a y/n response, the context to
 // expire, or input to close.
 //
@@ -212,44 +238,47 @@ func (a *TTYApprover) Request(ctx context.Context, call policy.ToolCall) (bool, 
 		return false, err
 	}
 
+	// A response still pending from an earlier timed-out/cancelled request is
+	// stale by definition. Drain it before displaying this call's prompt;
+	// otherwise a late "yes" for the old call could approve this one.
+	if err := a.discardStalePending(ctx, call); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(a.out, "AgentFence: approval timeout for [%s] %s while clearing stale input — denying\n", call.ID, call.Tool)
+		}
+		return false, err
+	}
+
 	if _, err := fmt.Fprintf(a.out, "AgentFence: approve %s [%s]? (y/N): ", call.Tool, call.ID); err != nil {
 		return false, fmt.Errorf("approval: write prompt: %w", err)
 	}
 
-	// Reuse a single reader and a single in-flight read across calls. If a prior
-	// Request timed out, its read goroutine is still parked on the terminal;
-	// adopt its pending channel rather than spawning a second reader on the same
-	// fd (two readers would race for the operator's keystroke, and a discarded
-	// bufio.Reader could drop already-buffered bytes).
-	if a.pending == nil {
-		if a.reader == nil {
-			a.reader = bufio.NewReader(a.in)
-		}
-		reader := a.reader
-		ch := make(chan readResult, 1)
-		go func() {
-			line, err := reader.ReadString('\n')
-			// EOF with no input means "no response" → deny, not an error.
-			if err != nil && !errors.Is(err, io.EOF) {
-				ch <- readResult{false, err}
-				return
-			}
-			ch <- readResult{isYes(line), nil}
-		}()
-		a.pending = ch
+	if a.reader == nil {
+		a.reader = bufio.NewReader(a.in)
 	}
+	reader := a.reader
+	ch := make(chan readResult, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		// EOF with no input means "no response" → deny, not an error.
+		if err != nil && !errors.Is(err, io.EOF) {
+			ch <- readResult{false, err}
+			return
+		}
+		ch <- readResult{isYes(line), nil}
+	}()
 
 	select {
-	case r := <-a.pending:
-		a.pending = nil
+	case r := <-ch:
 		if r.err != nil {
 			return false, fmt.Errorf("approval: read response: %w", r.err)
 		}
 		return r.approved, nil
 	case <-ctx.Done():
-		// Leave a.pending in place: the read goroutine is still blocked on the
-		// terminal, so the next Request consumes its result. This keeps exactly
-		// one reader on the fd and never loses or steals a late keystroke.
+		// The read goroutine may remain blocked on the terminal after this
+		// Request returns. Preserve its channel solely so the next Request can
+		// drain/discard that old response; it must never become the next call's
+		// approval decision.
+		a.pending = ch
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			fmt.Fprintf(a.out, "\nAgentFence: approval timeout for [%s] %s — denying\n", call.ID, call.Tool)
 		}

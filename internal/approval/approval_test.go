@@ -40,7 +40,7 @@ func TestTTYApproverDecisions(t *testing.T) {
 		{"garbage", "potato\n", false},
 		{"eof no newline", "y", true},
 		{"eof empty", "", false},
-		{"y then extra text", "y extra\n", false}, // strict: only "y"/"yes" alone
+		{"y then extra text", "y extra\n", false},
 	}
 
 	for _, tc := range cases {
@@ -63,8 +63,6 @@ func TestTTYApproverDecisions(t *testing.T) {
 
 func TestTTYApproverTimeout(t *testing.T) {
 	out := &bytes.Buffer{}
-	// blockingReader never returns from Read until we close done,
-	// simulating a user who doesn't type.
 	br := newBlockingReader()
 	a := NewTTYApproverWithIO(br, out)
 
@@ -136,43 +134,69 @@ func TestTTYApproverCloseIsSafeWithoutOpenFile(t *testing.T) {
 	}
 }
 
-// TestTTYApproverTimeoutThenLateResponse verifies that when a Request times out
-// while the operator has not yet typed, the parked read is reused by the next
-// Request rather than being lost or raced by a second reader on the same fd. A
-// keystroke that arrives after the first prompt times out is consumed by the
-// following prompt.
-func TestTTYApproverTimeoutThenLateResponse(t *testing.T) {
+// A response to a timed-out prompt belongs to that old call. It must never be
+// reinterpreted as approval for the next call. The second Request therefore
+// discards the late "y" and, with no fresh response, times out/denies.
+func TestTTYApproverTimeoutDoesNotReuseLateApproval(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
 	out := &bytes.Buffer{}
 	a := NewTTYApproverWithIO(pr, out)
 
-	// First prompt: no input yet, so it times out and denies. Its read
-	// goroutine stays parked on the pipe.
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel1()
 	if approved, err := a.Request(ctx1, policy.ToolCall{ID: "c1", Tool: "shell.exec"}); approved || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("first Request = (%v, %v), want (false, DeadlineExceeded)", approved, err)
 	}
 
-	// The operator now types "y"; the parked reader consumes it, so the second
-	// prompt must observe the approval rather than spawning a competing reader.
+	// This is the late answer to c1. The old parked read consumes it. It must
+	// be discarded, not applied to c2.
 	go func() { _, _ = pw.Write([]byte("y\n")) }()
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel2()
+	approved, err := a.Request(ctx2, policy.ToolCall{ID: "c2", Tool: "filesystem.write"})
+	if approved {
+		t.Fatal("late approval for c1 must not approve c2")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second Request error = %v, want DeadlineExceeded after stale response is discarded", err)
+	}
+	if !strings.Contains(out.String(), "discarding a late response") {
+		t.Fatalf("expected stale-response notice, got %q", out.String())
+	}
+}
+
+// After the stale response has been discarded, a fresh response to the new
+// prompt can still approve the new call.
+func TestTTYApproverCanApproveAfterStaleResponseIsDiscarded(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	out := &bytes.Buffer{}
+	a := NewTTYApproverWithIO(pr, out)
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel1()
+	if approved, err := a.Request(ctx1, policy.ToolCall{ID: "c1", Tool: "shell.exec"}); approved || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first Request = (%v, %v), want (false, DeadlineExceeded)", approved, err)
+	}
+
+	// First y belongs to c1 and must be discarded. Second y is a fresh answer
+	// to c2. bufio.Reader may buffer both lines, which is exactly the condition
+	// this regression test needs to pin safely.
+	go func() { _, _ = pw.Write([]byte("y\ny\n")) }()
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
-	approved, err := a.Request(ctx2, policy.ToolCall{ID: "c2", Tool: "shell.exec"})
+	approved, err := a.Request(ctx2, policy.ToolCall{ID: "c2", Tool: "filesystem.write"})
 	if err != nil {
 		t.Fatalf("second Request error = %v", err)
 	}
 	if !approved {
-		t.Fatal("expected the late keystroke to approve the second prompt")
+		t.Fatal("fresh response for c2 should approve after stale c1 response is discarded")
 	}
 }
 
-// blockingReader implements io.Reader and blocks until done is closed,
-// allowing the test goroutine to unblock it deterministically after the
-// timeout/cancel path is exercised.
 type blockingReader struct {
 	done chan struct{}
 }
