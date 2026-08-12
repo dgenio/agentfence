@@ -1,9 +1,9 @@
-# Dockerfile used by GoReleaser's `dockers` build (issue #104).
+# Dockerfile used by GoReleaser's `dockers_v2` build (issue #104).
 #
 # Unlike the top-level Dockerfile (which builds from source for `docker build`
-# users, issue #149), this one copies the binary GoReleaser already built for
-# the target platform onto a distroless static, non-root base. It is not meant
-# to be built by hand.
+# users, issue #149), this one copies the pre-built binary GoReleaser staged
+# under $TARGETPLATFORM onto a distroless static, non-root base. It is not
+# meant to be built by hand.
 FROM gcr.io/distroless/static-debian12:nonroot
 
 LABEL org.opencontainers.image.title="agentfence" \
@@ -11,7 +11,8 @@ LABEL org.opencontainers.image.title="agentfence" \
       org.opencontainers.image.source="https://github.com/dgenio/agentfence" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-COPY agentfence /usr/local/bin/agentfence
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/agentfence /usr/local/bin/agentfence
 
 USER nonroot:nonroot
 
