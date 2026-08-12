@@ -1071,6 +1071,50 @@ tools:
 	}
 }
 
+func TestExplainCommandPreservesLargeIntegerArgs(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	writeTestFile(t, policyFile, []byte(`version: "0.1"
+defaults:
+  decision: deny
+tools:
+  demo:
+    decision: allow
+    constraints:
+      args:
+        amount:
+          allow:
+            - "9007199254740993"
+`))
+
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runExplain([]string{"--policy", policyFile, "--tool", "demo", "--args", `{"amount":9007199254740993}`, "--output", "json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err != nil {
+		t.Fatalf("runExplain unexpected error: %v", err)
+	}
+
+	var out struct {
+		Tool     string `json:"tool"`
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &out); err != nil {
+		t.Fatalf("JSON output parse error: %v\noutput: %s", err, buf.String())
+	}
+	if out.Decision != "allow" {
+		t.Fatalf("expected decision 'allow' for exact large-integer match, got %q (%s)", out.Decision, out.Reason)
+	}
+}
+
 func TestExplainCommandMissingTool(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
