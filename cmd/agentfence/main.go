@@ -792,7 +792,9 @@ func runExplain(args []string) error {
 	}
 
 	var arguments map[string]interface{}
-	if err := json.Unmarshal([]byte(*argsStr), &arguments); err != nil {
+	dec := json.NewDecoder(strings.NewReader(*argsStr))
+	dec.UseNumber()
+	if err := dec.Decode(&arguments); err != nil {
 		return fmt.Errorf("--args: invalid JSON: %w", err)
 	}
 	if arguments == nil {
