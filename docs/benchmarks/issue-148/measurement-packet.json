@@ -1,0 +1,57 @@
+{
+  "schema": "agentfence.benchmark-measurement-packet/v1",
+  "issue": "https://github.com/dgenio/agentfence/issues/148",
+  "benchmark": "BenchmarkEvaluateLargeTrace",
+  "benchmark_source_commit": "2698daecf61d9b3843d0843a612bd2aa6287973a",
+  "command": "go test ./internal/engine -run '^$' -bench '^BenchmarkEvaluateLargeTrace$' -benchmem -benchtime=50000x -count=5",
+  "operation": "one Engine.Evaluate call",
+  "artifacts": {
+    "baseline": {
+      "path": "baseline-windows-amd64-go1.25.11.txt",
+      "sha256": "266d696e18ac1d62ba463db641b569922272c7bb6a24f5f25da252c1b5f6e5d5"
+    },
+    "environment": {
+      "path": "environment-windows-amd64-go1.25.11.json",
+      "sha256": "a1709509ec17f0952c7cd260834e662fbebfacfc026bc847edcc755620e94124"
+    }
+  },
+  "baseline": {
+    "sample_count_per_tier": 5,
+    "iterations_per_sample": 50000,
+    "tiers": [
+      {
+        "name": "N=10000/M=16",
+        "trace_calls": 10000,
+        "groups": 16,
+        "wildcards": 16,
+        "ns_per_op_samples": [124456, 125177, 129650, 135499, 132745],
+        "ns_per_op_median": 129650,
+        "ns_per_op_observed_range": [124456, 135499],
+        "bytes_per_op_observed_range": [211690, 211696],
+        "allocs_per_op_samples": [2336, 2336, 2336, 2336, 2336]
+      },
+      {
+        "name": "N=50000/M=64",
+        "trace_calls": 50000,
+        "groups": 64,
+        "wildcards": 64,
+        "ns_per_op_samples": [417139, 423296, 420250, 418562, 417444],
+        "ns_per_op_median": 418562,
+        "ns_per_op_observed_range": [417139, 423296],
+        "bytes_per_op_observed_range": [840450, 840453],
+        "allocs_per_op_samples": [9222, 9222, 9222, 9222, 9222]
+      }
+    ]
+  },
+  "comparison": {
+    "status": "baseline_only",
+    "candidate_source_commit": null,
+    "candidate_artifact": null,
+    "delta": null
+  },
+  "claims": {
+    "observed": "The packet records five per-call samples for each fixed tier on the captured host and toolchain.",
+    "does_not_prove": "The samples do not isolate lookupRule, establish cross-platform performance, demonstrate a speedup, or justify a CI regression threshold.",
+    "ci_threshold": null
+  }
+}
