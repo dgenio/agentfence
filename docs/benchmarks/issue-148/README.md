@@ -4,6 +4,9 @@ This packet records a reproducible baseline for
 `BenchmarkEvaluateLargeTrace`. It is measurement evidence for issue #148, not a
 performance claim or a regression threshold.
 
+This baseline is infrastructure for a later before/after comparison. It does
+not complete issue #148's candidate-measurement acceptance criterion.
+
 ## Workload
 
 The benchmark generates every policy and tool call in memory. No trace fixture
@@ -28,12 +31,10 @@ isolate `lookupRule`.
 
 Checkout benchmark source commit
 `2698daecf61d9b3843d0843a612bd2aa6287973a`, confirm the working tree is clean,
-and run:
+and run this one-line command in PowerShell, Bash, or another shell:
 
 ```bash
-go test ./internal/engine -run '^$' \
-  -bench '^BenchmarkEvaluateLargeTrace$' \
-  -benchmem -benchtime=50000x -count=5
+go test ./internal/engine -run '^$' -bench '^BenchmarkEvaluateLargeTrace$' -benchmem -benchtime=50000x -count=5
 ```
 
 The committed raw output is

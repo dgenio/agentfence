@@ -97,6 +97,30 @@ func TestBenchmarkCorpusEvaluationDistribution(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
+	lookupCases := []struct {
+		name         string
+		callIndex    int
+		wantFound    bool
+		wantKey      string
+		wantDecision policy.Decision
+	}{
+		{name: "group", callIndex: 0, wantFound: true, wantKey: "group-000", wantDecision: policy.DecisionAllow},
+		{name: "wildcard", callIndex: 1, wantFound: true, wantKey: "fallback-000-*", wantDecision: policy.DecisionAsk},
+		{name: "exact", callIndex: 2, wantFound: true, wantKey: "exact.allow", wantDecision: policy.DecisionAllow},
+		{name: "default", callIndex: 3, wantFound: false, wantKey: ""},
+	}
+	for _, tc := range lookupCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule, found, key := eng.lookupRule(corpus.calls[tc.callIndex].Tool)
+			if found != tc.wantFound || key != tc.wantKey {
+				t.Fatalf("lookupRule() = found %v, key %q; want found %v, key %q", found, key, tc.wantFound, tc.wantKey)
+			}
+			if found && rule.Decision != tc.wantDecision {
+				t.Errorf("lookupRule() decision = %q, want %q", rule.Decision, tc.wantDecision)
+			}
+		})
+	}
+
 	counts := map[policy.Decision]int{}
 	for _, call := range corpus.calls {
 		result, _ := eng.Evaluate(call)
