@@ -8,7 +8,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/dgenio/agentfence/main/scripts/install.sh | sh
 #
 # Pin a version or change the install dir with environment variables:
-#   AGENTFENCE_VERSION=v0.8.0 AGENTFENCE_INSTALL_DIR=/usr/local/bin sh install.sh
+#   AGENTFENCE_VERSION=v0.9.0 AGENTFENCE_INSTALL_DIR=/usr/local/bin sh install.sh
 #
 # Honors no telemetry: the script only contacts the GitHub releases API/CDN.
 set -eu

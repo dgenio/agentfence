@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-14
+
+### Added
+- **Strict MCP tool identity lock.** The new `identitylock` package introduces
+  a versioned, canonicalized tool-identity descriptor that binds an MCP server
+  upstream reference to an exact set of permitted tools. A lock can be
+  serialized, verified against a descriptor, and used by the proxy to reject
+  calls to tools that are not explicitly listed for a given upstream. This is
+  the primitive for the "tool identity lock" deployment pattern documented in
+  [`docs/threat-model.md`](docs/threat-model.md). (#221)
+- **Deterministic exact JSON canonicalization.** The new `exactjson` package
+  provides a stable, byte-for-byte canonical JSON representation that normalizes
+  key order, whitespace, number formatting, and Unicode escapes. This is used
+  by the identity lock and is available as a reusable primitive for any
+  signature or comparison path that needs byte-exact JSON equality. (#246)
+
+### Changed
+- **Draft vulnerability research programme.** A new document
+  ([`docs/draft-vulnerability-research-programme.md`](docs/draft-vulnerability-research-programme.md))
+  outlines the scope, rules of engagement, and reporting process for external
+  security research against AgentFence. (#252)
+
 ## [0.8.0] - 2026-08-12
 
 ### Added
@@ -258,7 +280,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lessonweaver. The export is read-only over the native log, so the
   hash-chained audit remains verifiable. See [`docs/interop.md`](docs/interop.md). (#77)
 
-[Unreleased]: https://github.com/dgenio/agentfence/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/dgenio/agentfence/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/dgenio/agentfence/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/dgenio/agentfence/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dgenio/agentfence/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/dgenio/agentfence/compare/v0.5.0...v0.6.0
