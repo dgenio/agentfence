@@ -72,8 +72,14 @@ func TestCanonicalizePreservesTypesAndArrayOrder(t *testing.T) {
 		t.Fatalf("canonical value = %s, want %s", got, want)
 	}
 
-	ordered, _ := Canonicalize([]byte(`[1,2,3]`))
-	reversed, _ := Canonicalize([]byte(`[3,2,1]`))
+	ordered, err := Canonicalize([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatalf("Canonicalize([1,2,3]) error = %v", err)
+	}
+	reversed, err := Canonicalize([]byte(`[3,2,1]`))
+	if err != nil {
+		t.Fatalf("Canonicalize([3,2,1]) error = %v", err)
+	}
 	if string(ordered) == string(reversed) {
 		t.Fatal("array order must remain significant")
 	}

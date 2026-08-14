@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-12
+
 ### Added
 - **Onboarding & adoption documentation and runnable examples.** A coherent set
   of docs and hermetic example scripts aimed at getting a new adopter from
@@ -115,6 +117,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`C:foo`), not only the drive-absolute (`C:\…`) and bare-drive (`C:`) forms.
   On a non-Windows host such a path was previously treated as an ordinary
   relative name and allowed through. (#175, #170)
+
+### Fixed
+- **Preserve exact numeric tool-call arguments.** `check`, `proxy`, and
+  `proxy-http` now preserve the exact textual representation of numeric
+  arguments instead of rounding through `json.Number` → `float64`, preventing
+  precision loss on large integers and scientific-notation values. (#238)
+- **Never reuse late approval for a later call.** The interactive approver
+  now rejects an approval that arrives after the next tool call has already
+  started, closing a confused-deputy window where an approved response could
+  have been applied to the wrong request. (#229)
 
 ## [0.7.0] - 2026-06-17
 
@@ -246,7 +258,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lessonweaver. The export is read-only over the native log, so the
   hash-chained audit remains verifiable. See [`docs/interop.md`](docs/interop.md). (#77)
 
-[Unreleased]: https://github.com/dgenio/agentfence/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/dgenio/agentfence/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/dgenio/agentfence/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dgenio/agentfence/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/dgenio/agentfence/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/dgenio/agentfence/compare/v0.4.0...v0.5.0

@@ -32,11 +32,7 @@ func (c *ToolCall) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("tool call: %w", err)
 	}
 
-	*c = ToolCall{
-		ID:        wire.ID,
-		Tool:      wire.Tool,
-		Arguments: wire.Arguments,
-	}
+	*c = ToolCall(wire)
 	return nil
 }
 

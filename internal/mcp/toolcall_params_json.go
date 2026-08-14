@@ -27,7 +27,7 @@ func (p *ToolCallParams) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("tools/call params: %w", err)
 	}
 
-	*p = ToolCallParams{Name: wire.Name, Arguments: wire.Arguments}
+	*p = ToolCallParams(wire)
 	return nil
 }
 

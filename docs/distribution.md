@@ -123,7 +123,7 @@ curl -fsSL https://raw.githubusercontent.com/dgenio/agentfence/main/scripts/inst
 
 [`scripts/install.sh`](../scripts/install.sh) detects OS/arch, downloads the
 matching archive, verifies it against `checksums.txt`, and **fails closed on a
-mismatch**. Override with `AGENTFENCE_VERSION` (e.g. `v0.7.0`) and
+mismatch**. Override with `AGENTFENCE_VERSION` (e.g. `v0.8.0`) and
 `AGENTFENCE_INSTALL_DIR`.
 
 ### Homebrew (#105)

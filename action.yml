@@ -1,7 +1,6 @@
 name: AgentFence policy check
 description: >-
-  Gate recorded MCP / tool calls against an AgentFence policy in CI. Fails the
-  job when any call matches a denied (or asked) decision.
+  Gate MCP tool calls against an AgentFence policy in CI. Fails on denied or ask decisions.
 branding:
   icon: shield
   color: blue
