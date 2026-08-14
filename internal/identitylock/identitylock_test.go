@@ -158,6 +158,16 @@ func TestValidateRejectsMissingOrMalformedEvidence(t *testing.T) {
 			want: "tools must not be empty",
 		},
 		{
+			name: "whitespace upstream ref",
+			lock: Lock{SchemaVersion: SchemaVersion, Canonicalization: Canonicalization, Upstreams: map[string]Upstream{" u": {Transport: "stdio", UpstreamConfigSHA256: digestA, Tools: map[string]Tool{"demo": {DescriptorSHA256: digestB}}}}},
+			want: "must not contain leading or trailing whitespace",
+		},
+		{
+			name: "whitespace tool name",
+			lock: Lock{SchemaVersion: SchemaVersion, Canonicalization: Canonicalization, Upstreams: map[string]Upstream{"u": {Transport: "stdio", UpstreamConfigSHA256: digestA, Tools: map[string]Tool{" demo": {DescriptorSHA256: digestB}}}}},
+			want: "must not contain leading or trailing whitespace",
+		},
+		{
 			name: "bad descriptor digest",
 			lock: Lock{SchemaVersion: SchemaVersion, Canonicalization: Canonicalization, Upstreams: map[string]Upstream{"u": {Transport: "stdio", UpstreamConfigSHA256: digestA, Tools: map[string]Tool{"demo": {DescriptorSHA256: "sha256:1234"}}}}},
 			want: "descriptor_sha256",

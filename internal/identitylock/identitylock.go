@@ -89,8 +89,8 @@ func (l Lock) Validate() error {
 	}
 
 	for _, upstreamRef := range sortedKeys(l.Upstreams) {
-		if strings.TrimSpace(upstreamRef) == "" {
-			return fmt.Errorf("identity lock: upstream reference must not be empty")
+		if strings.TrimSpace(upstreamRef) != upstreamRef {
+			return fmt.Errorf("identity lock: upstream reference %q must not contain leading or trailing whitespace", upstreamRef)
 		}
 		upstream := l.Upstreams[upstreamRef]
 		switch upstream.Transport {
@@ -105,8 +105,8 @@ func (l Lock) Validate() error {
 			return fmt.Errorf("identity lock: upstream %q: tools must not be empty", upstreamRef)
 		}
 		for _, toolName := range sortedKeys(upstream.Tools) {
-			if strings.TrimSpace(toolName) == "" {
-				return fmt.Errorf("identity lock: upstream %q: tool name must not be empty", upstreamRef)
+			if strings.TrimSpace(toolName) != toolName {
+				return fmt.Errorf("identity lock: upstream %q: tool name %q must not contain leading or trailing whitespace", upstreamRef, toolName)
 			}
 			tool := upstream.Tools[toolName]
 			if !sha256DigestPattern.MatchString(tool.DescriptorSHA256) {
