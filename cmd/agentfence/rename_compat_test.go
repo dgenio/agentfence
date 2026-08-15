@@ -5,6 +5,10 @@ import (
 	"testing"
 )
 
+// These cases pin the bounded dual-read/single-write migration contract from
+// #242/#243: the new VeriCordon variable is preferred, the historical
+// AgentFence variable remains readable during migration, and ambiguity fails
+// closed instead of silently choosing one credential.
 func lookupFrom(values map[string]string) envLookup {
 	return func(key string) (string, bool) {
 		value, ok := values[key]
