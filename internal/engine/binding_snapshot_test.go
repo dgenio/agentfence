@@ -82,7 +82,7 @@ tools:
 	}
 
 	// Mutating the caller's original policy after Engine construction currently
-	// mutates e.policy too because Policy contains maps. EvaluateBound must take
+	// mutates eng.policy too because Policy contains maps. EvaluateBound must take
 	// one deep policy snapshot and use that same snapshot for digest + decision.
 	p.Tools["demo.tool"] = policy.Rule{Decision: policy.DecisionDeny}
 
@@ -90,7 +90,7 @@ tools:
 	if result.Decision != policy.DecisionDeny {
 		t.Fatalf("decision = %q, want deny from captured effective policy", result.Decision)
 	}
-	wantPolicy, err := policy.EffectivePolicyDigest(e.policy)
+	wantPolicy, err := policy.EffectivePolicyDigest(eng.policy)
 	if err != nil {
 		t.Fatal(err)
 	}
