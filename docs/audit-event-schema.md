@@ -30,7 +30,7 @@ validation when authoring fixtures.
 
 | Field | Type | Always present | Description |
 |-------|------|----------------|-------------|
-| `schema_version` | string | yes | Event schema version. Current writers emit `"4"`. |
+| `schema_version` | string | yes | Event schema version. Current writers emit `"5"`. |
 | `session_id` | string | yes | Per-run session identifier (UUIDv4 unless overridden). |
 | `seq` | integer | yes | Monotonic 1-based sequence within the session. |
 | `timestamp` | string | yes | Event time, RFC 3339 / RFC 3339 Nano (UTC). |
@@ -39,12 +39,33 @@ validation when authoring fixtures.
 | `decision` | string | yes | One of `allow`, `deny`, `ask`. |
 | `reason` | string | yes | Human-readable explanation. |
 | `reason_code` | string | no | Stable, machine-readable classification of the decision (e.g. `path_denied`, `url_bare_ip`, `taint_escalated`, `approval_timeout`). Mirrors `reason` for reliable grouping; absent on pre-`"4"` events. See [Reason codes](#reason-codes). |
+| `action_digest` | string | no | `tool-action-json-v1:sha256:<hex>` identity for the exact tool name + exact arguments. Added in schema `"5"`; optional until the evaluator can produce it fail-closed. |
+| `policy_digest` | string | no | `resolved-policy-json-v1:sha256:<hex>` identity for the complete resolved effective policy. Added in schema `"5"`; optional until the evaluator can produce it fail-closed. |
 | `arguments` | object | no | Redacted tool-call arguments (only when argument logging is on). |
 | `memory_write` | object | no | Safe summary of a durable memory-write call (never the raw payload). |
 | `mode` | string | no | `dry_run` for simulated events; absent for enforced events. |
 | `prev_hash` | string | no | Hex SHA-256 of the previous event in a tamper-evident chain; empty on a chain root. |
 | `hash` | string | no | Hex SHA-256 of this event's canonical encoding; present only in tamper-evident mode. |
 | `signature` | string | no | Base64 Ed25519 signature over the event's canonical digest; present only when signing is enabled. |
+
+### Exact decision binding fields
+
+Schema `"5"` introduces two brand-neutral content identities that can travel
+inside the event and therefore participate in the existing hash-chain/signature
+coverage:
+
+- `action_digest` identifies the exact tool name and exact arguments via
+  `policy.ToolActionDigest` (`tool-action-json-v1`). Request/correlation IDs are
+  not part of that digest.
+- `policy_digest` identifies the complete resolved effective policy via
+  `policy.EffectivePolicyDigest` (`resolved-policy-json-v1`). Imports must be
+  resolved before that digest can be produced.
+
+The fields are intentionally optional in this schema slice. Merely adding an
+optional field must not create a false claim that every evaluation is already
+bound. The evaluator integration is a separate fail-closed step: once writers
+can guarantee both identities for ordinary evaluated calls, that path can make
+them mandatory for those events without weakening parse-error compatibility.
 
 ### `memory_write` object
 
@@ -95,6 +116,11 @@ the encoding is deterministic for a given logical event.
   Because it is computed with `hash` cleared, signing and chaining compose: a
   signed, chained event verifies under both `audit verify` and
   `audit verify --pubkey`.
+
+Because `action_digest` and `policy_digest` are ordinary event fields, they are
+inside those canonical bytes whenever present. A chained/signed schema-5 event
+therefore protects the recorded binding identities against after-the-fact
+substitution to the same extent as its other event fields.
 
 See [`threat-model.md`](threat-model.md#audit-log-integrity) for how these
 combine to detect tampering, deletion, and writer impersonation.
