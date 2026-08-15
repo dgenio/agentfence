@@ -25,7 +25,11 @@ func (r *Redactor) redactConfiguredValue(value interface{}) interface{} {
 	case string:
 		out := v
 		for _, pattern := range r.patterns {
-			out = pattern.regex.ReplaceAllString(out, "[REDACTED:"+pattern.name+"]")
+			marker := "[REDACTED:" + pattern.name + "]"
+			// Use a callback so '$1'-style text in an operator-chosen pattern
+			// name is literal marker text, never a regexp capture expansion that
+			// could reinsert matched secret content into the approval display.
+			out = pattern.regex.ReplaceAllStringFunc(out, func(string) string { return marker })
 		}
 		return out
 	case map[string]interface{}:
