@@ -7,42 +7,69 @@ import (
 	"github.com/dgenio/agentfence/internal/policy"
 )
 
-// EvaluateBound evaluates a tool call only after exact action and effective-
-// policy identities have been computed successfully.
+// EvaluateBound evaluates a deep snapshot of a tool call only after exact
+// action and effective-policy identities have been computed successfully.
 //
-// Binding failures deny before ordinary policy evaluation so an action cannot
-// inherit authority without the evidence needed to reproduce that decision.
+// Snapshotting prevents the digest and the evaluator from observing different
+// map-backed inputs if a caller mutates its original ToolCall after handing it
+// to the engine. Binding failures deny before ordinary policy evaluation so an
+// action cannot inherit authority without the evidence needed to reproduce that
+// decision.
+//
 // The existing Evaluate method is intentionally unchanged in this slice; proxy
 // and CLI call sites migrate to this fail-closed path separately.
 func (e *Engine) EvaluateBound(call policy.ToolCall) (policy.EvaluationResult, audit.Event) {
+	snapshot, err := policy.SnapshotToolCall(call)
+	if err != nil {
+		return e.bindingFailure(call, policy.ReasonCodeActionBindingFailed, "exact action binding failed", "", err)
+	}
+	return e.evaluateBoundSnapshot(snapshot)
+}
+
+func (e *Engine) evaluateBoundSnapshot(call policy.ToolCall) (policy.EvaluationResult, audit.Event) {
 	actionDigest, err := policy.ToolActionDigest(call)
 	if err != nil {
 		return e.bindingFailure(call, policy.ReasonCodeActionBindingFailed, "exact action binding failed", "", err)
 	}
 
-	policyDigest, err := policy.EffectivePolicyDigest(e.policy)
+	policySnapshot, err := policy.SnapshotResolvedPolicy(e.policy)
+	if err != nil {
+		return e.bindingFailure(call, policy.ReasonCodePolicyBindingFailed, "effective policy binding failed", actionDigest, err)
+	}
+	policyDigest, err := policy.EffectivePolicyDigest(policySnapshot)
 	if err != nil {
 		return e.bindingFailure(call, policy.ReasonCodePolicyBindingFailed, "effective policy binding failed", actionDigest, err)
 	}
 
-	result, event := e.Evaluate(call)
+	// Evaluate through an engine built from the same deep policy snapshot whose
+	// digest is emitted below. The decision therefore cannot observe a later
+	// mutation of e.policy while claiming the earlier policy identity.
+	snapshotEngine, err := New(policySnapshot)
+	if err != nil {
+		return e.bindingFailure(call, policy.ReasonCodePolicyBindingFailed, "effective policy binding failed", actionDigest, err)
+	}
+	result, event := snapshotEngine.Evaluate(call)
 	event.ActionDigest = actionDigest
 	event.PolicyDigest = policyDigest
 	return result, event
 }
 
 // EvaluateBound is the session-aware counterpart to Engine.EvaluateBound. It
-// preserves exact decision bindings while applying the same taint escalation as
-// Session.Evaluate after the bound base decision is available.
+// snapshots once, preserves exact decision bindings, and applies the same taint
+// escalation as Session.Evaluate against that exact action snapshot.
 func (s *Session) EvaluateBound(call policy.ToolCall) (policy.EvaluationResult, audit.Event) {
-	res, event := s.eng.EvaluateBound(call)
+	snapshot, err := policy.SnapshotToolCall(call)
+	if err != nil {
+		return s.eng.bindingFailure(call, policy.ReasonCodeActionBindingFailed, "exact action binding failed", "", err)
+	}
+	res, event := s.eng.evaluateBoundSnapshot(snapshot)
 	if res.ReasonCode == policy.ReasonCodeActionBindingFailed || res.ReasonCode == policy.ReasonCodePolicyBindingFailed {
 		return res, event
 	}
 	if s.tracker == nil {
 		return res, event
 	}
-	if hit, ok := s.tracker.Check(call.Arguments); ok {
+	if hit, ok := s.tracker.Check(snapshot.Arguments); ok {
 		res, event = applyTaintEscalation(res, event, hit, s.mode)
 	}
 	return res, event
