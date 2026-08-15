@@ -1508,7 +1508,7 @@ func runProxyHTTP(args []string) error {
 	listen := fs.String("listen", "127.0.0.1:8787", "Local address to listen on")
 	onBatch := fs.String("on-batch", "reject", "JSON-RPC batch (array) body handling: reject (fail-closed default) or evaluate (gate every member, forward only if all allowed)")
 	onUnparsed := fs.String("on-unparsed", "forward", "Handling for POST bodies that are not valid JSON-RPC: forward (default) or reject")
-	authToken := fs.String("auth-token", "", "Require this bearer token on every request (Authorization: Bearer <token>). Falls back to $AGENTFENCE_PROXY_AUTH_TOKEN; empty disables auth")
+	authToken := fs.String("auth-token", "", "Require this bearer token on every request (Authorization: Bearer <token>). Falls back to $VERICORDON_PROXY_AUTH_TOKEN, then legacy $AGENTFENCE_PROXY_AUTH_TOKEN during the bounded rename transition; empty disables auth")
 	auditLogPath := fs.String("audit-log", "", "Optional path to write audit JSONL")
 	tamperEvident := fs.Bool("tamper-evident", false, "Write a hash-chained audit log (use with --audit-log; verify with 'agentfence audit verify')")
 	passthrough := fs.Bool("passthrough", false, "Forward every request without policy evaluation (useful for validating the relay)")
@@ -1553,15 +1553,19 @@ func runProxyHTTP(args []string) error {
 		return err
 	}
 
-	authTok := *authToken
-	if authTok == "" {
-		authTok = os.Getenv("AGENTFENCE_PROXY_AUTH_TOKEN")
+	authResolution, authErr := resolveProxyAuthToken(*authToken, os.LookupEnv)
+	if authErr != nil {
+		return authErr
+	}
+	authTok := authResolution.Token
+	if authResolution.Warning != "" {
+		fmt.Fprintf(os.Stderr, "agentfence: warning: %s\n", authResolution.Warning)
 	}
 	// Bind-address guardrail: an off-loopback listener with no authentication
 	// exposes the gate to other clients. Warn rather than fail so deliberate
 	// fronting (e.g. behind a TLS terminator) still works.
 	if authTok == "" && !isLoopbackListen(*listen) {
-		fmt.Fprintf(os.Stderr, "agentfence: warning: --listen %s is not loopback and no --auth-token/$AGENTFENCE_PROXY_AUTH_TOKEN is set; the policy proxy is reachable without authentication\n", *listen)
+		fmt.Fprintf(os.Stderr, "agentfence: warning: --listen %s is not loopback and no --auth-token/$VERICORDON_PROXY_AUTH_TOKEN (or legacy $AGENTFENCE_PROXY_AUTH_TOKEN) is set; the policy proxy is reachable without authentication\n", *listen)
 	}
 
 	var eng *engine.Engine
