@@ -1,0 +1,45 @@
+name: PR254 remove unrelated main.go drift
+
+on:
+  push:
+    branches:
+      - feat/vericordon-env-compat-242
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/vericordon-env-compat-242
+          fetch-depth: 0
+
+      - name: Restore exact-number JSON decoding outside #242 scope
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("cmd/agentfence/main.go")
+          text = path.read_text(encoding="utf-8")
+          old = '''\tvar arguments map[string]interface{}\n\tif err := json.Unmarshal([]byte(*argsStr), &arguments); err != nil {\n\t\treturn fmt.Errorf("--args: invalid JSON: %w", err)\n\t}\n'''
+          new = '''\tvar arguments map[string]interface{}\n\tdec := json.NewDecoder(strings.NewReader(*argsStr))\n\tdec.UseNumber()\n\tif err := dec.Decode(&arguments); err != nil {\n\t\treturn fmt.Errorf("--args: invalid JSON: %w", err)\n\t}\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected unrelated drift block exactly once, found {text.count(old)}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+          gofmt -w cmd/agentfence/main.go
+          go test ./cmd/agentfence -run TestExplainCommandPreservesLargeIntegerArgs -count=1
+          git diff --check
+
+      - name: Commit cleanup and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cmd/agentfence/main.go
+          git rm .github/workflows/pr254-remove-unrelated-drift.yml
+          git commit -m "fix(rename): drop unrelated exact-number decoding drift"
+          git push origin HEAD:feat/vericordon-env-compat-242
