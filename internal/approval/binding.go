@@ -56,15 +56,22 @@ func (b Binding) Digest() (string, error) {
 	return BindingDigestAlgorithm + ":sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+type permitState struct {
+	consumed atomic.Bool
+}
+
 // OneShotPermit is an in-process, single-use authorization to execute one
-// exact Binding before ExpiresAt. It is intentionally not a reusable token or
+// exact Binding before expiry. It is intentionally not a reusable token or
 // identity credential; it exists so the synchronous approval path can enforce
 // replay/substitution/expiry invariants explicitly.
+//
+// Its security-relevant fields are private and copies share the same state, so
+// copying a permit value cannot reset consumption or rewrite its binding.
 type OneShotPermit struct {
-	BindingDigest string
-	IssuedAt      time.Time
-	ExpiresAt     time.Time
-	consumed      atomic.Bool
+	bindingDigest string
+	issuedAt      time.Time
+	expiresAt     time.Time
+	state         *permitState
 }
 
 // NewOneShotPermit creates a permit for binding with an explicit finite
@@ -84,36 +91,62 @@ func NewOneShotPermit(binding Binding, issuedAt, expiresAt time.Time) (*OneShotP
 		return nil, fmt.Errorf("approval permit: expires_at must be after issued_at")
 	}
 	return &OneShotPermit{
-		BindingDigest: digest,
-		IssuedAt:      issuedAt,
-		ExpiresAt:     expiresAt,
+		bindingDigest: digest,
+		issuedAt:      issuedAt,
+		expiresAt:     expiresAt,
+		state:         &permitState{},
 	}, nil
+}
+
+// BindingDigest returns the immutable approval-binding identity this permit was
+// issued for.
+func (p *OneShotPermit) BindingDigest() string {
+	if p == nil {
+		return ""
+	}
+	return p.bindingDigest
+}
+
+// IssuedAt returns the permit's issuance time.
+func (p *OneShotPermit) IssuedAt() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return p.issuedAt
+}
+
+// ExpiresAt returns the permit's exclusive expiry boundary.
+func (p *OneShotPermit) ExpiresAt() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return p.expiresAt
 }
 
 // Consume authorizes exactly one execution of binding before the permit
 // expires. Mismatch, expiry, and replay all fail closed. Concurrent consumers
-// cannot both succeed.
+// and copied permit values cannot both succeed.
 func (p *OneShotPermit) Consume(binding Binding, now time.Time) error {
-	if p == nil {
-		return fmt.Errorf("approval permit: nil permit")
+	if p == nil || p.state == nil {
+		return fmt.Errorf("approval permit: invalid permit")
 	}
 	digest, err := binding.Digest()
 	if err != nil {
 		return err
 	}
-	if digest != p.BindingDigest {
+	if digest != p.bindingDigest {
 		return fmt.Errorf("approval permit: binding mismatch")
 	}
 	if now.IsZero() {
 		return fmt.Errorf("approval permit: current time is required")
 	}
-	if now.Before(p.IssuedAt) {
+	if now.Before(p.issuedAt) {
 		return fmt.Errorf("approval permit: current time precedes issuance")
 	}
-	if !now.Before(p.ExpiresAt) {
+	if !now.Before(p.expiresAt) {
 		return fmt.Errorf("approval permit: expired")
 	}
-	if !p.consumed.CompareAndSwap(false, true) {
+	if !p.state.consumed.CompareAndSwap(false, true) {
 		return fmt.Errorf("approval permit: already consumed")
 	}
 	return nil
@@ -121,7 +154,7 @@ func (p *OneShotPermit) Consume(binding Binding, now time.Time) error {
 
 // Consumed reports whether this permit has already authorized an execution.
 func (p *OneShotPermit) Consumed() bool {
-	return p != nil && p.consumed.Load()
+	return p != nil && p.state != nil && p.state.consumed.Load()
 }
 
 func validateDigest(value, algorithm string) error {
