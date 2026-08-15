@@ -5,12 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/dgenio/agentfence/internal/exactjson"
 )
 
 // UnmarshalJSON preserves JSON number tokens inside Arguments instead of
 // converting them to float64. MCP tool arguments are authorization input; a
 // large integer must not be rounded before AgentFence evaluates or records it.
+//
+// The exact-json preflight also rejects ambiguous duplicate keys and invalid
+// raw UTF-8 before encoding/json can collapse or replace them. Authorization
+// must operate on a request representation with one unambiguous meaning.
 func (p *ToolCallParams) UnmarshalJSON(data []byte) error {
+	if _, err := exactjson.Canonicalize(data); err != nil {
+		return fmt.Errorf("tools/call params: ambiguous or invalid JSON: %w", err)
+	}
+
 	type wireToolCallParams struct {
 		Name      string                 `json:"name"`
 		Arguments map[string]interface{} `json:"arguments,omitempty"`

@@ -66,3 +66,35 @@ func TestParseToolCallRejectsMultipleJSONValues(t *testing.T) {
 		t.Fatal("ParseToolCall() accepted multiple JSON values")
 	}
 }
+
+func TestParseToolCallRejectsDuplicateKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "top level",
+			data: `{"id":"c1","tool":"safe","tool":"dangerous","arguments":{}}`,
+		},
+		{
+			name: "arguments",
+			data: `{"id":"c1","tool":"demo","arguments":{"path":"safe.txt","path":".env"}}`,
+		},
+		{
+			name: "nested arguments",
+			data: `{"id":"c1","tool":"demo","arguments":{"options":{"mode":"read","mode":"write"}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseToolCall([]byte(tt.data))
+			if err == nil {
+				t.Fatal("ParseToolCall() accepted duplicate JSON keys")
+			}
+			if !strings.Contains(err.Error(), "duplicate object key") {
+				t.Fatalf("ParseToolCall() error = %v, want duplicate-key rejection", err)
+			}
+		})
+	}
+}
