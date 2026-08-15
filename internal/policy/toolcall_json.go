@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/dgenio/agentfence/internal/exactjson"
 )
 
 // UnmarshalJSON preserves the lexical value of JSON numbers inside Arguments.
@@ -14,7 +16,15 @@ import (
 // are part of AgentFence's authorization input, so distinct on-wire JSON
 // values must stay distinct before policy evaluation, audit, and future action
 // fingerprinting.
+//
+// The exact-json preflight also rejects ambiguous duplicate keys and invalid
+// raw UTF-8 before encoding/json can collapse or replace them. Authorization
+// must operate on a request representation with one unambiguous meaning.
 func (c *ToolCall) UnmarshalJSON(data []byte) error {
+	if _, err := exactjson.Canonicalize(data); err != nil {
+		return fmt.Errorf("tool call: ambiguous or invalid JSON: %w", err)
+	}
+
 	type wireToolCall struct {
 		ID        string                 `json:"id"`
 		Tool      string                 `json:"tool"`
