@@ -21,8 +21,8 @@ func TestBoundRequestPromptEscapesControlCharactersInLabels(t *testing.T) {
 	if strings.Contains(prompt, callID) || strings.Contains(prompt, tool) {
 		t.Fatal("prompt included raw control-character-bearing label")
 	}
-	if strings.Count(prompt, "approve? (y/N): ") != 1 {
-		t.Fatalf("prompt contains spoofable approval markers: %q", prompt)
+	if strings.Count(prompt, "\napprove? (y/N): ") != 1 {
+		t.Fatalf("prompt contains spoofable approval lines: %q", prompt)
 	}
 	if !strings.Contains(prompt, `\nFAKE: approved\u001b[31m`) {
 		t.Fatalf("call id was not JSON escaped in prompt: %q", prompt)
