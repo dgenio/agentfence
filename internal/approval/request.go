@@ -45,6 +45,12 @@ func NewBoundRequest(call policy.ToolCall, actionDigest, policyDigest string, re
 	if err != nil {
 		return BoundRequest{}, fmt.Errorf("approval request: snapshot call: %w", err)
 	}
+	if snapshot.ID == "" {
+		return BoundRequest{}, fmt.Errorf("approval request: call id is required")
+	}
+	if snapshot.Tool == "" {
+		return BoundRequest{}, fmt.Errorf("approval request: tool name is required")
+	}
 	computedAction, err := policy.ToolActionDigest(snapshot)
 	if err != nil {
 		return BoundRequest{}, fmt.Errorf("approval request: action digest: %w", err)
