@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/dgenio/agentfence/internal/policy"
 )
 
 // BoundApprover decides whether an immutable exact action/policy request may
@@ -29,7 +31,7 @@ func (DenyAllApprover) RequestBound(_ context.Context, request BoundRequest) (bo
 // only sees an exact validated request.
 func ResolveBound(ctx context.Context, approver BoundApprover, request BoundRequest, timeout time.Duration, noInteractive bool) (Outcome, error) {
 	if err := request.Validate(); err != nil {
-		return Outcome{Reason: ReasonApprovalIOError, Code: policyReasonApprovalIOError()}, err
+		return Outcome{Reason: ReasonApprovalIOError, Code: policy.ReasonCodeApprovalIOError}, err
 	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -40,17 +42,17 @@ func ResolveBound(ctx context.Context, approver BoundApprover, request BoundRequ
 	approved, err := approver.RequestBound(ctx, request)
 	switch {
 	case approved:
-		return Outcome{Approved: true, Reason: ReasonApprovedInteractively, Code: policyReasonApprovalApproved()}, err
+		return Outcome{Approved: true, Reason: ReasonApprovedInteractively, Code: policy.ReasonCodeApprovalApproved}, err
 	case errors.Is(err, context.DeadlineExceeded):
-		return Outcome{Reason: ReasonApprovalTimeout, Code: policyReasonApprovalTimeout()}, err
+		return Outcome{Reason: ReasonApprovalTimeout, Code: policy.ReasonCodeApprovalTimeout}, err
 	case errors.Is(err, context.Canceled):
-		return Outcome{Reason: ReasonApprovalCancelled, Code: policyReasonApprovalCancelled()}, err
+		return Outcome{Reason: ReasonApprovalCancelled, Code: policy.ReasonCodeApprovalCancelled}, err
 	case err != nil:
-		return Outcome{Reason: ReasonApprovalIOError, Code: policyReasonApprovalIOError()}, err
+		return Outcome{Reason: ReasonApprovalIOError, Code: policy.ReasonCodeApprovalIOError}, err
 	case noInteractive:
-		return Outcome{Reason: ReasonNonInteractive, Code: policyReasonNonInteractive()}, nil
+		return Outcome{Reason: ReasonNonInteractive, Code: policy.ReasonCodeNonInteractive}, nil
 	default:
-		return Outcome{Reason: ReasonDeniedInteractively, Code: policyReasonApprovalDenied()}, nil
+		return Outcome{Reason: ReasonDeniedInteractively, Code: policy.ReasonCodeApprovalDenied}, nil
 	}
 }
 
