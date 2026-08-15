@@ -8,10 +8,16 @@ import (
 	"github.com/dgenio/agentfence/internal/redact"
 )
 
-// MaxArgumentsDisplayBytes bounds the deterministic redacted JSON rendered in
-// an approval prompt. Larger arguments are replaced by a safe metadata summary;
-// the exact action remains identified by ActionDigest and BindingDigest.
-const MaxArgumentsDisplayBytes = 2048
+const (
+	// MaxArgumentsDisplayBytes bounds the deterministic redacted JSON rendered
+	// in an approval prompt. Larger arguments are replaced by a safe metadata
+	// summary; the exact action remains identified by ActionDigest and
+	// BindingDigest.
+	MaxArgumentsDisplayBytes = 2048
+	// MaxLabelDisplayBytes bounds raw call/tool label bytes before terminal
+	// rendering. Oversized labels are replaced by a deterministic safe summary.
+	MaxLabelDisplayBytes = 256
+)
 
 // BoundRequest is the immutable approval-facing snapshot of one exact action
 // under one exact effective policy. Its raw call is kept private so callers
@@ -21,6 +27,8 @@ type BoundRequest struct {
 	actionDigest     string
 	policyDigest     string
 	bindingDigest    string
+	callDisplay      string
+	toolDisplay      string
 	argumentsDisplay string
 }
 
@@ -72,11 +80,22 @@ func NewBoundRequest(call policy.ToolCall, actionDigest, policyDigest string, re
 		display = string(summary)
 	}
 
+	callDisplay, err := boundedLabelDisplay("call id", snapshot.ID)
+	if err != nil {
+		return BoundRequest{}, err
+	}
+	toolDisplay, err := boundedLabelDisplay("tool name", snapshot.Tool)
+	if err != nil {
+		return BoundRequest{}, err
+	}
+
 	return BoundRequest{
 		call:             snapshot,
 		actionDigest:     actionDigest,
 		policyDigest:     policyDigest,
 		bindingDigest:    bindingDigest,
+		callDisplay:      callDisplay,
+		toolDisplay:      toolDisplay,
 		argumentsDisplay: display,
 	}, nil
 }
@@ -87,11 +106,12 @@ func (r BoundRequest) CallSnapshot() (policy.ToolCall, error) {
 	return policy.SnapshotToolCall(r.call)
 }
 
-// CallID returns the correlation ID shown to the operator. It is not part of
-// the semantic action digest.
+// CallID returns the exact correlation ID. It is not part of the semantic
+// action digest. Prompt uses a separately escaped/bounded representation.
 func (r BoundRequest) CallID() string { return r.call.ID }
 
-// Tool returns the exact tool name bound by this request.
+// Tool returns the exact tool name bound by this request. Prompt uses a
+// separately escaped/bounded representation.
 func (r BoundRequest) Tool() string { return r.call.Tool }
 
 // ActionDigest returns the exact tool-action identity.
@@ -107,12 +127,29 @@ func (r BoundRequest) BindingDigest() string { return r.bindingDigest }
 // summary when the redacted representation exceeds MaxArgumentsDisplayBytes.
 func (r BoundRequest) ArgumentsDisplay() string { return r.argumentsDisplay }
 
-// Prompt renders the bounded operator-facing approval text. The prompt contains
-// no raw argument fallback; exact identity is carried by the full versioned
-// digests even when the redacted argument display is omitted for size.
+// Prompt renders the bounded operator-facing approval text. Call/tool labels
+// are JSON-escaped so control characters cannot inject terminal lines, and
+// oversized labels are replaced by safe summaries. The prompt contains no raw
+// argument fallback; exact identity is carried by the full versioned digests
+// even when a human display component is omitted for size.
 func (r BoundRequest) Prompt() string {
 	return fmt.Sprintf(
 		"AgentFence approval\n  call:    %s\n  tool:    %s\n  args:    %s\n  action:  %s\n  policy:  %s\n  binding: %s\napprove? (y/N): ",
-		r.CallID(), r.Tool(), r.ArgumentsDisplay(), r.ActionDigest(), r.PolicyDigest(), r.BindingDigest(),
+		r.callDisplay, r.toolDisplay, r.ArgumentsDisplay(), r.ActionDigest(), r.PolicyDigest(), r.BindingDigest(),
 	)
+}
+
+func boundedLabelDisplay(kind, value string) (string, error) {
+	if len([]byte(value)) <= MaxLabelDisplayBytes {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return "", fmt.Errorf("approval request: serialize %s: %w", kind, err)
+		}
+		return string(encoded), nil
+	}
+	summary, err := json.Marshal(fmt.Sprintf("<omitted: %s exceeds %d-byte display limit; bytes=%d>", kind, MaxLabelDisplayBytes, len([]byte(value))))
+	if err != nil {
+		return "", fmt.Errorf("approval request: serialize bounded %s: %w", kind, err)
+	}
+	return string(summary), nil
 }
