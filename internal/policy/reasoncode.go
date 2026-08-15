@@ -25,6 +25,11 @@ const (
 	// policy's default decision was applied.
 	ReasonCodeDefaultDecision ReasonCode = "default_decision"
 
+	// Exact decision-binding failures. These are fail-closed denials produced
+	// before an action can inherit policy authority without exact evidence.
+	ReasonCodeActionBindingFailed ReasonCode = "action_binding_failed"
+	ReasonCodePolicyBindingFailed ReasonCode = "policy_binding_failed"
+
 	// Path-constraint denials.
 	ReasonCodePathMissing    ReasonCode = "path_missing"
 	ReasonCodePathUnsafe     ReasonCode = "path_unsafe"
