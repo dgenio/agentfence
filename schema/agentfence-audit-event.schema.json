@@ -18,8 +18,8 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "description": "Audit event schema version. Current writers emit \"4\".",
-      "examples": ["1", "2", "3", "4"]
+      "description": "Audit event schema version. Current writers emit \"5\".",
+      "examples": ["1", "2", "3", "4", "5"]
     },
     "session_id": {
       "type": "string",
@@ -56,6 +56,16 @@
       "type": "string",
       "description": "Stable, machine-readable classification of the decision (e.g. path_denied, url_bare_ip, taint_escalated, approval_timeout). Mirrors `reason` for reliable grouping. Absent on pre-taxonomy (schema < 4) events.",
       "examples": ["rule_match", "default_decision", "path_denied", "url_bare_ip", "taint_escalated", "approval_timeout"]
+    },
+    "action_digest": {
+      "type": "string",
+      "pattern": "^tool-action-json-v1:sha256:[0-9a-f]{64}$",
+      "description": "Versioned digest of the exact tool name and exact arguments authorized by this decision. Added in schema 5; writers may omit it until the binding path can produce it fail-closed."
+    },
+    "policy_digest": {
+      "type": "string",
+      "pattern": "^resolved-policy-json-v1:sha256:[0-9a-f]{64}$",
+      "description": "Versioned digest of the complete resolved effective policy used for this decision. Added in schema 5; writers may omit it until the binding path can produce it fail-closed."
     },
     "arguments": {
       "type": "object",

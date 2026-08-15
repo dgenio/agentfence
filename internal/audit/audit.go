@@ -28,7 +28,10 @@ import (
 //	"4" — added optional "reason_code" field (a stable, machine-readable
 //	      classification of the decision; see policy.ReasonCode) so downstream
 //	      tools can group decisions without matching free-text reasons.
-const CurrentSchemaVersion = "4"
+//	"5" — added optional "action_digest" and "policy_digest" fields so audit
+//	      evidence can bind decisions to exact tool-action and resolved-policy
+//	      identities without logging secret-bearing raw inputs.
+const CurrentSchemaVersion = "5"
 
 // ModeDryRun marks an audit event produced under dry-run evaluation. Events
 // without an explicit Mode are treated as enforced.
@@ -78,12 +81,18 @@ type Event struct {
 	// ReasonCode is the stable, machine-readable classification of the decision
 	// (see policy.ReasonCode). It mirrors the human-readable Reason and lets
 	// audit summarize, metrics, and exporters group decisions reliably.
-	ReasonCode  policy.ReasonCode      `json:"reason_code,omitempty"`
-	Arguments   map[string]interface{} `json:"arguments,omitempty"`
-	MemoryWrite *MemoryWriteSummary    `json:"memory_write,omitempty"`
-	Mode        string                 `json:"mode,omitempty"`
-	PrevHash    string                 `json:"prev_hash,omitempty"`
-	Hash        string                 `json:"hash,omitempty"`
+	ReasonCode policy.ReasonCode `json:"reason_code,omitempty"`
+	// ActionDigest identifies the exact tool name + exact arguments authorized
+	// by this decision. The v1 contract is produced by policy.ToolActionDigest.
+	ActionDigest string `json:"action_digest,omitempty"`
+	// PolicyDigest identifies the complete resolved effective policy used for
+	// this decision. The v1 contract is produced by policy.EffectivePolicyDigest.
+	PolicyDigest string                 `json:"policy_digest,omitempty"`
+	Arguments    map[string]interface{} `json:"arguments,omitempty"`
+	MemoryWrite  *MemoryWriteSummary    `json:"memory_write,omitempty"`
+	Mode         string                 `json:"mode,omitempty"`
+	PrevHash     string                 `json:"prev_hash,omitempty"`
+	Hash         string                 `json:"hash,omitempty"`
 
 	// Signature is a base64-encoded Ed25519 signature over the event's
 	// canonical digest (the SHA-256 of the JSON encoding with Hash and
