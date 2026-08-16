@@ -12,6 +12,12 @@ import (
 // action fingerprinting can truthfully identify the exact semantic action:
 // distinct integers above 2^53 must not collapse during parsing.
 func (c *ToolCall) UnmarshalJSON(data []byte) error {
+	// Preserve json.Unmarshal's historical empty/whitespace-only parse error.
+	// json.Decoder.Decode would otherwise return the less actionable io.EOF.
+	if len(bytes.TrimSpace(data)) == 0 {
+		return fmt.Errorf("unexpected end of JSON input")
+	}
+
 	type wireToolCall struct {
 		ID        string                 `json:"id"`
 		Tool      string                 `json:"tool"`
