@@ -11,6 +11,12 @@ import (
 // json.Number instead of converting them to float64. Authorization evidence
 // must not collapse distinct on-wire numeric arguments before evaluation.
 func (p *ToolCallParams) UnmarshalJSON(data []byte) error {
+	// Preserve json.Unmarshal's historical empty/whitespace-only parse error.
+	// json.Decoder.Decode would otherwise return the less actionable io.EOF.
+	if len(bytes.TrimSpace(data)) == 0 {
+		return fmt.Errorf("unexpected end of JSON input")
+	}
+
 	type wireToolCallParams struct {
 		Name      string                 `json:"name"`
 		Arguments map[string]interface{} `json:"arguments,omitempty"`
