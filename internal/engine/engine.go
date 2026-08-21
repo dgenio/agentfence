@@ -19,6 +19,13 @@ import (
 type Engine struct {
 	policy   policy.Policy
 	redactor *redact.Redactor
+
+	// sortedGroupNames and patternKeys are precomputed by New so that
+	// lookupRule does not allocate or sort on every call. The engine treats
+	// its policy as immutable after construction; callers that change a
+	// policy must build a new engine.
+	sortedGroupNames []string
+	patternKeys      []string
 }
 
 func New(p policy.Policy) (*Engine, error) {
@@ -26,7 +33,31 @@ func New(p policy.Policy) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{policy: p, redactor: r}, nil
+	e := &Engine{policy: p, redactor: r}
+	e.precomputeLookup()
+	return e, nil
+}
+
+// precomputeLookup builds the sorted group-name and wildcard-pattern lists
+// that lookupRule iterates. Group names are excluded from patternKeys because
+// a group's Tools entry is only reachable through a group-member match.
+// Exact-match keys need no exclusion: lookupRule returns on an exact match
+// before the pattern scan, so a tool name that is itself a Tools key never
+// reaches the pattern list.
+func (e *Engine) precomputeLookup() {
+	e.sortedGroupNames = make([]string, 0, len(e.policy.Groups))
+	for gn := range e.policy.Groups {
+		e.sortedGroupNames = append(e.sortedGroupNames, gn)
+	}
+	sort.Strings(e.sortedGroupNames)
+
+	e.patternKeys = make([]string, 0, len(e.policy.Tools))
+	for k := range e.policy.Tools {
+		if _, isGroup := e.policy.Groups[k]; !isGroup {
+			e.patternKeys = append(e.patternKeys, k)
+		}
+	}
+	sort.Strings(e.patternKeys)
 }
 
 func (e *Engine) Evaluate(call policy.ToolCall) (policy.EvaluationResult, audit.Event) {
@@ -180,8 +211,8 @@ func (e *Engine) reasonForMatch(toolName, matchedKey string) string {
 //     Groups are checked in alphabetical order for determinism.
 //  3. Wildcard/glob match against remaining Tools keys, checked in alphabetical order.
 //
-// TODO(perf): precompute sorted group names, group set, and pattern keys in New()
-// to eliminate per-call allocations when processing large batches.
+// The sorted group names and wildcard pattern keys are precomputed once in
+// New (see precomputeLookup), so a lookup itself performs no allocation.
 func (e *Engine) lookupRule(toolName string) (policy.Rule, bool, string) {
 	// 1. Exact match.
 	if r, ok := e.policy.Tools[toolName]; ok {
@@ -189,12 +220,7 @@ func (e *Engine) lookupRule(toolName string) (policy.Rule, bool, string) {
 	}
 
 	// 2. Group match: sorted group names for determinism.
-	groupNames := make([]string, 0, len(e.policy.Groups))
-	for gn := range e.policy.Groups {
-		groupNames = append(groupNames, gn)
-	}
-	sort.Strings(groupNames)
-	for _, groupName := range groupNames {
+	for _, groupName := range e.sortedGroupNames {
 		for _, member := range e.policy.Groups[groupName] {
 			if matchesGlob(member, toolName) {
 				if r, ok := e.policy.Tools[groupName]; ok {
@@ -205,19 +231,10 @@ func (e *Engine) lookupRule(toolName string) (policy.Rule, bool, string) {
 		}
 	}
 
-	// 3. Wildcard/glob match on non-exact, non-group tool keys, sorted for determinism.
-	groupSet := make(map[string]bool, len(e.policy.Groups))
-	for gn := range e.policy.Groups {
-		groupSet[gn] = true
-	}
-	patternKeys := make([]string, 0, len(e.policy.Tools))
-	for k := range e.policy.Tools {
-		if k != toolName && !groupSet[k] {
-			patternKeys = append(patternKeys, k)
-		}
-	}
-	sort.Strings(patternKeys)
-	for _, pattern := range patternKeys {
+	// 3. Wildcard/glob match on non-group tool keys, sorted for determinism.
+	// toolName itself is never in this list: an exact Tools key returns in
+	// step 1, so the step-3 scan only ever sees keys that differ from it.
+	for _, pattern := range e.patternKeys {
 		if matchesGlob(pattern, toolName) {
 			return e.policy.Tools[pattern], true, pattern
 		}
