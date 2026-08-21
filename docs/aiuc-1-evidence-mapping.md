@@ -81,7 +81,7 @@ configured pattern would be logged verbatim when argument logging is on. See
 
 | Review question | AgentFence control | Evidence artifact | How to produce / inspect it | Limits / non-goals |
 |---|---|---|---|---|
-| Can durable memory writes be bounded by scope, sensitivity, and size, and recorded without persisting the payload? | `memory_write` constraints in policy | A recorded event carrying a `memory_write` summary object | `agentfence check` on a `memory.write` call; inspect the event's `memory_write` field | Governs writes mediated by AgentFence only. It does not govern data the model already holds or persists through a path the gate never sees. The summary is a fingerprint, not the content. |
+| Can durable memory writes be bounded by scope, sensitivity, and size, and recorded with a payload-free summary? | `memory_write` constraints in policy | A recorded event carrying a payload-free `memory_write` summary object | `agentfence check` on a `memory.write` call; inspect the event's `memory_write` field | Governs writes mediated by AgentFence only. It does not govern data the model already holds or persists through a path the gate never sees. Payload-free applies to the `memory_write` summary, which is a fingerprint of the content; the surrounding event may still carry the raw `arguments.content` when argument logging is enabled, as the example below shows. |
 
 ```json
 {"schema_version":"5","session_id":"<session_id>","seq":1,"timestamp":"<timestamp>","call_id":"m1","tool":"memory.write","decision":"deny","reason":"non-interactive: ask auto-denied","reason_code":"non_interactive_denied","arguments":{"content":"user prefers dark mode","scope":"project","sensitivity":"low"},"memory_write":{"scope":"project","sensitivity":"low","field":"content","size_bytes":22,"content_fingerprint":"058e6f30768b"}}
@@ -110,7 +110,7 @@ artifact.
 
 | Review question | AgentFence control | Evidence artifact | How to produce / inspect it | Limits / non-goals |
 |---|---|---|---|---|
-| Was each tool call evaluated against policy before it was allowed to run? | Policy decision engine (`check`, `proxy`, `proxy-http`) | A recorded event with `decision`, `reason`, and `reason_code` | `agentfence check --policy … --call … --audit-log …`, or run behind `agentfence proxy` | Records a local pre-execution decision at the AgentFence boundary. It does not prove what the downstream tool or service did after an `allow`. |
+| Was a tool call mediated by AgentFence evaluated against policy before it was allowed to run? | Policy decision engine (`check`, `proxy`, `proxy-http`) | A recorded event with `decision`, `reason`, and `reason_code` | `agentfence check --policy … --call … --audit-log …`, or run behind `agentfence proxy` | Records a local pre-execution decision at the AgentFence boundary. A recorded event proves the mediated call was evaluated; it does not prove that every tool call in the surrounding system traversed the AgentFence boundary, and it does not prove what the downstream tool or service did after an `allow`. |
 
 ```json
 {"schema_version":"5","session_id":"<session_id>","seq":1,"timestamp":"<timestamp>","call_id":"call_001","tool":"filesystem.read","decision":"allow","reason":"tool filesystem.read matched explicit policy rule","reason_code":"rule_match","arguments":{"path":"README.md"}}
