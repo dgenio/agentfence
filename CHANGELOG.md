@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-08-14
+### Changed
+- **Engine rule lookup no longer allocates per call.** `engine.New` now
+  precomputes the sorted group-name and wildcard-pattern lists that
+  `lookupRule` iterates, resolving the engine's `TODO(perf)`. Rule matching
+  semantics are unchanged. Measured before/after evidence for the
+  `BenchmarkEvaluateLargeTrace` tiers, including the honest limits of the
+  observed win, is recorded in
+  [`docs/benchmarks/issue-148/`](docs/benchmarks/issue-148/). (#148)
 
 ### Added
 - **Strict MCP tool identity lock.** The new `identitylock` package introduces

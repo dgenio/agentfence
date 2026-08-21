@@ -1,0 +1,70 @@
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    124664 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211623 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    455902 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840400 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    125247 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211623 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    433541 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840401 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    131045 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211623 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    440767 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840400 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    115821 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211622 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    427889 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840401 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    134059 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211624 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    449375 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840401 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    121970 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211622 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    451149 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840402 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    192048 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211622 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    720842 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840399 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    157465 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211622 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    493803 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840399 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    116232 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211623 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    435111 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840400 B/op	    9222 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+BenchmarkEvaluateLargeTrace/N=10000/M=16-24         	   50000	    114485 ns/op	        16.00 groups	     10000 trace_calls	        16.00 wildcards	  211621 B/op	    2336 allocs/op
+BenchmarkEvaluateLargeTrace/N=50000/M=64-24         	   50000	    412246 ns/op	        64.00 groups	     50000 trace_calls	        64.00 wildcards	  840400 B/op	    9222 allocs/op
+PASS

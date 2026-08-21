@@ -1,0 +1,42 @@
+goos: windows
+goarch: amd64
+pkg: github.com/dgenio/agentfence/internal/engine
+cpu: 13th Gen Intel(R) Core(TM) i7-13700KF
+                                   │ baseline-interleaved.txt │      candidate-interleaved.txt      │
+                                   │          sec/op          │    sec/op     vs base               │
+EvaluateLargeTrace/N=10000/M=16-24               125.0µ ± 26%   123.4µ ±  8%       ~ (p=0.631 n=10)
+EvaluateLargeTrace/N=50000/M=64-24               445.1µ ± 11%   434.9µ ± 24%       ~ (p=0.280 n=10)
+geomean                                          235.8µ         231.7µ        -1.77%
+
+                                   │ baseline-interleaved.txt │      candidate-interleaved.txt      │
+                                   │          groups          │   groups    vs base                 │
+EvaluateLargeTrace/N=10000/M=16-24                 16.00 ± 0%   16.00 ± 0%       ~ (p=1.000 n=10) ¹
+EvaluateLargeTrace/N=50000/M=64-24                 64.00 ± 0%   64.00 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                            32.00        32.00       +0.00%
+¹ all samples are equal
+
+                                   │ baseline-interleaved.txt │      candidate-interleaved.txt       │
+                                   │       trace_calls        │ trace_calls  vs base                 │
+EvaluateLargeTrace/N=10000/M=16-24                10.00k ± 0%   10.00k ± 0%       ~ (p=1.000 n=10) ¹
+EvaluateLargeTrace/N=50000/M=64-24                50.00k ± 0%   50.00k ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                           22.36k        22.36k       +0.00%
+¹ all samples are equal
+
+                                   │ baseline-interleaved.txt │      candidate-interleaved.txt      │
+                                   │        wildcards         │ wildcards   vs base                 │
+EvaluateLargeTrace/N=10000/M=16-24                 16.00 ± 0%   16.00 ± 0%       ~ (p=1.000 n=10) ¹
+EvaluateLargeTrace/N=50000/M=64-24                 64.00 ± 0%   64.00 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                            32.00        32.00       +0.00%
+¹ all samples are equal
+
+                                   │ baseline-interleaved.txt │      candidate-interleaved.txt      │
+                                   │           B/op           │     B/op      vs base               │
+EvaluateLargeTrace/N=10000/M=16-24               206.7Ki ± 0%   204.8Ki ± 0%  -0.90% (p=0.000 n=10)
+EvaluateLargeTrace/N=50000/M=64-24               820.7Ki ± 0%   813.3Ki ± 0%  -0.90% (p=0.000 n=10)
+geomean                                          411.8Ki        408.1Ki       -0.90%
+
+                                   │ baseline-interleaved.txt │     candidate-interleaved.txt      │
+                                   │        allocs/op         │  allocs/op   vs base               │
+EvaluateLargeTrace/N=10000/M=16-24                2.336k ± 0%   2.331k ± 0%  -0.21% (p=0.000 n=10)
+EvaluateLargeTrace/N=50000/M=64-24                9.222k ± 0%   9.217k ± 0%  -0.05% (p=0.000 n=10)
+geomean                                           4.641k        4.635k       -0.13%
