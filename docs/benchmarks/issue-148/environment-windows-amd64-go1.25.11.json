@@ -1,0 +1,24 @@
+{
+  "schema": "agentfence.benchmark-environment/v1",
+  "captured_at_utc": "2026-08-13T17:03:48.6642073Z",
+  "source_commit": "2698daecf61d9b3843d0843a612bd2aa6287973a",
+  "working_tree_clean": true,
+  "command": "go test ./internal/engine -run '^$' -bench '^BenchmarkEvaluateLargeTrace$' -benchmem -benchtime=50000x -count=5",
+  "sample_count_per_tier": 5,
+  "iterations_per_sample": 50000,
+  "go": {
+    "command_output": "go version go1.25.11 windows/amd64",
+    "version": "go1.25.11",
+    "goos": "windows",
+    "goarch": "amd64"
+  },
+  "host": {
+    "cpu": "13th Gen Intel(R) Core(TM) i7-13700KF",
+    "processor_identifier": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "logical_cpu_count": 24,
+    "total_memory_bytes": 34115358720,
+    "os_caption": "Microsoft Windows 11 Home Insider Preview",
+    "os_version": "10.0.26220",
+    "os_build": "26220"
+  }
+}
