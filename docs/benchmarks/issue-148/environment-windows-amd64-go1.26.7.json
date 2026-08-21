@@ -1,0 +1,31 @@
+{
+  "schema": "agentfence.benchmark-environment/v1",
+  "captured_at_utc": "2026-08-21T07:19:32Z",
+  "purpose": "before/after comparison for the lookupRule precompute (issue #148)",
+  "baseline_source_commit": "5c675cb4477c9b396443018cd8743b99c8339a52",
+  "candidate_source_commit": "2867339b615914f6c6a0dddfedc96935f3bc995a",
+  "working_tree_clean": true,
+  "method": "interleaved A/B: both test binaries were built once with 'go test -c ./internal/engine', then executed alternately (baseline, candidate, ten pairs) so background-load drift affects both sides equally",
+  "command_per_invocation": "<binary> -test.run '^$' -test.bench '^BenchmarkEvaluateLargeTrace$' -test.benchmem -test.benchtime 50000x",
+  "sample_count_per_tier": 10,
+  "iterations_per_sample": 50000,
+  "go": {
+    "command_output": "go version go1.26.7 windows/amd64",
+    "version": "go1.26.7",
+    "goos": "windows",
+    "goarch": "amd64"
+  },
+  "host": {
+    "cpu": "13th Gen Intel(R) Core(TM) i7-13700KF",
+    "processor_identifier": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "logical_cpu_count": 24,
+    "total_memory_bytes": 34115358720,
+    "os_caption": "Microsoft Windows 11 Home Insider Preview",
+    "os_version": "10.0.26220",
+    "os_build": "26220"
+  },
+  "notes": [
+    "Same host as the go1.25.11 baseline packet. The toolchain moved from go1.25.11 to go1.26.7, so the baseline was re-measured at the merged benchmark commit instead of comparing against the go1.25.11 numbers.",
+    "The host is a desktop with background load. Sequential count=10 runs on this host showed session-to-session drift up to roughly 1.4x in ns/op, which motivated the interleaved method."
+  ]
+}
