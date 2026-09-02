@@ -4,7 +4,7 @@ _Last updated: 2026-08-11._
 
 This is a **directional** roadmap, not a commitment or a dated release plan. The authoritative source of truth is the issue tracker, especially the [`roadmap`](https://github.com/dgenio/agentfence/labels/roadmap) label. When this document and the tracker disagree, the tracker wins.
 
-> **Pre-launch naming note:** [#234](https://github.com/dgenio/agentfence/issues/234) records the decision to rename before broad launch because `AgentFence` is already ambiguous across unrelated AI-security/package/research surfaces. The current repository/binary name remains in use while security hardening continues and a collision-checked replacement is selected. Do not spend broad distribution effort on the current brand.
+> **Pre-launch naming note:** [#234](https://github.com/dgenio/agentfence/issues/234) records the decision to rename **AgentFence -> VeriCordon** before broad launch because `AgentFence` is already ambiguous across unrelated AI-security/package/research surfaces. The target launch identity is **VeriCordon**; the current repository/binary name remains temporarily in use while #239–#242 complete the compatibility-preserving migration. Do not spend broad distribution effort on the current brand.
 
 ## Product thesis
 
@@ -33,9 +33,13 @@ The next phase is **not primarily more features**. It is proving that the author
 
 ### G0 — Brand identity before distribution
 
-- [#234](https://github.com/dgenio/agentfence/issues/234): select a collision-checked replacement name and plan the compatibility-preserving migration before broad launch.
+- [#234](https://github.com/dgenio/agentfence/issues/234): **VeriCordon selected** as the collision-checked target launch identity.
+- [#239](https://github.com/dgenio/agentfence/issues/239): migrate repository, Go module and CLI identity.
+- [#240](https://github.com/dgenio/agentfence/issues/240): migrate release/container/install-channel identifiers.
+- [#241](https://github.com/dgenio/agentfence/issues/241): migrate public docs/examples/ecosystem references.
+- [#242](https://github.com/dgenio/agentfence/issues/242): review durable machine identifiers so branding does not break historical evidence/contracts.
 
-The current name already collides with unrelated AI-security/package/research uses. Security implementation can continue under the current repository, but broad brand/distribution work should wait.
+Security implementation can continue under the current repository while the migration is prepared. Broad brand/distribution work should wait until the transition is coherent.
 
 ### G1 — Prove differentiation, not category membership
 
