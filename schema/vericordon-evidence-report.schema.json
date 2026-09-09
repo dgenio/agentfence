@@ -52,6 +52,9 @@
     },
     "checks": {
       "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/evidenceCheck"
       }
@@ -85,8 +88,13 @@
       ],
       "properties": {
         "id": {
-          "type": "string",
-          "minLength": 1
+          "enum": [
+            "policy_validation",
+            "policy_fixtures",
+            "mediated_call_decisions",
+            "exact_action_policy_binding",
+            "audit_chain_verification"
+          ]
         },
         "status": {
           "enum": [
