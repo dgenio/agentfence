@@ -60,11 +60,11 @@ runs:
       with:
         go-version: ${{ inputs.go-version }}
         cache: true
-        cache-dependency-path: ${{ github.action_path }}/go.sum
+        cache-dependency-path: ${{ github.action_path }}/../go.sum
 
     - name: Build local evidence tooling
       shell: bash
-      working-directory: ${{ github.action_path }}
+      working-directory: ${{ github.action_path }}/..
       run: |
         set -euo pipefail
         mkdir -p "${RUNNER_TEMP:-/tmp}/vericordon-evidence-bin"
