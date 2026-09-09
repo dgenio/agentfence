@@ -93,6 +93,14 @@ runs:
         rm -rf "$root"
         mkdir -p "$work" "$publish"
 
+        # Publish fixed, runner-local output paths before any evidence parsing can
+        # fail so the always() artifact step can preserve safe partial evidence.
+        {
+          echo "report-md=$work/report.md"
+          echo "report-json=$work/report.json"
+          echo "artifact-dir=$publish"
+        } >>"${GITHUB_OUTPUT:-/dev/null}"
+
         combined_rc=0
         policy_status="not_evaluated"
         printf '[]\n' > "$work/decisions.json"
@@ -172,6 +180,14 @@ runs:
           fi
         fi
 
+        # Copy only explicitly selected aggregate/review files. The publish
+        # directory never receives a caller-controlled path or wildcard.
+        cp "$work/decisions.json" "$publish/decisions.json"
+        cp "$work/policy-validation.txt" "$publish/policy-validation.txt"
+        [ ! -f "$work/gate-summary.json" ] || cp "$work/gate-summary.json" "$publish/gate-summary.json"
+        [ ! -f "$work/policy-tests.json" ] || cp "$work/policy-tests.json" "$publish/policy-tests.json"
+        [ ! -f "$work/audit-verification.json" ] || cp "$work/audit-verification.json" "$publish/audit-verification.json"
+
         report_args=(
           --decisions "$work/decisions.json"
           --policy-validation-status "$policy_status"
@@ -182,26 +198,24 @@ runs:
           report_args+=(--context "$VC_CONTEXT")
         fi
         report_args+=("${tests_arg[@]}" "${audit_arg[@]}" "${verify_arg[@]}")
-        "$reporter" "${report_args[@]}"
 
-        cp "$work/report.md" "$publish/report.md"
-        cp "$work/report.json" "$publish/report.json"
-        cp "$work/decisions.json" "$publish/decisions.json"
-        cp "$work/policy-validation.txt" "$publish/policy-validation.txt"
-        [ ! -f "$work/gate-summary.json" ] || cp "$work/gate-summary.json" "$publish/gate-summary.json"
-        [ ! -f "$work/policy-tests.json" ] || cp "$work/policy-tests.json" "$publish/policy-tests.json"
-        [ ! -f "$work/audit-verification.json" ] || cp "$work/audit-verification.json" "$publish/audit-verification.json"
+        set +e
+        "$reporter" "${report_args[@]}" 2>"$work/report-generation-error.txt"
+        report_rc=$?
+        set -e
+        if [ "$report_rc" -eq 0 ]; then
+          cp "$work/report.md" "$publish/report.md"
+          cp "$work/report.json" "$publish/report.json"
+          cat "$work/report.md" >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+        else
+          combined_rc=1
+          cp "$work/report-generation-error.txt" "$publish/report-generation-error.txt"
+        fi
 
         if [ "$VC_INCLUDE_RAW_AUDIT" = "true" ] && [ -f "$work/audit.jsonl" ]; then
           cp "$work/audit.jsonl" "$publish/audit.jsonl"
         fi
 
-        cat "$work/report.md" >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
-        {
-          echo "report-md=$work/report.md"
-          echo "report-json=$work/report.json"
-          echo "artifact-dir=$publish"
-        } >>"${GITHUB_OUTPUT:-/dev/null}"
         echo "VERICORDON_EVIDENCE_RC=$combined_rc" >>"${GITHUB_ENV:-/dev/null}"
 
     - name: Upload safe evidence artifact
