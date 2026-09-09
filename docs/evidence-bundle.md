@@ -43,6 +43,7 @@ JSONL can add:
 name: Agent authorization evidence
 
 on:
+  push:
   pull_request:
 
 permissions:
@@ -61,6 +62,10 @@ jobs:
           tests: testdata/policy-tests.yaml
           context: ${{ github.repository }}@${{ github.sha }}
 ```
+
+The initial `push` trigger is intentional: it lets a brand-new repository run
+the workflow on the same branch that first introduces the workflow file. After
+that bootstrap, `pull_request` runs provide the normal review path.
 
 During the preview, pin a commit SHA if you need reproducible third-party action
 resolution. Use a release tag once this surface has earned one.
