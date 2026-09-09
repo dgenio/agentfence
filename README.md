@@ -66,6 +66,30 @@ did not write, with a policy and audit trail they control.
 > the [Daily Driver guide](docs/daily-driver.md) for day-to-day operation and
 > [CLAIMS](docs/claims.md) for what AgentFence does and does not promise.
 
+## VeriCordon: inspectable authorization evidence in CI
+
+**Generate inspectable authorization evidence for the exact calls and policy
+AgentFence evaluated.** VeriCordon turns a policy, representative call JSONL,
+and optional policy fixtures into a human-readable `report.md` plus a versioned
+`report.json`.
+
+```yaml
+- uses: dgenio/agentfence/evidence-action@v0.10.0
+  with:
+    policy: agentfence.yaml
+    calls: testdata/tool-calls.jsonl
+    tests: testdata/policy-tests.yaml
+```
+
+The safe downloadable artifact excludes raw `audit.jsonl` by default. Missing
+evidence stays `partial` / `not_evaluated`; exact-action + effective-policy
+binding is reported only for the calls whose supplied audit evidence supports
+it. No account or hosted service is required.
+
+See the [VeriCordon authorization-evidence guide](docs/evidence-bundle.md) for
+the copy/paste workflow, minimal inputs, a real missing-evidence example, the
+fresh-consumer 3/3 binding result, and the explicit non-claims.
+
 ## Current status
 
 AgentFence is in active development. The table below distinguishes what works
@@ -83,6 +107,7 @@ today from what is planned. Do not assume planned features are usable yet.
 | Regex-based redaction of audit values               | Implemented    | [`docs/policy-language.md`](docs/policy-language.md) |
 | Structured output modes (text / json / jsonl)       | Implemented    | `agentfence check --help` |
 | CI gating via `--fail-on`                           | Implemented    | `agentfence check --help` |
+| VeriCordon Markdown + JSON authorization evidence   | Implemented    | [`docs/evidence-bundle.md`](docs/evidence-bundle.md) |
 | Pre-built release binaries                          | Implemented    | [Pre-built binaries](#pre-built-binaries) |
 | Detection / prevention / audit-only / dry-run modes | Documented     | [`docs/modes.md`](docs/modes.md) |
 | Interactive TTY approval for `ask` decisions        | Implemented    | [Approval and dry-run](#approval-and-dry-run-modes) |
