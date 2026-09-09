@@ -163,6 +163,23 @@ func TestBuildReportRejectsNullEvidenceShapes(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownContextCannotInjectStructure(t *testing.T) {
+	report := evidenceReport{
+		SchemaVersion: reportSchemaVersion,
+		Product:       "test",
+		Context:       "owner/repo@sha`\n## forged heading",
+		EvidenceIndex: []string{},
+		Limitations:   []string{"limit"},
+	}
+	md := renderMarkdown(report)
+	if strings.Contains(md, "\n## forged heading") {
+		t.Fatalf("context escaped its code span:\n%s", md)
+	}
+	if !strings.Contains(md, "**Context:** `owner/repo@sha' ## forged heading`") {
+		t.Fatalf("context was not rendered as one inert line:\n%s", md)
+	}
+}
+
 func TestReportJSONUsesVersionedStatuses(t *testing.T) {
 	report := evidenceReport{
 		SchemaVersion: reportSchemaVersion,
