@@ -23,7 +23,7 @@ func TestBuildReportObservedEvidence(t *testing.T) {
 	report, err := buildReport(reportInput{
 		DecisionsPath:          filepath.Join(dir, "decisions.json"),
 		AuditPath:              filepath.Join(dir, "audit.jsonl"),
-		AuditVerificationPath: filepath.Join(dir, "audit-verification.json"),
+		AuditVerificationPath:  filepath.Join(dir, "audit-verification.json"),
 		PolicyTestsPath:        filepath.Join(dir, "policy-tests.json"),
 		PolicyValidationStatus: statusObserved,
 		Context:                "dgenio/example@abc123",
@@ -87,7 +87,7 @@ func TestBuildReportFailedEvidenceRemainsFailed(t *testing.T) {
 
 	report, err := buildReport(reportInput{
 		DecisionsPath:          filepath.Join(dir, "decisions.json"),
-		AuditVerificationPath: filepath.Join(dir, "audit-verification.json"),
+		AuditVerificationPath:  filepath.Join(dir, "audit-verification.json"),
 		PolicyTestsPath:        filepath.Join(dir, "policy-tests.json"),
 		PolicyValidationStatus: statusFailed,
 	})
