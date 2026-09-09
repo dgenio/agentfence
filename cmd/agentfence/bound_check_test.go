@@ -211,6 +211,7 @@ func readBoundCheckEvents(t *testing.T, path string) []audit.Event {
 
 	var events []audit.Event
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		var event audit.Event
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
