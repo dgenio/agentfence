@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dgenio/agentfence/schema/vericordon-evidence-report.schema.json",
+  "title": "VeriCordon authorization evidence report",
+  "description": "Machine-readable aggregate evidence from an AgentFence/VeriCordon local authorization evaluation. This schema does not define a security score, certification, or compliance attestation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "product",
+    "summary",
+    "checks",
+    "evidence_index",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "product": {
+      "type": "string",
+      "minLength": 1
+    },
+    "context": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decisions",
+        "allow",
+        "deny",
+        "ask",
+        "audit_events",
+        "bound_audit_events",
+        "policy_tests",
+        "policy_tests_passed",
+        "policy_tests_failed"
+      ],
+      "properties": {
+        "decisions": { "type": "integer", "minimum": 0 },
+        "allow": { "type": "integer", "minimum": 0 },
+        "deny": { "type": "integer", "minimum": 0 },
+        "ask": { "type": "integer", "minimum": 0 },
+        "audit_events": { "type": "integer", "minimum": 0 },
+        "bound_audit_events": { "type": "integer", "minimum": 0 },
+        "policy_tests": { "type": "integer", "minimum": 0 },
+        "policy_tests_passed": { "type": "integer", "minimum": 0 },
+        "policy_tests_failed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/evidenceCheck"
+      },
+      "allOf": [
+        { "contains": { "properties": { "id": { "const": "policy_validation" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "policy_fixtures" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "mediated_call_decisions" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "exact_action_policy_binding" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "audit_chain_verification" } }, "required": ["id"] } }
+      ]
+    },
+    "evidence_index": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "evidenceCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "summary",
+        "limitation"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "policy_validation",
+            "policy_fixtures",
+            "mediated_call_decisions",
+            "exact_action_policy_binding",
+            "audit_chain_verification"
+          ]
+        },
+        "status": {
+          "enum": [
+            "observed",
+            "partial",
+            "not_evaluated",
+            "failed"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "limitation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,238 @@
+name: VeriCordon authorization evidence bundle
+description: >-
+  Generate a scoped Markdown + JSON evidence bundle from AgentFence policy,
+  fixture, decision, and audit artifacts without making certification claims.
+
+inputs:
+  policy:
+    description: Path to the AgentFence policy YAML file.
+    required: true
+  calls:
+    description: Path to JSONL tool calls to evaluate.
+    required: true
+  tests:
+    description: Optional AgentFence policy-test fixture YAML.
+    required: false
+    default: ""
+  context:
+    description: Optional source context written to the report, for example owner/repo@commit.
+    required: false
+    default: ""
+  fail-on:
+    description: Optional AgentFence CI gate values (deny, ask, or deny,ask). Empty means report-only.
+    required: false
+    default: ""
+  artifact-name:
+    description: Name of the safe evidence artifact uploaded by this action.
+    required: false
+    default: vericordon-evidence
+  upload-artifact:
+    description: Upload the safe evidence bundle as a GitHub Actions artifact.
+    required: false
+    default: "true"
+  include-raw-audit:
+    description: >-
+      Include the raw audit JSONL in the uploaded artifact. Disabled by default
+      because audit arguments can contain values not matched by configured redaction.
+    required: false
+    default: "false"
+  go-version:
+    description: Go toolchain used to build AgentFence and the report generator.
+    required: false
+    default: "1.22"
+
+outputs:
+  report-md:
+    description: Absolute path to the generated Markdown report.
+    value: ${{ steps.bundle.outputs.report-md }}
+  report-json:
+    description: Absolute path to the generated machine-readable report.
+    value: ${{ steps.bundle.outputs.report-json }}
+  artifact-dir:
+    description: Absolute path to the safe publishable evidence directory.
+    value: ${{ steps.bundle.outputs.artifact-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: true
+        cache-dependency-path: ${{ github.action_path }}/../go.sum
+
+    - name: Build local evidence tooling
+      shell: bash
+      working-directory: ${{ github.action_path }}/..
+      run: |
+        set -euo pipefail
+        mkdir -p "${RUNNER_TEMP:-/tmp}/vericordon-evidence-bin"
+        go build -o "${RUNNER_TEMP:-/tmp}/vericordon-evidence-bin/agentfence" ./cmd/agentfence
+        go build -o "${RUNNER_TEMP:-/tmp}/vericordon-evidence-bin/evidence-report" ./cmd/evidence-report
+
+    - name: Generate scoped evidence bundle
+      id: bundle
+      shell: bash
+      env:
+        VC_POLICY: ${{ inputs.policy }}
+        VC_CALLS: ${{ inputs.calls }}
+        VC_TESTS: ${{ inputs.tests }}
+        VC_CONTEXT: ${{ inputs.context }}
+        VC_FAIL_ON: ${{ inputs.fail-on }}
+        VC_INCLUDE_RAW_AUDIT: ${{ inputs.include-raw-audit }}
+      run: |
+        set -euo pipefail
+
+        root="${RUNNER_TEMP:-/tmp}/vericordon-evidence"
+        work="$root/work"
+        publish="$root/publish"
+        bin="${RUNNER_TEMP:-/tmp}/vericordon-evidence-bin"
+        af="$bin/agentfence"
+        reporter="$bin/evidence-report"
+        rm -rf "$root"
+        mkdir -p "$work" "$publish"
+
+        # Publish fixed, runner-local output paths before any evidence parsing can
+        # fail so the always() artifact step can preserve safe partial evidence.
+        {
+          echo "report-md=$work/report.md"
+          echo "report-json=$work/report.json"
+          echo "artifact-dir=$publish"
+        } >>"${GITHUB_OUTPUT:-/dev/null}"
+
+        combined_rc=0
+        policy_status="not_evaluated"
+        printf '[]\n' > "$work/decisions.json"
+
+        set +e
+        "$af" validate --policy "$VC_POLICY" >"$work/policy-validation.txt" 2>&1
+        validation_rc=$?
+        set -e
+        if [ "$validation_rc" -eq 0 ]; then
+          policy_status="observed"
+        else
+          policy_status="failed"
+          combined_rc=1
+        fi
+
+        tests_arg=()
+        if [ "$validation_rc" -eq 0 ] && [ -n "$VC_TESTS" ]; then
+          set +e
+          "$af" policy test --policy "$VC_POLICY" --tests "$VC_TESTS" --output json >"$work/policy-tests.json"
+          tests_rc=$?
+          set -e
+          if [ "$tests_rc" -ne 0 ]; then
+            combined_rc=1
+          fi
+          if jq -e 'type == "object"' "$work/policy-tests.json" >/dev/null 2>&1; then
+            tests_arg=(--policy-tests "$work/policy-tests.json")
+          else
+            rm -f "$work/policy-tests.json"
+            combined_rc=1
+          fi
+        fi
+
+        audit_arg=()
+        verify_arg=()
+        if [ "$validation_rc" -eq 0 ]; then
+          check_args=(
+            check
+            --policy "$VC_POLICY"
+            --call "$VC_CALLS"
+            --output json
+            --no-interactive
+            --audit-log "$work/audit.jsonl"
+            --tamper-evident
+            --summary "$work/gate-summary.json"
+          )
+          if [ -n "$VC_FAIL_ON" ]; then
+            check_args+=(--fail-on "$VC_FAIL_ON")
+          fi
+
+          set +e
+          "$af" "${check_args[@]}" >"$work/decisions.json"
+          check_rc=$?
+          set -e
+          if [ "$check_rc" -ne 0 ]; then
+            combined_rc=1
+          fi
+          if ! jq -e 'type == "array"' "$work/decisions.json" >/dev/null 2>&1; then
+            printf '[]\n' > "$work/decisions.json"
+            combined_rc=1
+          fi
+
+          if [ -s "$work/audit.jsonl" ]; then
+            audit_arg=(--audit "$work/audit.jsonl")
+            set +e
+            "$af" audit verify --log "$work/audit.jsonl" --output json >"$work/audit-verification.json"
+            verify_rc=$?
+            set -e
+            if [ "$verify_rc" -ne 0 ]; then
+              combined_rc=1
+            fi
+            if jq -e 'type == "object"' "$work/audit-verification.json" >/dev/null 2>&1; then
+              verify_arg=(--audit-verification "$work/audit-verification.json")
+            else
+              rm -f "$work/audit-verification.json"
+              combined_rc=1
+            fi
+          fi
+        fi
+
+        # Copy only explicitly selected aggregate/review files. The publish
+        # directory never receives a caller-controlled path or wildcard.
+        cp "$work/decisions.json" "$publish/decisions.json"
+        cp "$work/policy-validation.txt" "$publish/policy-validation.txt"
+        [ ! -f "$work/gate-summary.json" ] || cp "$work/gate-summary.json" "$publish/gate-summary.json"
+        [ ! -f "$work/policy-tests.json" ] || cp "$work/policy-tests.json" "$publish/policy-tests.json"
+        [ ! -f "$work/audit-verification.json" ] || cp "$work/audit-verification.json" "$publish/audit-verification.json"
+
+        report_args=(
+          --decisions "$work/decisions.json"
+          --policy-validation-status "$policy_status"
+          --output-json "$work/report.json"
+          --output-md "$work/report.md"
+        )
+        if [ -n "$VC_CONTEXT" ]; then
+          report_args+=(--context "$VC_CONTEXT")
+        fi
+        report_args+=("${tests_arg[@]}" "${audit_arg[@]}" "${verify_arg[@]}")
+
+        set +e
+        "$reporter" "${report_args[@]}" 2>"$work/report-generation-error.txt"
+        report_rc=$?
+        set -e
+        if [ "$report_rc" -eq 0 ]; then
+          cp "$work/report.md" "$publish/report.md"
+          cp "$work/report.json" "$publish/report.json"
+          cat "$work/report.md" >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+        else
+          combined_rc=1
+          cp "$work/report-generation-error.txt" "$publish/report-generation-error.txt"
+        fi
+
+        if [ "$VC_INCLUDE_RAW_AUDIT" = "true" ] && [ -f "$work/audit.jsonl" ]; then
+          cp "$work/audit.jsonl" "$publish/audit.jsonl"
+        fi
+
+        echo "VERICORDON_EVIDENCE_RC=$combined_rc" >>"${GITHUB_ENV:-/dev/null}"
+
+    - name: Upload safe evidence artifact
+      if: always() && inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.bundle.outputs.artifact-dir }}
+        if-no-files-found: error
+
+    - name: Preserve validation and gate failures
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        rc="${VERICORDON_EVIDENCE_RC:-1}"
+        if [ "$rc" -ne 0 ]; then
+          echo "Evidence bundle was generated, but one or more supplied validation/gate checks failed." >&2
+          exit "$rc"
+        fi

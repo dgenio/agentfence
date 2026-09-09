@@ -1,0 +1,50 @@
+name: Evidence bundle
+
+on:
+  pull_request:
+    paths:
+      - "cmd/evidence-report/**"
+      - "evidence-action/**"
+      - "schema/vericordon-evidence-report.schema.json"
+      - "docs/evidence-bundle.md"
+      - ".github/workflows/evidence-bundle.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cmd/evidence-report/**"
+      - "evidence-action/**"
+      - "schema/vericordon-evidence-report.schema.json"
+      - "docs/evidence-bundle.md"
+      - ".github/workflows/evidence-bundle.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  maintained-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Generate evidence bundle
+        uses: ./evidence-action
+        with:
+          policy: examples/policy.yaml
+          calls: examples/tool-calls.jsonl
+          tests: examples/policy-tests.yaml
+          context: ${{ github.repository }}@${{ github.sha }}
+          artifact-name: maintained-fixture-evidence
+
+      - name: Assert safe artifact excludes raw audit by default
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish="${RUNNER_TEMP}/vericordon-evidence/publish"
+          test -f "$publish/report.md"
+          test -f "$publish/report.json"
+          test -f "$publish/audit-verification.json"
+          test ! -e "$publish/audit.jsonl"
+          jq -e '.schema_version == "1"' "$publish/report.json" >/dev/null
+          jq -e '.checks[] | select(.id == "exact_action_policy_binding") | .status == "observed" or .status == "partial"' "$publish/report.json" >/dev/null
