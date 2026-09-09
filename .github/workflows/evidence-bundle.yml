@@ -3,6 +3,7 @@ name: Evidence bundle
 on:
   pull_request:
     paths:
+      - "cmd/agentfence/**"
       - "cmd/evidence-report/**"
       - "evidence-action/**"
       - "schema/vericordon-evidence-report.schema.json"
@@ -11,6 +12,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "cmd/agentfence/**"
       - "cmd/evidence-report/**"
       - "evidence-action/**"
       - "schema/vericordon-evidence-report.schema.json"
@@ -37,14 +39,22 @@ jobs:
           context: ${{ github.repository }}@${{ github.sha }}
           artifact-name: maintained-fixture-evidence
 
-      - name: Assert safe artifact excludes raw audit by default
+      - name: Assert safe artifact and complete maintained bindings
         shell: bash
         run: |
           set -euo pipefail
           publish="${RUNNER_TEMP}/vericordon-evidence/publish"
+          report="$publish/report.json"
           test -f "$publish/report.md"
-          test -f "$publish/report.json"
+          test -f "$report"
           test -f "$publish/audit-verification.json"
           test ! -e "$publish/audit.jsonl"
-          jq -e '.schema_version == "1"' "$publish/report.json" >/dev/null
-          jq -e '.checks[] | select(.id == "exact_action_policy_binding") | .status == "observed" or .status == "partial"' "$publish/report.json" >/dev/null
+          jq -e '.schema_version == "1"' "$report" >/dev/null
+          jq -e '
+            .summary.audit_events > 0 and
+            .summary.bound_audit_events == .summary.audit_events and
+            (.checks[] | select(.id == "exact_action_policy_binding") | .status == "observed")
+          ' "$report" >/dev/null
+          events="$(jq -r '.summary.audit_events' "$report")"
+          bound="$(jq -r '.summary.bound_audit_events' "$report")"
+          echo "Bound authorization evidence: ${bound}/${events} audit events"
