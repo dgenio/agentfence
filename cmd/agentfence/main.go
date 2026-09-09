@@ -430,7 +430,7 @@ func runCheck(args []string) error {
 			continue
 		}
 
-		res, event := eng.Evaluate(call)
+		res, event := eng.EvaluateBound(call)
 
 		// On ask, convert to allow/deny via the approver — unless we're in
 		// dry-run, in which case ask is recorded verbatim with mode=dry_run.
