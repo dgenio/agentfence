@@ -57,7 +57,14 @@
       "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/evidenceCheck"
-      }
+      },
+      "allOf": [
+        { "contains": { "properties": { "id": { "const": "policy_validation" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "policy_fixtures" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "mediated_call_decisions" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "exact_action_policy_binding" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "audit_chain_verification" } }, "required": ["id"] } }
+      ]
     },
     "evidence_index": {
       "type": "array",
