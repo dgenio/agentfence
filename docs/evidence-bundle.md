@@ -1,4 +1,4 @@
-# VeriCordon authorization evidence bundle — preview
+# VeriCordon authorization evidence bundle
 
 The evidence bundle is a deliberately small product experiment built on the
 existing AgentFence enforcement and audit primitives.
@@ -13,10 +13,8 @@ The report is **scoped engineering evidence**. It is not a security score,
 certification, compliance attestation, sandbox result, or proof that every call
 in the surrounding agent was mediated.
 
-The launch identity selected for the project is **VeriCordon**; the repository,
-module, CLI, and durable machine identifiers are still migrating from
-`AgentFence`. The preview therefore names both rather than pretending that the
-rename is already complete.
+The launch identity selected for the product is **VeriCordon**; the repository,
+module, CLI, and durable machine identifiers remain AgentFence-compatible.
 
 ## What it answers
 
@@ -55,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dgenio/agentfence/evidence-action@main
+      - uses: dgenio/agentfence/evidence-action@v0.10.0
         with:
           policy: agentfence.yaml
           calls: testdata/tool-calls.jsonl
@@ -67,8 +65,9 @@ The initial `push` trigger is intentional: it lets a brand-new repository run
 the workflow on the same branch that first introduces the workflow file. After
 that bootstrap, `pull_request` runs provide the normal review path.
 
-During the preview, pin a commit SHA if you need reproducible third-party action
-resolution. Use a release tag once this surface has earned one.
+Pin `v0.10.0` for the released consumer surface. Environments that require an
+immutable third-party Action reference can pin the exact release commit SHA
+instead.
 
 The action:
 
@@ -84,6 +83,65 @@ The action:
 
 `fail-on` is empty by default, making the first run diagnostic. Set it to
 `deny`, `ask`, or `deny,ask` when the same workflow should act as a CI gate.
+
+### Minimal inputs
+
+The Action needs only a policy and representative call JSONL. Policy fixtures
+are optional.
+
+```yaml
+# agentfence.yaml
+version: "0.1"
+defaults:
+  decision: deny
+tools:
+  demo.read:
+    decision: allow
+  demo.write:
+    decision: ask
+```
+
+```jsonl
+{"id":"read-1","tool":"demo.read","arguments":{"path":"README.md"}}
+{"id":"write-1","tool":"demo.write","arguments":{"path":"notes.txt","content":"hello"}}
+```
+
+In non-interactive CI, an `ask` policy decision is resolved to `deny`; policy
+fixtures still report the underlying policy result when you supply them.
+
+## What missing evidence looks like
+
+VeriCordon reports evidence state instead of converting absence into a pass.
+A maintained pre-release run from #268 had four audit events but **0/4** carried
+both `action_digest` and `policy_digest`; the report therefore emitted:
+
+```json
+{
+  "id": "exact_action_policy_binding",
+  "status": "partial"
+}
+```
+
+That missing binding was then fixed in #269. The maintained gate now requires
+all representable evaluated events to be bound rather than accepting a fixed
+cardinality.
+
+## What exact action + policy binding looks like
+
+The fresh-consumer release test evaluated three representative calls. All
+**3/3** resulting audit events carried both the exact-action digest and the
+resolved/effective-policy digest, so the report emitted:
+
+```json
+{
+  "id": "exact_action_policy_binding",
+  "status": "observed",
+  "summary": "All 3 supplied audit events carry both action_digest and policy_digest."
+}
+```
+
+This is evidence about those supplied evaluated calls only. It does not prove
+that every capability in the surrounding agent was mediated.
 
 ## Safe artifact boundary
 
@@ -136,6 +194,8 @@ The bundle deliberately repeats these limits in every generated report:
   for a real deployment;
 - local hash-chain verification does not prove complete collection or external
   anchoring;
+- it does not authenticate a human identity unless that identity is actually
+  provided and bound by the approval channel;
 - it does not certify AIUC-1 or another standard.
 
 For the underlying evidence boundaries, see
