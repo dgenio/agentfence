@@ -2,16 +2,25 @@ package main
 
 import (
 	"bufio"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 )
 
+const (
+	actionDigestPrefix = "tool-action-json-v1:sha256:"
+	policyDigestPrefix = "resolved-policy-json-v1:sha256:"
+)
+
 func readDecisions(path string) ([]decisionSummary, error) {
 	var decisions []decisionSummary
 	if err := readJSON(path, &decisions); err != nil {
 		return nil, fmt.Errorf("decisions: %w", err)
+	}
+	if decisions == nil {
+		return nil, fmt.Errorf("decisions: expected JSON array, got null")
 	}
 	return decisions, nil
 }
@@ -51,11 +60,20 @@ func auditBindingCounts(path string) (int, int, error) {
 		if line == "" {
 			continue
 		}
+		if line == "null" {
+			return 0, 0, fmt.Errorf("audit: invalid JSONL event %d: expected object, got null", total+1)
+		}
 		var event auditEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			return 0, 0, fmt.Errorf("audit: invalid JSONL event %d: %w", total+1, err)
 		}
 		total++
+		if event.ActionDigest != "" && !validDigest(event.ActionDigest, actionDigestPrefix) {
+			return 0, 0, fmt.Errorf("audit: invalid action_digest in event %d", total)
+		}
+		if event.PolicyDigest != "" && !validDigest(event.PolicyDigest, policyDigestPrefix) {
+			return 0, 0, fmt.Errorf("audit: invalid policy_digest in event %d", total)
+		}
 		if event.ActionDigest != "" && event.PolicyDigest != "" {
 			bound++
 		}
@@ -64,6 +82,18 @@ func auditBindingCounts(path string) (int, int, error) {
 		return 0, 0, fmt.Errorf("audit: %w", err)
 	}
 	return total, bound, nil
+}
+
+func validDigest(value, prefix string) bool {
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	hexDigest := strings.TrimPrefix(value, prefix)
+	if len(hexDigest) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(hexDigest)
+	return err == nil
 }
 
 func writeJSON(path string, report evidenceReport) error {
