@@ -59,6 +59,9 @@ func buildReport(in reportInput) (evidenceReport, error) {
 	summary.AuditEvents = auditCount
 	summary.BoundAuditEvents = boundCount
 	checks = append(checks, bindingCoverageCheck(auditCount, boundCount, in.AuditPath))
+	if in.AuditPath != "" {
+		evidenceIndex = append(evidenceIndex, filepath.Base(in.AuditPath))
+	}
 
 	verifyCheck, err := auditVerificationCheck(in.AuditVerificationPath)
 	if err != nil {
@@ -125,9 +128,12 @@ func policyTestsCheck(path string) (evidenceCheck, policyTestReport, error) {
 	if path == "" {
 		return check, policyTestReport{}, nil
 	}
-	var tests policyTestReport
+	var tests *policyTestReport
 	if err := readJSON(path, &tests); err != nil {
 		return evidenceCheck{}, policyTestReport{}, fmt.Errorf("policy tests: %w", err)
+	}
+	if tests == nil {
+		return evidenceCheck{}, policyTestReport{}, errors.New("policy tests: expected object, got null")
 	}
 	if tests.Total < 0 || tests.Passed < 0 || tests.Failed < 0 || tests.Passed+tests.Failed != tests.Total {
 		return evidenceCheck{}, policyTestReport{}, errors.New("policy tests: inconsistent totals")
@@ -143,7 +149,7 @@ func policyTestsCheck(path string) (evidenceCheck, policyTestReport, error) {
 		check.Status = statusObserved
 		check.Summary = fmt.Sprintf("All %d supplied policy fixtures passed.", tests.Total)
 	}
-	return check, tests, nil
+	return check, *tests, nil
 }
 
 func mediatedDecisionsCheck(decisions []decisionSummary, path string) evidenceCheck {
@@ -192,9 +198,15 @@ func auditVerificationCheck(path string) (evidenceCheck, error) {
 	if path == "" {
 		return check, nil
 	}
-	var verification auditVerifyReport
+	var verification *auditVerifyReport
 	if err := readJSON(path, &verification); err != nil {
 		return evidenceCheck{}, fmt.Errorf("audit verification: %w", err)
+	}
+	if verification == nil {
+		return evidenceCheck{}, errors.New("audit verification: expected object, got null")
+	}
+	if verification.Chain.Status == "" || verification.Chain.Events < 0 {
+		return evidenceCheck{}, errors.New("audit verification: malformed chain result")
 	}
 	check.Evidence = []string{filepath.Base(path)}
 	if verification.Chain.Status == "ok" {
