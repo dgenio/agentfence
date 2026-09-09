@@ -41,10 +41,14 @@ func renderMarkdown(report evidenceReport) string {
 
 func markdownCell(s string) string {
 	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	return s
 }
 
 func markdownCode(s string) string {
-	return strings.ReplaceAll(s, "`", "'")
+	s = strings.ReplaceAll(s, "`", "'")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
 }
