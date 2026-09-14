@@ -68,6 +68,8 @@ did not write, with a policy and audit trail they control.
 
 ## VeriCordon: inspectable authorization evidence in CI
 
+**Project site:** [vericordon.diogofcul.chatgpt.site](https://vericordon.diogofcul.chatgpt.site)
+
 **Generate inspectable authorization evidence for the exact calls and policy
 AgentFence evaluated.** VeriCordon turns a policy, representative call JSONL,
 and optional policy fixtures into a human-readable `report.md` plus a versioned
