@@ -219,10 +219,19 @@ Initial hypotheses, intentionally not yet built:
 A €79 one-off paid evidence/history pilot is also a valid first revenue signal
 before recurring billing exists.
 
-If those capabilities would be worth paying for, register the buying intent on
-[product experiment #267](https://github.com/dgenio/agentfence/issues/267).
+If you have a real local/CI evidence-review workflow and would consider
+paying for a narrowly scoped improvement, use the **Get Early Access** contact
+path on the [VeriCordon product site](https://vericordon.diogofcul.chatgpt.site/).
+For non-sensitive, public product feedback, you may also comment on
+[commercial-validation gate #274](https://github.com/dgenio/agentfence/issues/274).
+Please say whether you
+currently run these reports repeatedly, what review/history step is missing,
+and whether you have authority to approve a paid pilot. No payment infrastructure
+or premium tier is currently available.
+
 Do **not** attach private policies, audit logs, proprietary schemas, credentials,
-or customer data to a public issue.
+company details, or customer data to a public issue. Use a private, consented
+contact channel for anything sensitive.
 
 No billing, hosted proxy, account system, or enterprise control plane should be
 built until that experiment produces concrete commercial pull.
