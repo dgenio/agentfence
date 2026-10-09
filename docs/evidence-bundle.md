@@ -222,10 +222,9 @@ before recurring billing exists.
 If you have a real local/CI evidence-review workflow and would consider
 paying for a narrowly scoped improvement, use the **Get Early Access** contact
 path on the [VeriCordon product site](https://vericordon.diogofcul.chatgpt.site/).
-The site contact-submission/delivery path is subject to an explicit end-to-end
-check in [commercial-validation gate #274](https://github.com/dgenio/agentfence/issues/274),
-and must not be assumed to work until that check is recorded. For non-sensitive,
-public product feedback you may also comment on #274. Please say whether you
+For non-sensitive, public product feedback, you may also comment on
+[commercial-validation gate #274](https://github.com/dgenio/agentfence/issues/274).
+Please say whether you
 currently run these reports repeatedly, what review/history step is missing,
 and whether you have authority to approve a paid pilot. No payment infrastructure
 or premium tier is currently available.
