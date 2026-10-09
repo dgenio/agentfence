@@ -98,7 +98,11 @@ If you're taking an LLM, agent, or MCP system into production and want an outsid
 
 Typical engagement: **3–5 working days, from €1,500**. The output is a concise decision memo with the recommendation, major risks, rejected alternatives, and implementation guardrails. This is independent consulting by the maintainer, not AgentFence support or a VeriCordon product tier.
 
-[See the scope or request a 30-minute fit call →](https://diogo-genai-advisory.diogofcul.chatgpt.site)
+[See the full scope →](https://diogo-genai-advisory.diogofcul.chatgpt.site)
+
+**For a direct enquiry:** [email the decision you need reviewed →](mailto:diogofcul@gmail.com?subject=Architecture%20Decision%20Sprint).
+Include the decision, options and deadline; do not send sensitive materials in
+the first message. A fit call is only arranged after confirming scope.
 
 ## Current status
 
